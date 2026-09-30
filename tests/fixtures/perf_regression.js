@@ -18,8 +18,10 @@ import path from "node:path";
   const first = cpuList[0];
   assert.ok(first.model && first.model !== "jse-cpu",
     `CPU model must be real, got: ${first.model}`);
-  assert.ok(typeof first.speed === "number" && first.speed > 0,
-    `CPU speed must be positive, got: ${first.speed}`);
+  // Virtual machines (e.g. CI macOS runners) may not expose a frequency;
+  // Node reports 0 there too.
+  assert.ok(Number.isInteger(first.speed) && first.speed >= 0,
+    `CPU speed must be a non-negative integer, got: ${first.speed}`);
   assert.ok(first.times && typeof first.times === "object",
     "CPU times must be an object");
   assert.ok(typeof first.times.user === "number", "times.user must be a number");
@@ -31,9 +33,14 @@ console.log("PASS: os.cpus() returns real CPU info");
 {
   const avg = os.loadavg();
   assert.ok(Array.isArray(avg) && avg.length === 3, "loadavg must return [1m, 5m, 15m]");
-  // On any running system, at least one average should be > 0
-  const anyPositive = avg.some(v => v > 0);
-  assert.ok(anyPositive, `loadavg should have positive values, got: [${avg}]`);
+  if (process.platform === "win32") {
+    // Windows has no load average; Node documents [0, 0, 0].
+    assert.deepStrictEqual(avg, [0, 0, 0]);
+  } else {
+    // On any running Unix system, at least one average should be > 0.
+    const anyPositive = avg.some(v => v > 0);
+    assert.ok(anyPositive, `loadavg should have positive values, got: [${avg}]`);
+  }
 }
 console.log("PASS: os.loadavg() returns real values");
 

@@ -44,3 +44,73 @@ jobs:
           ./target/debug/malia run examples/hello.ts
           ./target/debug/malia eval --allow-all "const fs = await import('node:fs'); const os = await import('node:os'); const p = await import('node:path'); const f = p.join(os.tmpdir(), 'jse-ci.txt'); fs.writeFileSync(f, 'ok'); console.log(fs.readFileSync(f, 'utf8'), p.sep, os.platform(), fs.statSync(f).isFile());"
       - run: cargo test
+
+  databases:
+    name: Database drivers (Linux)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: secret
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: secret
+          MYSQL_DATABASE: app
+        ports: ["3306:3306"]
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -psecret" --health-interval 5s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 20
+      mongo:
+        image: mongo:7
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: secret
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
+          --health-interval 5s --health-retries 30
+      dynamodb:
+        image: amazon/dynamodb-local
+        ports: ["8000:8000"]
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          ES_JAVA_OPTS: -Xms512m -Xmx512m
+        ports: ["9200:9200"]
+        options: --health-cmd "curl -fs http://127.0.0.1:9200/_cluster/health" --health-interval 10s --health-retries 30
+      cassandra:
+        image: cassandra:5
+        env:
+          MAX_HEAP_SIZE: 512M
+          HEAP_NEWSIZE: 128M
+        ports: ["9042:9042"]
+        options: --health-cmd "cqlsh -e 'describe keyspaces'" --health-interval 10s --health-retries 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund --prefix tests/db
+      - run: cargo build --bin jse
+      - name: Run drivers against live servers
+        working-directory: tests/db
+        env:
+          JSE_PG_URL: postgres://postgres:secret@127.0.0.1:5432/postgres
+          JSE_MYSQL_URL: mysql://root:secret@127.0.0.1:3306/app
+          JSE_REDIS_URL: redis://127.0.0.1:6379
+          JSE_MONGO_URL: mongodb://root:secret@127.0.0.1:27017/?authSource=admin
+          JSE_DYNAMO_URL: http://127.0.0.1:8000
+          JSE_ES_URL: http://127.0.0.1:9200
+          JSE_CASSANDRA: 127.0.0.1:9042
+          JSE_DB_REQUIRE_ALL: "1"
+        run: ../../target/debug/jse run --allow-all drivers.mjs

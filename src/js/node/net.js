@@ -114,7 +114,13 @@ Socket.prototype.connect = function (port, host, cb) {
   }
   const hostname = opts.host || opts.hostname || "localhost";
   const tls = !!(opts.tls ?? this._tls);
-  const portNum = opts.port ?? (tls ? 443 : 0);
+  // Node accepts numeric strings ("5432") as ports.
+  const portNum = Number(opts.port ?? (tls ? 443 : 0));
+  if (!Number.isInteger(portNum) || portNum < 0 || portNum > 65535) {
+    const err = new RangeError(`Port should be >= 0 and < 65536. Received ${opts.port}.`);
+    err.code = "ERR_SOCKET_BAD_PORT";
+    throw err;
+  }
   const servername = opts.servername || hostname;
   const insecure = (opts.rejectUnauthorized ?? this._rejectUnauthorized) === false;
   this.connecting = true;

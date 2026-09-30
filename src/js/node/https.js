@@ -1,6 +1,6 @@
 // node:https shim: createServer({ cert, key }) over the same engine as
 // node:http (TLS via rustls). PEM may be contents or a filesystem path.
-import { Server, request as httpRequest } from "node:http";
+import { Agent as HttpAgent, Server, request as httpRequest } from "node:http";
 
 const ops = Deno.core.ops;
 
@@ -74,5 +74,15 @@ function get(input, options, cb) {
   return req;
 }
 
-export { createServer, HttpsServer as Server, request, get };
-export default { createServer, Server: HttpsServer, request, get };
+class Agent extends HttpAgent {
+  constructor(options) {
+    super(options);
+    this.defaultPort = 443;
+    this.protocol = "https:";
+  }
+}
+
+const globalAgent = new Agent();
+
+export { createServer, HttpsServer as Server, request, get, Agent, globalAgent };
+export default { createServer, Server: HttpsServer, request, get, Agent, globalAgent };

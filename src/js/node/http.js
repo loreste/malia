@@ -3,7 +3,7 @@
 // chunk); responses can be written whole via end() or streamed via write().
 import { EventEmitter } from "node:events";
 import net from "node:net";
-import { Writable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 
 const ops = Deno.core.ops;
 const { Buffer } = globalThis;
@@ -409,7 +409,8 @@ function createServer(requestListener) {
   return new Server(requestListener);
 }
 
-class ClientResponse extends EventEmitter {
+// The body is a Readable fed by readResponse via push().
+class ClientResponse extends Readable {
   constructor(statusCode, statusMessage, headers) {
     super();
     this.statusCode = statusCode;
@@ -418,6 +419,8 @@ class ClientResponse extends EventEmitter {
     this.httpVersion = "1.1";
     this.complete = false;
   }
+
+  _read() {}
 }
 
 function parseHead(text) {
@@ -461,7 +464,7 @@ function readResponse(sock, method, onResponse, onError) {
   const finish = () => {
     if (!res || res.complete) return;
     res.complete = true;
-    res.emit("end");
+    res.push(null);
     sock.destroy();
   };
 
@@ -488,13 +491,13 @@ function readResponse(sock, method, onResponse, onError) {
           finish();
           return;
         }
-        if (data.length) res.emit("data", data);
+        if (data.length) res.push(data);
       }
     }
     if (mode === "length") {
       const take = Math.min(pending.length, expected - received);
       if (take > 0) {
-        res.emit("data", pending.subarray(0, take));
+        res.push(pending.subarray(0, take));
         received += take;
         pending = pending.subarray(take);
       }
@@ -502,7 +505,7 @@ function readResponse(sock, method, onResponse, onError) {
       return;
     }
     if (pending.length) {
-      res.emit("data", pending);
+      res.push(pending);
       pending = Buffer.alloc(0);
     }
   };
@@ -769,6 +772,42 @@ function get(input, options, cb) {
 }
 
 // The standard HTTP method list (from http.METHODS).
+export const STATUS_CODES = {
+  100: "Continue", 101: "Switching Protocols", 102: "Processing", 103: "Early Hints", 200: "OK",
+  201: "Created", 202: "Accepted", 203: "Non-Authoritative Information", 204: "No Content",
+  205: "Reset Content", 206: "Partial Content", 207: "Multi-Status", 208: "Already Reported",
+  226: "IM Used", 300: "Multiple Choices", 301: "Moved Permanently", 302: "Found", 303: "See Other",
+  304: "Not Modified", 305: "Use Proxy", 307: "Temporary Redirect", 308: "Permanent Redirect",
+  400: "Bad Request", 401: "Unauthorized", 402: "Payment Required", 403: "Forbidden",
+  404: "Not Found", 405: "Method Not Allowed", 406: "Not Acceptable",
+  407: "Proxy Authentication Required", 408: "Request Timeout", 409: "Conflict", 410: "Gone",
+  411: "Length Required", 412: "Precondition Failed", 413: "Payload Too Large", 414: "URI Too Long",
+  415: "Unsupported Media Type", 416: "Range Not Satisfiable", 417: "Expectation Failed",
+  418: "I'm a Teapot", 421: "Misdirected Request", 422: "Unprocessable Entity", 423: "Locked",
+  424: "Failed Dependency", 425: "Too Early", 426: "Upgrade Required", 428: "Precondition Required",
+  429: "Too Many Requests", 431: "Request Header Fields Too Large",
+  451: "Unavailable For Legal Reasons", 500: "Internal Server Error", 501: "Not Implemented",
+  502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout",
+  505: "HTTP Version Not Supported", 506: "Variant Also Negotiates", 507: "Insufficient Storage",
+  508: "Loop Detected", 509: "Bandwidth Limit Exceeded", 510: "Not Extended",
+  511: "Network Authentication Required",
+};
+
+// Default limit on the size of response headers (16 KiB), as in Node.
+export const maxHeaderSize = 16384;
+
+export function validateHeaderName(name) {
+  if (!TOKEN_RE.test(name)) {
+    throw httpError("ERR_INVALID_HTTP_TOKEN", `Header name must be a valid HTTP token ["${name}"]`);
+  }
+}
+
+export function validateHeaderValue(name, value) {
+  validateHeader(name, value);
+}
+
+export function setMaxIdleHTTPParsers() {}
+
 export const METHODS = [
   "ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET", "HEAD", "LINK",
   "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY", "MKCALENDAR", "MKCOL", "MOVE",
@@ -777,5 +816,31 @@ export const METHODS = [
   "UNLINK", "LOCK", "UNSUBSCRIBE",
 ];
 
-export { createServer, Server, IncomingMessage, ServerResponse, request, get, ClientRequest };
-export default { createServer, Server, IncomingMessage, ServerResponse, request, get, ClientRequest, METHODS };
+// Agent holds options only; each request opens its own connection
+// (no pooling by agent).
+class Agent extends EventEmitter {
+  constructor(options = {}) {
+    super();
+    this.options = { ...options };
+    this.keepAlive = Boolean(options.keepAlive);
+    this.maxSockets = options.maxSockets ?? Infinity;
+    this.maxFreeSockets = options.maxFreeSockets ?? 256;
+    this.defaultPort = 80;
+    this.protocol = "http:";
+    this.sockets = {};
+    this.freeSockets = {};
+    this.requests = {};
+  }
+
+  getName(options = {}) {
+    return `${options.host ?? options.hostname ?? "localhost"}:${options.port ?? ""}:${options.localAddress ?? ""}`;
+  }
+
+  destroy() {}
+}
+
+const globalAgent = new Agent();
+
+export { createServer, Server, IncomingMessage, ServerResponse, request, get, ClientRequest, Agent, globalAgent };
+export default { createServer, Server, IncomingMessage, ServerResponse, request, get, ClientRequest, METHODS, Agent, globalAgent,
+  STATUS_CODES, maxHeaderSize, validateHeaderName, validateHeaderValue, setMaxIdleHTTPParsers };

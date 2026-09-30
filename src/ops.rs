@@ -457,6 +457,9 @@ pub fn op_fs_open(
   if flags.contains('x') {
     opts.create_new(true);
   }
+  // Windows has no Unix permission bits to apply at creation.
+  #[cfg(not(unix))]
+  let _ = mode;
   #[cfg(unix)]
   {
     use std::os::unix::fs::OpenOptionsExt;

@@ -6,7 +6,7 @@ import inspector from "node:inspector";
 import readline from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { StringDecoder } from "node:string_decoder";
-import { Readable, Transform, compose } from "node:stream";
+import { Readable, Transform, Writable, compose } from "node:stream";
 import https from "node:https";
 import path from "node:path";
 import zlib from "node:zlib";
@@ -100,6 +100,12 @@ const here = path.dirname(fileURLToPath(import.meta.url));
     assert.equal(new TextDecoder().decode(await subtle.decrypt({ name: "AES-CBC", iv }, unwrapped, cbc)), "claims", format);
   }
 
+  const ctrKey = await subtle.generateKey({ name: "AES-CTR", length: 128 }, false, ["encrypt", "decrypt"]);
+  const ctr = { name: "AES-CTR", counter: new Uint8Array(16), length: 64 };
+  const ctrSealed = await subtle.encrypt(ctr, ctrKey, data);
+  assert.equal(ctrSealed.byteLength, data.byteLength);
+  assert.equal(new TextDecoder().decode(await subtle.decrypt(ctr, ctrKey, ctrSealed)), "claims");
+
   const pss = await subtle.generateKey({ name: "RSA-PSS", ...rsa }, false, ["sign", "verify"]);
   const pssSig = await subtle.sign({ name: "RSA-PSS", saltLength: 32 }, pss.privateKey, data);
   assert.equal(await subtle.verify({ name: "RSA-PSS", saltLength: 32 }, pss.publicKey, pssSig, data), true);
@@ -111,6 +117,21 @@ const here = path.dirname(fileURLToPath(import.meta.url));
   const edPub = await subtle.importKey("raw", raw, "Ed25519", true, ["verify"]);
   assert.equal(await subtle.verify("Ed25519", edPub, edSig, data), true);
   assert.equal(await subtle.verify("Ed25519", edPub, edSig, new TextEncoder().encode("other")), false);
+}
+
+// ---- sleep cancellation and the less common hashes -------------------------------------
+{
+  const controller = new AbortController();
+  const pending = sleep(10_000, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+
+  const { createHash } = await import("node:crypto");
+  assert.equal(createHash("sha224").update("abc").digest("hex"), "23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7");
+  assert.equal(
+    createHash("sha512-256").update("abc").digest("hex"),
+    "53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23",
+  );
 }
 
 // ---- inspector ---------------------------------------------------------------------
@@ -164,6 +185,45 @@ assert.equal(inspector.url(), undefined);
   for (const encoding of Object.keys(encoders)) {
     assert.equal(await (await fetch(`http://127.0.0.1:23531/?e=${encoding}`)).text(), body, encoding);
   }
+  server.close();
+}
+
+// ---- http/https Agent ----------------------------------------------------------------
+{
+  const http = await import("node:http");
+  const agent = new https.Agent({ keepAlive: true, maxSockets: 4 });
+  assert.ok(agent instanceof http.Agent);
+  assert.equal(agent.defaultPort, 443);
+  assert.equal(agent.maxSockets, 4);
+  assert.ok(https.globalAgent instanceof https.Agent);
+  assert.equal(http.globalAgent.defaultPort, 80);
+}
+
+// ---- fixes found by the database driver suite ----------------------------------------
+{
+  // Buffer[Symbol.species] views an ArrayBuffer range (undici).
+  const ab = new Uint8Array([1, 2, 3, 4, 5]).buffer;
+  assert.deepEqual([...new Buffer[Symbol.species](ab, 1, 3)], [2, 3, 4]);
+  // Prototype methods are enumerable (mysql2 mocks them with for...in).
+  const names = [];
+  for (const name in Buffer.prototype) names.push(name);
+  assert.ok(names.includes("writeUInt32LE"));
+
+  const http = await import("node:http");
+  assert.equal(http.STATUS_CODES[404], "Not Found");
+  assert.equal(http.maxHeaderSize, 16384);
+  assert.throws(() => http.validateHeaderName("bad name"), { code: "ERR_INVALID_HTTP_TOKEN" });
+
+  // The client response is a Readable; a numeric-string port connects.
+  const server = jse.serve({ port: 23533, hostname: "127.0.0.1" }, () => new Response("piped"));
+  const res = await new Promise((resolve, reject) => {
+    http.get({ hostname: "127.0.0.1", port: "23533", path: "/" }, resolve).on("error", reject);
+  });
+  const chunks = [];
+  await new Promise((resolve) => res.pipe(new Writable({
+    write(c, e, cb) { chunks.push(c); cb(); },
+  })).on("finish", resolve));
+  assert.equal(Buffer.concat(chunks).toString(), "piped");
   server.close();
 }
 

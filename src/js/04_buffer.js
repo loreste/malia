@@ -414,13 +414,15 @@
   }
 
   class Buffer extends Uint8Array {
-    constructor(arg, encoding) {
+    constructor(arg, encoding, length) {
       if (typeof arg === "number") {
         super(arg);
       } else if (typeof arg === "string") {
         super(encodeString(arg, encoding || "utf8"));
-      } else if (arg instanceof ArrayBuffer) {
-        super(arg);
+      } else if (arg instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && arg instanceof SharedArrayBuffer)) {
+        // (arrayBuffer, byteOffset, length) is a view, as with Uint8Array;
+        // undici builds body slices this way via Buffer[Symbol.species].
+        super(arg, encoding ?? 0, length);
       } else if (ArrayBuffer.isView(arg)) {
         super(arg.buffer.slice(arg.byteOffset, arg.byteOffset + arg.byteLength));
       } else if (Array.isArray(arg)) {
@@ -855,6 +857,11 @@ Buffer.from = function (value, offsetOrEncoding, length) {
   // Node's lowercase "Uint" aliases (readUint8, writeUint32LE, ...).
   for (const name of Object.getOwnPropertyNames(Buffer.prototype)) {
     if (name.includes("UInt")) Buffer.prototype[name.replace("UInt", "Uint")] = Buffer.prototype[name];
+  }
+  // Node assigns its prototype methods, so for...in sees them (mysql2's
+  // MockBuffer relies on it); class methods are non-enumerable by default.
+  for (const name of Object.getOwnPropertyNames(Buffer.prototype)) {
+    if (name !== "constructor") Object.defineProperty(Buffer.prototype, name, { enumerable: true });
   }
 
   Buffer.compare = function (a, b) {

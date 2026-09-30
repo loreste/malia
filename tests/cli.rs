@@ -307,3 +307,19 @@ fn npm_and_package_bins_receive_flags_verbatim() {
   let used = jse(&dir, &["run", "--allow-read", "use.cjs"]);
   assert!(stdout(&used).contains("LOCAL_PKG_OK"), "{}", describe(&used));
 }
+
+#[test]
+fn log_level_and_format_from_env() {
+  let dir = scratch("log");
+  write(&dir, "l.js", "jse.log.info('HIDDEN_INFO'); jse.log.warn('SHOWN_WARN', 'detail');");
+  let out = Command::new(JSE)
+    .args(["run", "l.js"])
+    .current_dir(&dir)
+    .env("JSE_LOG", "warn")
+    .env("JSE_LOG_FORMAT", "json")
+    .output()
+    .unwrap();
+  let text = format!("{}{}", stdout(&out), String::from_utf8_lossy(&out.stderr));
+  assert!(!text.contains("HIDDEN_INFO"), "{}", describe(&out));
+  assert!(text.contains(r#""level":"WARN","target":"SHOWN_WARN","message":"detail""#), "{}", describe(&out));
+}

@@ -66,20 +66,103 @@ export function unsubscribe(name, fn) {
   return channel(name).unsubscribe(fn);
 }
 
-export function tracingChannel(nameOrChannels) {
-  if (typeof nameOrChannels === "string") {
-    return {
-      start: channel(`tracing:${nameOrChannels}:start`),
-      end: channel(`tracing:${nameOrChannels}:end`),
-      asyncStart: channel(`tracing:${nameOrChannels}:asyncStart`),
-      asyncEnd: channel(`tracing:${nameOrChannels}:asyncEnd`),
-      error: channel(`tracing:${nameOrChannels}:error`),
-      trace(fn, _context = {}, thisArg, ...args) {
-        return fn.apply(thisArg, args);
-      },
-    };
+const TRACE_EVENTS = ["start", "end", "asyncStart", "asyncEnd", "error"];
+
+// TracingChannel: publishes start/end/asyncStart/asyncEnd/error around a
+// traced call, with the same context object passed to every event.
+export class TracingChannel {
+  constructor(nameOrChannels) {
+    for (const event of TRACE_EVENTS) {
+      this[event] = typeof nameOrChannels === "string"
+        ? channel(`tracing:${nameOrChannels}:${event}`)
+        : nameOrChannels[event];
+    }
   }
-  return nameOrChannels;
+
+  get hasSubscribers() {
+    return TRACE_EVENTS.some((event) => this[event].hasSubscribers);
+  }
+
+  subscribe(handlers) {
+    for (const event of TRACE_EVENTS) if (handlers[event]) this[event].subscribe(handlers[event]);
+  }
+
+  unsubscribe(handlers) {
+    let done = true;
+    for (const event of TRACE_EVENTS) if (handlers[event] && !this[event].unsubscribe(handlers[event])) done = false;
+    return done;
+  }
+
+  traceSync(fn, context = {}, thisArg, ...args) {
+    if (!this.hasSubscribers) return fn.apply(thisArg, args);
+    this.start.publish(context);
+    try {
+      const result = fn.apply(thisArg, args);
+      context.result = result;
+      return result;
+    } catch (err) {
+      context.error = err;
+      this.error.publish(context);
+      throw err;
+    } finally {
+      this.end.publish(context);
+    }
+  }
+
+  tracePromise(fn, context = {}, thisArg, ...args) {
+    if (!this.hasSubscribers) return fn.apply(thisArg, args);
+    const settle = (key, value) => {
+      context[key] = value;
+      if (key === "error") this.error.publish(context);
+      this.asyncStart.publish(context);
+      this.asyncEnd.publish(context);
+    };
+    this.start.publish(context);
+    try {
+      return Promise.resolve(fn.apply(thisArg, args)).then(
+        (result) => {
+          settle("result", result);
+          return result;
+        },
+        (err) => {
+          settle("error", err);
+          throw err;
+        },
+      );
+    } catch (err) {
+      context.error = err;
+      this.error.publish(context);
+      throw err;
+    } finally {
+      this.end.publish(context);
+    }
+  }
+
+  traceCallback(fn, position = -1, context = {}, thisArg, ...args) {
+    if (!this.hasSubscribers) return fn.apply(thisArg, args);
+    const callback = args.at(position);
+    if (typeof callback !== "function") throw new TypeError("callback must be a function");
+    const self = this;
+    args.splice(position, 1, function (err, result) {
+      if (err) {
+        context.error = err;
+        self.error.publish(context);
+      } else {
+        context.result = result;
+      }
+      self.asyncStart.publish(context);
+      try {
+        return callback.apply(this, arguments);
+      } finally {
+        self.asyncEnd.publish(context);
+      }
+    });
+    return this.traceSync(fn, context, thisArg, ...args);
+  }
+}
+
+export function tracingChannel(nameOrChannels) {
+  return new TracingChannel(nameOrChannels);
 }
 
 export default {
@@ -89,4 +172,5 @@ export default {
   subscribe,
   unsubscribe,
   tracingChannel,
+  TracingChannel,
 };

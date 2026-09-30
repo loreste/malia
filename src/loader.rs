@@ -628,6 +628,8 @@ impl JseModuleLoader {
     // Relative or absolute paths.
     if specifier.starts_with("./")
       || specifier.starts_with("../")
+      || specifier == "."
+      || specifier == ".."
       || specifier.starts_with('/')
     {
       let joined = referrer_url.join(specifier).map_err(err)?;
@@ -1160,6 +1162,58 @@ fn is_regex_start(bytes: &[u8], idx: usize) -> bool {
   true
 }
 
+/// Skip a comment or regex literal starting at `idx`, so their contents
+/// (quotes, `exports`, ...) are not scanned as code. Returns false when
+/// `idx` does not start one.
+fn skip_comment_or_regex(bytes: &[u8], idx: &mut usize) -> bool {
+  let len = bytes.len();
+  let i = *idx;
+  if bytes[i] != b'/' {
+    return false;
+  }
+  if i + 1 < len && bytes[i + 1] == b'/' {
+    *idx = i + 2;
+    while *idx < len && bytes[*idx] != b'\n' {
+      *idx += 1;
+    }
+    return true;
+  }
+  if i + 1 < len && bytes[i + 1] == b'*' {
+    *idx = i + 2;
+    while *idx + 1 < len && !(bytes[*idx] == b'*' && bytes[*idx + 1] == b'/') {
+      *idx += 1;
+    }
+    *idx += 2;
+    return true;
+  }
+  if !is_regex_start(bytes, i) {
+    return false;
+  }
+  *idx = i + 1;
+  let mut in_bracket = false;
+  while *idx < len {
+    match bytes[*idx] {
+      b'\\' => {
+        *idx += 2;
+        continue;
+      }
+      b'[' => in_bracket = true,
+      b']' => in_bracket = false,
+      b'/' if !in_bracket => {
+        *idx += 1;
+        while *idx < len && bytes[*idx].is_ascii_alphabetic() {
+          *idx += 1;
+        }
+        return true;
+      }
+      b'\n' => return true,
+      _ => {}
+    }
+    *idx += 1;
+  }
+  true
+}
+
 /// Check if JavaScript source code has static top-level ESM syntax (`import ...`, `export ...`).
 /// If present, the file must be loaded as an ES module rather than wrapped in CommonJS.
 pub fn has_esm_syntax(code: &str) -> bool {
@@ -1168,47 +1222,8 @@ pub fn has_esm_syntax(code: &str) -> bool {
   let mut i = 0;
   while i < len {
     let b = bytes[i];
-    if b == b'/' {
-      if i + 1 < len && bytes[i + 1] == b'/' {
-        i += 2;
-        while i < len && bytes[i] != b'\n' {
-          i += 1;
-        }
-        continue;
-      }
-      if i + 1 < len && bytes[i + 1] == b'*' {
-        i += 2;
-        while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-          i += 1;
-        }
-        i += 2;
-        continue;
-      }
-      if is_regex_start(bytes, i) {
-        i += 1;
-        let mut in_bracket = false;
-        while i < len {
-          if bytes[i] == b'\\' {
-            i += 2;
-            continue;
-          }
-          if bytes[i] == b'[' {
-            in_bracket = true;
-          } else if bytes[i] == b']' {
-            in_bracket = false;
-          } else if bytes[i] == b'/' && !in_bracket {
-            i += 1;
-            while i < len && bytes[i].is_ascii_alphabetic() {
-              i += 1;
-            }
-            break;
-          } else if bytes[i] == b'\n' {
-            break;
-          }
-          i += 1;
-        }
-        continue;
-      }
+    if skip_comment_or_regex(bytes, &mut i) {
+      continue;
     }
     if b == b'\'' || b == b'"' || b == b'`' {
       let quote = b;
@@ -1342,19 +1357,7 @@ fn skip_to_next_property(bytes: &[u8], idx: &mut usize) {
 
   while *idx < len {
     let b = bytes[*idx];
-    if b == b'/' && *idx + 1 < len && bytes[*idx + 1] == b'/' {
-      *idx += 2;
-      while *idx < len && bytes[*idx] != b'\n' {
-        *idx += 1;
-      }
-      continue;
-    }
-    if b == b'/' && *idx + 1 < len && bytes[*idx + 1] == b'*' {
-      *idx += 2;
-      while *idx + 1 < len && !(bytes[*idx] == b'*' && bytes[*idx + 1] == b'/') {
-        *idx += 1;
-      }
-      *idx += 2;
+    if skip_comment_or_regex(bytes, idx) {
       continue;
     }
     if b == b'\'' || b == b'"' || b == b'`' {
@@ -1409,19 +1412,7 @@ fn scan_object_literal(bytes: &[u8], idx: &mut usize, exports: &mut Vec<String>)
   while *idx < len && depth > 0 {
     let b = bytes[*idx];
 
-    if b == b'/' && *idx + 1 < len && bytes[*idx + 1] == b'/' {
-      *idx += 2;
-      while *idx < len && bytes[*idx] != b'\n' {
-        *idx += 1;
-      }
-      continue;
-    }
-    if b == b'/' && *idx + 1 < len && bytes[*idx + 1] == b'*' {
-      *idx += 2;
-      while *idx + 1 < len && !(bytes[*idx] == b'*' && bytes[*idx + 1] == b'/') {
-        *idx += 1;
-      }
-      *idx += 2;
+    if skip_comment_or_regex(bytes, idx) {
       continue;
     }
     if b == b'\'' || b == b'"' || b == b'`' {
@@ -1500,20 +1491,7 @@ pub fn scan_cjs_exports(code: &str) -> Vec<String> {
   while i < len {
     let b = bytes[i];
 
-    if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
-      i += 2;
-      while i < len && bytes[i] != b'\n' {
-        i += 1;
-      }
-      continue;
-    }
-
-    if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
-      i += 2;
-      while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-        i += 1;
-      }
-      i += 2;
+    if skip_comment_or_regex(bytes, &mut i) {
       continue;
     }
 
@@ -1679,11 +1657,13 @@ mod tests {
       // exports.ignoredLine = 99;
       /* exports.ignoredBlock = 100; */
       const str = "exports.ignoredString = 101";
+      const unquoted = v.replace(/\\"/g, '"'); // a quote inside a regex
+      exports.afterRegex = 7;
     "#;
     let exports = scan_cjs_exports(code);
     assert_eq!(
       exports,
-      vec!["foo", "bar", "baz", "qux", "prop1", "prop2", "alpha", "beta", "gamma", "delta", "epsilon"]
+      vec!["foo", "bar", "baz", "qux", "prop1", "prop2", "alpha", "beta", "gamma", "delta", "epsilon", "afterRegex"]
     );
   }
 }

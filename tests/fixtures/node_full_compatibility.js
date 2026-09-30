@@ -95,6 +95,21 @@ assert.strictEqual(dc.hasSubscribers("compat:test"), true);
 ch.publish({ ping: "pong" });
 assert.deepStrictEqual(dcMessage, { ping: "pong" });
 
+// tracingChannel: events fire in order with a shared context.
+const traced = [];
+const tc = dc.tracingChannel("compat:trace");
+tc.subscribe(Object.fromEntries(["start", "end", "asyncStart", "asyncEnd", "error"].map((e) => [e, () => traced.push(e)])));
+assert.strictEqual(tc.traceSync((a) => a * 2, {}, null, 21), 42);
+assert.strictEqual(await tc.tracePromise(async () => "p", {}), "p");
+const failed = {};
+await assert.rejects(tc.tracePromise(async () => { throw new Error("x"); }, failed));
+assert.strictEqual(failed.error.message, "x");
+assert.deepStrictEqual(traced, [
+  "start", "end",
+  "start", "end", "asyncStart", "asyncEnd",
+  "start", "end", "error", "asyncStart", "asyncEnd",
+]);
+
 // 8. punycode
 assert.strictEqual(punycode.toASCII("mañana.com"), "xn--maana-pta.com");
 assert.strictEqual(punycode.toUnicode("xn--maana-pta.com"), "mañana.com");

@@ -12,7 +12,10 @@ Guides for common tasks are in [docs/HOWTO.md](docs/HOWTO.md).
 
 ## Installation
 
-Prebuilt binaries are published for macOS, Linux, and Windows.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the
+archives below and attaches them to a GitHub release. The install scripts
+download from the latest release. No release has been published yet, so
+until one is, build from source.
 
 **macOS / Linux**
 
@@ -76,7 +79,7 @@ malia run app.wasm
 | `malia repl` | Start the REPL |
 | `malia init [--toml]` | Create a project config file |
 | `malia dev` | Run the entry point and restart on file changes |
-| `malia start` | Run the entry point in production mode (uses cluster mode if configured) |
+| `malia start` | Run the entry point; forks cluster workers when `cluster` is configured |
 | `malia test` | Run tests (`node:test`, TAP output) |
 | `malia install` / `add` / `i` | Install npm dependencies (detects npm, pnpm, or yarn lockfiles) |
 | `malia x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
@@ -249,7 +252,7 @@ start = "jse start"
 |---|---|
 | ECMAScript | Whatever V8 150.4 supports, including ES2024 and ES2025 features (`Promise.withResolvers`, `Object.groupBy`, `RegExp.escape`, `Promise.try`, `Float16Array`, Set methods, iterator helpers). See `tests/fixtures/es_features.js` |
 | Import attributes | `with { type: "json" }`. `text` and `bytes` are not supported |
-| TypeScript | `.ts`, `.mts`, `.tsx`, `.jsx` transpiled; `.cts` treated as ESM; `tsconfig.json` `paths` and `baseUrl`; ECMA decorators |
+| TypeScript | `.ts`, `.mts`, `.cts`, `.tsx`, `.jsx` transpiled; `.cts` loads as CommonJS; `tsconfig.json` `paths` and `baseUrl`; ECMA decorators |
 | ESM | Static and dynamic import, top-level await, `import.meta` |
 | CommonJS | `.cjs`, and `.js` in packages without `"type": "module"`; `module`, `exports`, `require`, `__filename`, `__dirname` |
 | npm | Bare specifiers; `exports` conditions `import`/`require`/`node`/`default` and subpath patterns; `imports` (`#…`); `NODE_PATH` |
@@ -306,13 +309,13 @@ with an `AbortSignal`.
 | `cluster` | `isPrimary`, `isWorker`, `fork`, lifecycle events, IPC. Workers bind the same port with `SO_REUSEPORT` |
 | `console` | `log`, `info`, `warn`, `error`, `debug`, `trace`, `assert`, `time`, `timeEnd`, `timeLog`, `count`, `countReset`, `table`, `dir`, `group`, `groupEnd`, `groupCollapsed`, `clear` |
 | `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`, `scrypt`; ciphers `aes-{128,192,256}-{cbc,ctr}`, `aes-{128,256}-gcm`, `chacha20-poly1305`; `KeyObject`, `createPrivateKey`/`createPublicKey`/`createSecretKey` (PEM, DER, JWK; PKCS#1, PKCS#8, SEC1, SPKI), `generateKeyPair(Sync)` for RSA, EC (P-256/384/521), Ed25519; `sign`/`verify`, `createSign`/`createVerify` (RSA PKCS#1 v1.5 and PSS, ECDSA DER or IEEE P1363, Ed25519); `publicEncrypt`/`privateDecrypt` (OAEP, PKCS#1 v1.5); `createECDH` (P-256, P-384, P-521, X25519), `diffieHellman`; `webcrypto` |
-| `diagnostics_channel` | `channel`, `subscribe`, `unsubscribe`, `hasSubscribers`, `tracingChannel` |
+| `diagnostics_channel` | `channel`, `subscribe`, `unsubscribe`, `hasSubscribers`, `tracingChannel` (`traceSync`, `tracePromise`, `traceCallback`) |
 | `dgram` | UDP sockets: `createSocket`, `bind`, `send`, `close`, message events, auto-bind on send |
 | `dns`, `dns/promises` | `lookup`, `lookupService`, `resolve4`, `resolve6`, `resolveTxt`, `resolveSrv`, `resolveMx`, `resolveNs`, `resolveCname`, `resolvePtr`, `reverse` |
 | `domain` | `create`, `Domain` |
 | `events` | `EventEmitter`, `once`, `on` (async iterator), `getEventListeners`, `defaultMaxListeners` |
 | `fs`, `fs/promises` | Sync, callback, and promise APIs with Node's error shape (`code`, `errno`, `syscall`, `path`): read/write with `flag`, `mode`, and encodings, `stat` (`throwIfNoEntry`), `readdir` (`recursive`, `withFileTypes`), `mkdir`, `rm`, `cp`, `copyFile` (`COPYFILE_EXCL`), `rename`, `link`, `symlink`, `utimes`, `opendir`, file descriptors, `FileHandle`, streams, `watch` (native inotify/kqueue/FSEvents via notify, falls back to polling), `watchFile` |
-| `http`, `https` | `createServer`, `request`, `get`, `IncomingMessage`, `ServerResponse`. Shares the hyper engine with `jse.serve` |
+| `http`, `https` | `createServer`, `request`, `get`, `IncomingMessage`, `ServerResponse`, `Agent`, `globalAgent`, `STATUS_CODES`, `validateHeaderName`/`validateHeaderValue`. The server shares the hyper engine with `jse.serve`; client responses are `Readable` streams |
 | `http2` | Server and client; ALPN `h2` and cleartext `h2c` with prior knowledge |
 | `inspector` | `Session` (connects to the running V8 inspector over WebSocket), `open`, `close`, `url`. See [Debugging](#debugging) |
 | `module` | `createRequire`, `builtinModules`, `isBuiltin`, `Module` |
@@ -336,21 +339,20 @@ with an `AbortSignal`.
 
 ## Database drivers
 
-Database clients are ordinary npm packages. The runtime provides the
-sockets, TLS, crypto, and DNS they depend on:
+Database clients are ordinary npm packages. `tests/db/drivers.mjs` runs each
+one below against a live server; CI's `databases` job starts the servers as
+service containers and requires all of them to pass.
 
-| Database | Packages | Runtime features used |
+| Database | Packages | Exercised |
 |---|---|---|
-| PostgreSQL | `pg`, `postgres`, `drizzle-orm`, `knex` | `node:net`/`node:tls`, SCRAM-SHA-256 and MD5 auth |
-| MySQL / MariaDB | `mysql2` | `caching_sha2_password`, `mysql_native_password` |
-| Redis / Valkey | `ioredis`, `redis` | TCP/TLS sockets, `setNoDelay`, `setKeepAlive` |
-| MongoDB | `mongodb`, `mongoose` | PBKDF2 for SCRAM-SHA-1/256, `resolveSrv`/`resolveTxt` for `mongodb+srv://`, BigInt Buffer methods |
-| Cassandra / ScyllaDB | `cassandra-driver` | Big-endian Buffer methods, `randomUUID` |
-| DynamoDB | `@aws-sdk/client-dynamodb` | HMAC-SHA256 (SigV4), HTTPS |
-| Elasticsearch / OpenSearch | `@elastic/elasticsearch` | HTTP keep-alive |
+| PostgreSQL 16 | `pg`, `postgres`, `knex`, `drizzle-orm` | SCRAM-SHA-256 auth, parameters, `jsonb`, `bytea`, schema builder, ORM queries |
+| MySQL 8.4 | `mysql2` | `caching_sha2_password` auth, text and binary (prepared) protocol, `BLOB` |
+| Redis 7 | `ioredis`, `redis` | Commands, pipelines, pub/sub, hashes |
+| MongoDB 7 | `mongodb`, `mongoose` | SCRAM-SHA-256 auth, `insertMany`/`find` with BigInt, models |
+| DynamoDB Local | `@aws-sdk/client-dynamodb` | SigV4 signing, create/put/get/delete |
+| Elasticsearch 8 | `@elastic/elasticsearch` | undici transport, bulk indexing, search |
+| Cassandra 5 | `cassandra-driver` | Keyspaces, prepared statements, UUIDs |
 | SQLite | `node:sqlite`, `jse.sql` | Built in, no native addon required |
-
-`docker compose up --build` starts the example app with MongoDB and Redis.
 
 ## Frameworks
 
@@ -387,7 +389,8 @@ See the [Dockerfile](Dockerfile) in the repository root and
 - Windows: `node:cluster` workers cannot share a port (it relies on
   `SO_REUSEPORT`), and `chmod` only toggles the read-only attribute.
 - HTTP server request bodies are read fully into memory. The `node:http`
-  client sends buffered bodies with `Content-Length` and `Connection: close`.
+  client sends buffered bodies with `Content-Length` and `Connection: close`,
+  and `http.Agent` does not pool connections.
 - Small Buffers share an 8 KB slab, so `buf.buffer.byteLength` can be larger
   than `buf.length` (same as Node).
 - Standalone executables are not type-checked; TypeScript is transpiled only.
@@ -401,7 +404,16 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 Integration tests are in `tests/integration.rs`, with fixtures in
-`tests/fixtures/`.
+`tests/fixtures/`. `tests/cli.rs` runs the CLI commands and flags in scratch
+directories. The database driver suite needs live servers:
+
+```sh
+npm ci --prefix tests/db
+JSE_PG_URL=postgres://postgres:secret@127.0.0.1:5432/postgres \
+  ./target/debug/jse run --allow-all tests/db/drivers.mjs   # set JSE_* per server
+```
+
+The variables for each server are listed at the top of `tests/db/drivers.mjs`.
 
 Release builds use `opt-level = 3`, fat LTO, `codegen-units = 1`, and
 stripped symbols. `panic = "unwind"` is kept because V8 and `deno_core` use
