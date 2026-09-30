@@ -263,7 +263,7 @@ start = "jse start"
 | `jse.serve(options, handler)` | Deno-style HTTP server. Handler returns a `Response` or a promise of one. Supports keep-alive, whole and chunked bodies, TLS |
 | `WebSocket`, `jse.upgradeWebSocket(req)` | WebSocket client and server upgrade. `binaryType` may be `nodebuffer`, `arraybuffer`, or `blob` |
 | `chan(capacity?)` | Channels with `send`/`recv`/`close`/`for await`, backed by tokio mpsc. Bounded channels apply backpressure |
-| `Worker`, `WorkerPool` | One OS thread and V8 isolate per worker. Messages use V8 structured clone. `new WorkerPool(path, { size })`, `pool.run(arg)`, `pool.map(items)`, `pool.close()` |
+| `Worker`, `WorkerPool` | One OS thread and V8 isolate per worker. Messages use V8 structured clone. `new WorkerPool(path, { size })`, `pool.run(arg)`, `pool.map(items)`, `pool.stream(arg)` (async iterable of multiple replies), `pool.close()` |
 | `structuredClone` | V8 value serializer |
 | `URL`, `URLSearchParams` | `URL` via the `url` crate; `URLSearchParams` in JS |
 | `jse.Router` | Router with `:param` and wildcard routes; `router.static()` serves files with ETag and 304 handling |
@@ -292,13 +292,15 @@ ECDSA, Ed25519), `encrypt`/`decrypt` (AES-GCM, AES-CBC, AES-CTR, RSA-OAEP),
 
 `setTimeout`/`setInterval` return `Timeout` objects (`ref`, `unref`,
 `hasRef`, `refresh`); `setImmediate` runs after I/O and before later timers.
+`sleep(ms)` returns a promise; `sleep(ms, { signal })` can be cancelled
+with an `AbortSignal`.
 
 ## Node builtins
 
 | Module | Implemented |
 |---|---|
 | `assert`, `assert/strict` | `ok`, `equal`, `strictEqual`, `deepEqual`, `deepStrictEqual` (Map/Set/Date/RegExp/typed array aware), `match`, `doesNotMatch`, `ifError`, `throws`/`rejects` with class, RegExp, object, or function validation, `strict` |
-| `async_hooks` | `AsyncLocalStorage` (context is kept across `await`) |
+| `async_hooks` | `AsyncLocalStorage` (context propagates across `await` via Promise.then patching), `AsyncResource` with `runInAsyncScope` and `bind` |
 | `buffer` | `Buffer` backed by `Uint8Array`, allocations of 4 KB or less come from a shared 8 KB pool (as in Node). Encodings: utf8, base64, hex, latin1, utf16le, ascii |
 | `child_process` | `spawn`, `exec`, `execFile`, their `*Sync` forms, `fork` with IPC |
 | `cluster` | `isPrimary`, `isWorker`, `fork`, lifecycle events, IPC. Workers bind the same port with `SO_REUSEPORT` |
@@ -419,7 +421,8 @@ src/ts.rs         deno_ast (SWC) transpile and disk cache
 src/cache.rs      on-disk cache helpers
 src/config.rs     project config loading
 src/ops.rs        ops: timers, fs, process, channels, workers, text, crypto, url, fetch, HTTP
-src/ops_extra.rs  net, TLS client, zlib, dns, os, hmac, child stdio (included from ops.rs)
+src/ops_extra.rs  net, TLS client, zlib, dns, os, hmac, udp, fs.watch, child stdio (included from ops.rs)
+src/crypto.rs     asymmetric keys, ECDH/X25519, signatures, RSA, AES-CBC/CTR
 src/serve.rs      hyper server for jse.serve and node:http
 src/inspector_server.rs  V8 inspector WebSocket server (--inspect / --inspect-brk)
 src/logger.rs     structured logger and HTTP access log
