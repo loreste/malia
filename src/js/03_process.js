@@ -9,15 +9,26 @@
   // until a runtime actually touches them.
   const envTarget = {};
   let envInitialized = false;
+  // Windows env keys are case-insensitive (`Path` and `PATH` are the same).
+  let envIsWin = null;
+  function envKey(target, prop) {
+    if (typeof prop !== "string") return prop;
+    if (envIsWin === null) envIsWin = ops.op_platform() === "win32";
+    if (!envIsWin) return prop;
+    const lower = prop.toLowerCase();
+    for (const key of Object.keys(target)) {
+      if (key.toLowerCase() === lower) return key;
+    }
+    return prop;
+  }
   function ensureEnvInitialized() {
     if (!envInitialized) {
       try {
         const vars = ops.op_env();
         if (vars && vars.length > 0) {
           for (const [k, v] of vars) {
-            if (!(k in envTarget)) {
-              envTarget[k] = v;
-            }
+            const key = envKey(envTarget, k);
+            if (!(key in envTarget)) envTarget[key] = v;
           }
           envInitialized = true;
         }
@@ -29,16 +40,16 @@
     get(target, prop) {
       if (typeof prop === "symbol") return target[prop];
       ensureEnvInitialized();
-      return target[prop];
+      return target[envKey(target, prop)];
     },
     set(target, prop, value) {
       ensureEnvInitialized();
-      target[prop] = String(value);
+      target[envKey(target, prop)] = String(value);
       return true;
     },
     has(target, prop) {
       ensureEnvInitialized();
-      return prop in target;
+      return envKey(target, prop) in target;
     },
     ownKeys(target) {
       ensureEnvInitialized();
@@ -46,11 +57,11 @@
     },
     getOwnPropertyDescriptor(target, prop) {
       ensureEnvInitialized();
-      return Reflect.getOwnPropertyDescriptor(target, prop);
+      return Reflect.getOwnPropertyDescriptor(target, envKey(target, prop));
     },
     deleteProperty(target, prop) {
       ensureEnvInitialized();
-      delete target[prop];
+      delete target[envKey(target, prop)];
       return true;
     },
   });

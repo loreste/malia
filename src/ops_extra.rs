@@ -639,9 +639,7 @@ enum NetReader {
   #[cfg(unix)]
   Unix(tokio::net::unix::OwnedReadHalf),
   #[cfg(windows)]
-  PipeServer(tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeServer>),
-  #[cfg(windows)]
-  PipeClient(tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>),
+  Pipe(PipeIo),
 }
 
 enum NetWriter {
@@ -650,9 +648,45 @@ enum NetWriter {
   #[cfg(unix)]
   Unix(tokio::net::unix::OwnedWriteHalf),
   #[cfg(windows)]
-  PipeServer(tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeServer>),
-  #[cfg(windows)]
-  PipeClient(tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>),
+  Pipe(PipeIo),
+}
+
+/// One named-pipe instance shared by the read and write halves.
+///
+/// `tokio::io::split` keeps the handle alive until both halves drop, and
+/// `AsyncWrite::poll_shutdown` only flushes. The peer's `ReadFile` then
+/// blocks forever. Closing the last `Arc` is what delivers EOF (unread
+/// bytes stay readable; the next read is `ERROR_BROKEN_PIPE`).
+#[cfg(windows)]
+#[derive(Clone)]
+struct PipeIo {
+  pipe: WinPipe,
+  close: Arc<std::sync::atomic::AtomicBool>,
+  wake: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+enum WinPipe {
+  Server(Arc<tokio::net::windows::named_pipe::NamedPipeServer>),
+  Client(Arc<tokio::net::windows::named_pipe::NamedPipeClient>),
+}
+
+#[cfg(windows)]
+fn pipe_pair(pipe: WinPipe) -> (NetReader, NetWriter) {
+  let io = PipeIo {
+    pipe,
+    close: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    wake: Arc::new(tokio::sync::Notify::new()),
+  };
+  (NetReader::Pipe(io.clone()), NetWriter::Pipe(io))
+}
+
+#[cfg(windows)]
+fn is_pipe_eof(err: &std::io::Error) -> bool {
+  // 109 ERROR_BROKEN_PIPE, 232 ERROR_NO_DATA, 233 ERROR_PIPE_NOT_CONNECTED.
+  matches!(err.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset)
+    || matches!(err.raw_os_error(), Some(109) | Some(232) | Some(233))
 }
 
 struct Conn {
@@ -877,8 +911,9 @@ pub async fn op_net_listen(
           break;
         }
         let Ok(next) = ServerOptions::new().create(&pipe_name) else { break };
-        let (reader, writer) = tokio::io::split(std::mem::replace(&mut server, next));
-        let info = insert_conn_unix(&task_inner, NetReader::PipeServer(reader), NetWriter::PipeServer(writer), &pipe_name);
+        let connected = std::mem::replace(&mut server, next);
+        let (reader, writer) = pipe_pair(WinPipe::Server(Arc::new(connected)));
+        let info = insert_conn_unix(&task_inner, reader, writer, &pipe_name);
         if acc_tx.send(info).is_err() {
           break;
         }
@@ -1004,21 +1039,27 @@ pub async fn op_net_connect(
     use tokio::net::windows::named_pipe::ClientOptions;
     crate::permissions::check_read(&host)?;
     crate::permissions::check_write(&host)?;
-    // ERROR_PIPE_BUSY (231): every instance is taken; the server creates
-    // another as soon as it hands one off.
+    // The listen task has to reach ConnectNamedPipe before open() succeeds.
+    // Until then Windows returns ERROR_PIPE_BUSY (231). A bounded retry
+    // yields so that task can run; giving up beats hanging the test runner.
+    tokio::task::yield_now().await;
+    let mut tries = 0u32;
     let client = loop {
       match ClientOptions::new().open(&host) {
         Ok(client) => break client,
-        Err(e) if e.raw_os_error() == Some(231) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+        Err(e) if e.raw_os_error() == Some(231) && tries < 250 => {
+          tries += 1;
+          tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
         Err(e) => return Err(io_box("connect", &host, e)),
       }
     };
-    let (reader, writer) = tokio::io::split(client);
+    let (reader, writer) = pipe_pair(WinPipe::Client(Arc::new(client)));
     let inner = {
       let mut st = state.borrow_mut();
       net_inner(&mut st)
     };
-    return Ok(insert_conn_unix(&inner, NetReader::PipeClient(reader), NetWriter::PipeClient(writer), &host));
+    return Ok(insert_conn_unix(&inner, reader, writer, &host));
   }
 
   crate::permissions::check_net(&host)?;
@@ -1152,12 +1193,90 @@ async fn read_some(reader: &mut NetReader) -> std::io::Result<Vec<u8>> {
     #[cfg(unix)]
     NetReader::Unix(r) => r.read(&mut buf).await?,
     #[cfg(windows)]
-    NetReader::PipeServer(r) => r.read(&mut buf).await?,
-    #[cfg(windows)]
-    NetReader::PipeClient(r) => r.read(&mut buf).await?,
+    NetReader::Pipe(io) => return read_win_pipe(io).await,
   };
   buf.truncate(n);
   Ok(buf)
+}
+
+#[cfg(windows)]
+async fn read_win_pipe(io: &PipeIo) -> std::io::Result<Vec<u8>> {
+  let mut buf = vec![0u8; 16 * 1024];
+  loop {
+    // Subscribe before checking the flag so a shutdown between the check
+    // and the wait cannot be missed (`notify_one` stores a permit).
+    let notified = io.wake.notified();
+    if io.close.load(Ordering::Acquire) {
+      return Ok(Vec::new());
+    }
+    tokio::select! {
+      biased;
+      _ = notified => continue,
+      ready = pipe_readable(&io.pipe) => {
+        ready?;
+        match pipe_try_read(&io.pipe, &mut buf) {
+          Ok(0) => return Ok(Vec::new()),
+          Ok(n) => {
+            buf.truncate(n);
+            return Ok(buf);
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+          Err(e) if is_pipe_eof(&e) => return Ok(Vec::new()),
+          Err(e) => return Err(e),
+        }
+      }
+    }
+  }
+}
+
+#[cfg(windows)]
+async fn pipe_readable(pipe: &WinPipe) -> std::io::Result<()> {
+  match pipe {
+    WinPipe::Server(pipe) => pipe.readable().await,
+    WinPipe::Client(pipe) => pipe.readable().await,
+  }
+}
+
+#[cfg(windows)]
+fn pipe_try_read(pipe: &WinPipe, buf: &mut [u8]) -> std::io::Result<usize> {
+  match pipe {
+    WinPipe::Server(pipe) => pipe.try_read(buf),
+    WinPipe::Client(pipe) => pipe.try_read(buf),
+  }
+}
+
+#[cfg(windows)]
+async fn write_win_pipe(io: &PipeIo, data: &[u8]) -> std::io::Result<()> {
+  let mut written = 0;
+  while written < data.len() {
+    if io.close.load(Ordering::Acquire) {
+      return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe closed"));
+    }
+    pipe_writable(&io.pipe).await?;
+    match pipe_try_write(&io.pipe, &data[written..]) {
+      Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "pipe write")),
+      Ok(n) => written += n,
+      Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+      Err(e) => return Err(e),
+    }
+  }
+  Ok(())
+}
+
+#[cfg(windows)]
+async fn pipe_writable(pipe: &WinPipe) -> std::io::Result<()> {
+  match pipe {
+    WinPipe::Server(pipe) => pipe.writable().await,
+    WinPipe::Client(pipe) => pipe.writable().await,
+  }
+}
+
+#[cfg(windows)]
+fn pipe_try_write(pipe: &WinPipe, buf: &[u8]) -> std::io::Result<usize> {
+  match pipe {
+    WinPipe::Server(pipe) => pipe.try_write(buf),
+    WinPipe::Client(pipe) => pipe.try_write(buf),
+  }
 }
 
 #[op2]
@@ -1225,9 +1344,7 @@ pub async fn op_net_write(
     #[cfg(unix)]
     NetWriter::Unix(w) => w.write_all(&data).await,
     #[cfg(windows)]
-    NetWriter::PipeServer(w) => w.write_all(&data).await,
-    #[cfg(windows)]
-    NetWriter::PipeClient(w) => w.write_all(&data).await,
+    NetWriter::Pipe(io) => write_win_pipe(io, &data).await,
   };
   {
     let st = state.borrow();
@@ -1252,7 +1369,21 @@ pub async fn op_net_shutdown(state: Rc<RefCell<OpState>>, id: u32) -> Result<(),
       return Ok(());
     };
     let mut guard = inner.lock().unwrap();
-    guard.conns.get_mut(&id).and_then(|conn| conn.writer.take())
+    let Some(conn) = guard.conns.get_mut(&id) else {
+      return Ok(());
+    };
+    let writer = conn.writer.take();
+    #[cfg(windows)]
+    if let Some(NetWriter::Pipe(io)) = &writer {
+      // Wake an in-flight read so it drops its clone. Together with the
+      // writer clone (and an idle reader, dropped here) that closes the
+      // instance and the peer observes EOF.
+      io.close.store(true, Ordering::Release);
+      io.wake.notify_one();
+      conn.closed = true;
+      conn.reader.take();
+    }
+    writer
   };
   if let Some(mut writer) = writer {
     let _ = match &mut writer {
@@ -1261,9 +1392,7 @@ pub async fn op_net_shutdown(state: Rc<RefCell<OpState>>, id: u32) -> Result<(),
       #[cfg(unix)]
       NetWriter::Unix(w) => w.shutdown().await,
       #[cfg(windows)]
-      NetWriter::PipeServer(w) => w.shutdown().await,
-      #[cfg(windows)]
-      NetWriter::PipeClient(w) => w.shutdown().await,
+      NetWriter::Pipe(_) => Ok(()),
     };
   }
   Ok(())
@@ -1275,6 +1404,22 @@ pub fn op_net_close(state: &mut OpState, id: u32) {
   let mut guard = inner.lock().unwrap();
   if let Some(conn) = guard.conns.get_mut(&id) {
     conn.closed = true;
+    #[cfg(windows)]
+    {
+      // The in-flight read holds the other clone and is blocked in
+      // `readable()`. Wake it so the last Arc can drop and the peer
+      // observes EOF.
+      let wake = |io: &PipeIo| {
+        io.close.store(true, Ordering::Release);
+        io.wake.notify_one();
+      };
+      if let Some(NetReader::Pipe(io)) = &conn.reader {
+        wake(io);
+      }
+      if let Some(NetWriter::Pipe(io)) = &conn.writer {
+        wake(io);
+      }
+    }
     conn.reader.take();
     conn.writer.take();
   }
