@@ -990,57 +990,71 @@ pub fn op_text_decode<'a>(
 // crypto (node:crypto backing)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+/// Hash implementation using aws-lc-rs (assembly-optimized, same backend as
+/// OpenSSL/BoringSSL) for SHA and SHA-2, falling back to pure-Rust crates
+/// for MD5 and SHA-512/256 which aws-lc-rs doesn't expose via digest.
+/// aws_lc_rs::digest::Context is not Clone, so copy() re-hashes from a
+/// buffered transcript. This is the same tradeoff Node makes for uncommon
+/// copy() vs fast update()/digest().
 enum Hasher {
-  Sha224(sha2::Sha224),
-  Sha256(sha2::Sha256),
-  Sha384(sha2::Sha384),
-  Sha512(sha2::Sha512),
+  AwsLc {
+    algo: &'static aws_lc_rs::digest::Algorithm,
+    ctx: aws_lc_rs::digest::Context,
+    /// Kept for copy(): re-create Context from scratch.
+    transcript: Vec<u8>,
+  },
   Sha512_256(sha2::Sha512_256),
-  Sha1(sha1::Sha1),
   Md5(md5::Context),
+}
+
+impl Clone for Hasher {
+  fn clone(&self) -> Self {
+    match self {
+      Self::AwsLc { algo, transcript, .. } => {
+        let mut ctx = aws_lc_rs::digest::Context::new(algo);
+        ctx.update(transcript);
+        Self::AwsLc { algo, ctx, transcript: transcript.clone() }
+      }
+      Self::Sha512_256(h) => Self::Sha512_256(h.clone()),
+      Self::Md5(h) => Self::Md5(h.clone()),
+    }
+  }
 }
 
 impl Hasher {
   fn new(algo: &str) -> Result<Self, JsErrorBox> {
-    use sha2::Digest;
-    // Accept OpenSSL-style aliases: "SHA-256", "RSA-SHA256", "sha512-256".
     let name = algo.to_ascii_lowercase();
     let name = name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "");
     Ok(match name.as_str() {
-      "sha224" => Self::Sha224(sha2::Sha224::new()),
-      "sha256" => Self::Sha256(sha2::Sha256::new()),
-      "sha384" => Self::Sha384(sha2::Sha384::new()),
-      "sha512" => Self::Sha512(sha2::Sha512::new()),
-      "sha512256" => Self::Sha512_256(sha2::Sha512_256::new()),
-      "sha1" => Self::Sha1(sha1::Sha1::new()),
+      "sha1" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY), transcript: Vec::new() },
+      "sha224" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA224, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA224), transcript: Vec::new() },
+      "sha256" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA256, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA256), transcript: Vec::new() },
+      "sha384" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA384, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA384), transcript: Vec::new() },
+      "sha512" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA512, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA512), transcript: Vec::new() },
+      "sha512256" => {
+        use sha2::Digest;
+        Self::Sha512_256(sha2::Sha512_256::new())
+      }
       "md5" => Self::Md5(md5::Context::new()),
       _ => return Err(JsErrorBox::generic("Digest method not supported")),
     })
   }
 
   fn update(&mut self, data: &[u8]) {
-    use sha2::Digest;
     match self {
-      Self::Sha224(h) => h.update(data),
-      Self::Sha256(h) => h.update(data),
-      Self::Sha384(h) => h.update(data),
-      Self::Sha512(h) => h.update(data),
-      Self::Sha512_256(h) => h.update(data),
-      Self::Sha1(h) => h.update(data),
+      Self::AwsLc { ctx, transcript, .. } => {
+        ctx.update(data);
+        transcript.extend_from_slice(data);
+      }
+      Self::Sha512_256(h) => { use sha2::Digest; h.update(data); }
       Self::Md5(h) => h.consume(data),
     }
   }
 
   fn finalize(self) -> Vec<u8> {
-    use sha2::Digest;
     match self {
-      Self::Sha224(h) => h.finalize().to_vec(),
-      Self::Sha256(h) => h.finalize().to_vec(),
-      Self::Sha384(h) => h.finalize().to_vec(),
-      Self::Sha512(h) => h.finalize().to_vec(),
-      Self::Sha512_256(h) => h.finalize().to_vec(),
-      Self::Sha1(h) => h.finalize().to_vec(),
+      Self::AwsLc { ctx, .. } => ctx.finish().as_ref().to_vec(),
+      Self::Sha512_256(h) => { use sha2::Digest; h.finalize().to_vec() }
       Self::Md5(h) => h.compute().to_vec(),
     }
   }
@@ -1108,6 +1122,29 @@ pub fn op_crypto_hash_digest(state: &mut OpState, id: u32) -> Result<Vec<u8>, Js
     Some(hasher) => Ok(hasher.finalize()),
     None => Err(JsErrorBox::generic("hash already digested or unknown")),
   }
+}
+
+/// One-shot hash: no table, no transcript, no allocation beyond the result.
+#[op2]
+#[buffer]
+pub fn op_crypto_hash_oneshot(#[string] algo: String, #[buffer] data: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
+  let name = algo.to_ascii_lowercase();
+  let name = name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "");
+  let digest_algo: Option<&'static aws_lc_rs::digest::Algorithm> = match name.as_str() {
+    "sha1" => Some(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY),
+    "sha224" => Some(&aws_lc_rs::digest::SHA224),
+    "sha256" => Some(&aws_lc_rs::digest::SHA256),
+    "sha384" => Some(&aws_lc_rs::digest::SHA384),
+    "sha512" => Some(&aws_lc_rs::digest::SHA512),
+    _ => None,
+  };
+  if let Some(algo) = digest_algo {
+    return Ok(aws_lc_rs::digest::digest(algo, data).as_ref().to_vec());
+  }
+  // Fallback for md5, sha512-256
+  let mut hasher = Hasher::new(&name)?;
+  hasher.update(data);
+  Ok(hasher.finalize())
 }
 
 #[op2]
@@ -2312,6 +2349,7 @@ deno_core::extension!(
     op_crypto_hash_update,
     op_crypto_hash_digest,
     op_crypto_hash_copy,
+    op_crypto_hash_oneshot,
     op_crypto_random_bytes,
     op_crypto_timing_safe_equal,
     op_url_parse,

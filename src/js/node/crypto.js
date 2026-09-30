@@ -22,34 +22,69 @@ function inputBytes(data, inputEncoding, name = "data") {
 
 class Hash {
   #id;
+  #algo;
   #digested = false;
+  #singleData = undefined; // fast-path: one update, no copy
 
   constructor(algorithm, _options, id) {
-    this.#id = id ?? ops.op_crypto_hash_new(String(algorithm));
+    this.#algo = algorithm ? String(algorithm) : null;
+    this.#id = id ?? -1; // defer native alloc until needed
   }
 
   update(data, inputEncoding) {
     if (this.#digested) throw hashFinalized();
-    ops.op_crypto_hash_update(this.#id, inputBytes(data, inputEncoding));
+    const bytes = inputBytes(data, inputEncoding);
+    if (this.#id === -1 && this.#singleData === undefined) {
+      // First update: stash data for potential one-shot digest.
+      this.#singleData = bytes;
+    } else {
+      // Multiple updates or copied hash: fall back to streaming.
+      if (this.#id === -1) {
+        this.#id = ops.op_crypto_hash_new(this.#algo);
+        if (this.#singleData !== undefined) {
+          ops.op_crypto_hash_update(this.#id, this.#singleData);
+          this.#singleData = undefined;
+        }
+      }
+      ops.op_crypto_hash_update(this.#id, bytes);
+    }
     return this;
   }
 
   digest(encoding) {
     if (this.#digested) throw hashFinalized();
     this.#digested = true;
-    const out = Buffer.from(ops.op_crypto_hash_digest(this.#id));
+    let out;
+    if (this.#id === -1 && this.#singleData !== undefined) {
+      // One-shot fast path: single op call instead of 3.
+      out = Buffer.from(ops.op_crypto_hash_oneshot(this.#algo, this.#singleData));
+    } else {
+      if (this.#id === -1) {
+        this.#id = ops.op_crypto_hash_new(this.#algo);
+      }
+      out = Buffer.from(ops.op_crypto_hash_digest(this.#id));
+    }
     return encoding === undefined || encoding === "buffer" ? out : out.toString(encoding);
   }
 
   copy() {
     if (this.#digested) throw hashFinalized();
+    // Force streaming mode for both source and copy.
+    if (this.#id === -1) {
+      this.#id = ops.op_crypto_hash_new(this.#algo);
+      if (this.#singleData !== undefined) {
+        ops.op_crypto_hash_update(this.#id, this.#singleData);
+        this.#singleData = undefined;
+      }
+    }
     return new Hash(undefined, undefined, ops.op_crypto_hash_copy(this.#id));
   }
 }
 
 // crypto.hash(algorithm, data, outputEncoding = "hex"): one-shot digest.
 function hash(algorithm, data, outputEncoding = "hex") {
-  return new Hash(algorithm).update(data).digest(outputEncoding);
+  const out = Buffer.from(ops.op_crypto_hash_oneshot(String(algorithm), inputBytes(data, undefined)));
+  return outputEncoding === undefined || outputEncoding === "buffer" ? out : out.toString(outputEncoding);
 }
 
 // Uniform integer in [min, max) by rejection sampling (no modulo bias).
