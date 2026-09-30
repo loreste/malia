@@ -6,11 +6,12 @@
 
 ((globalThis) => {
   const ops = Deno.core.ops;
+  const sharedDecoder = new TextDecoder();
+  const sharedEncoder = new TextEncoder();
 
   // Decode a batch blob from op_serve_pull (see src/serve.rs pack_requests).
   function unpackServeRequests(blob) {
     const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
-    const decoder = new TextDecoder();
     const requests = [];
     let pos = 0;
     const count = view.getUint32(pos, true);
@@ -20,11 +21,11 @@
       pos += 4;
       const methodLen = view.getUint16(pos, true);
       pos += 2;
-      const method = decoder.decode(blob.subarray(pos, pos + methodLen));
+      const method = sharedDecoder.decode(blob.subarray(pos, pos + methodLen));
       pos += methodLen;
       const urlLen = view.getUint16(pos, true);
       pos += 2;
-      const url = decoder.decode(blob.subarray(pos, pos + urlLen));
+      const url = sharedDecoder.decode(blob.subarray(pos, pos + urlLen));
       pos += urlLen;
       const headersLen = view.getUint32(pos, true);
       pos += 4;
@@ -32,7 +33,7 @@
       pos += headersLen;
       const headers = [];
       if (headersLen > 0) {
-        for (const line of decoder.decode(headersBlob).split("\r\n")) {
+        for (const line of sharedDecoder.decode(headersBlob).split("\r\n")) {
           const sep = line.indexOf(": ");
           headers.push([line.slice(0, sep), line.slice(sep + 2)]);
         }
@@ -51,7 +52,7 @@
 
   function toBytes(chunk) {
     if (chunk instanceof Uint8Array) return chunk;
-    if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+    if (typeof chunk === "string") return sharedEncoder.encode(chunk);
     if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
     if (ArrayBuffer.isView(chunk)) {
       return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
