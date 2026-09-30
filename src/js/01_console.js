@@ -5,6 +5,7 @@
   const ops = Deno.core.ops;
   const print = (msg, isErr) => ops.op_print(msg + "\n", isErr);
   const timers = new Map();
+  const counters = new Map();
 
   const console = {
     log(...args) {
@@ -60,6 +61,82 @@
       if (start !== undefined) {
         timers.delete(label);
         print(label + ": " + (ops.op_now() - start).toFixed(3) + "ms", false);
+      }
+    },
+    timeLog(label = "default", ...args) {
+      const start = timers.get(label);
+      if (start !== undefined) {
+        const elapsed = (ops.op_now() - start).toFixed(3);
+        print(label + ": " + elapsed + "ms" + (args.length ? " " + __jse.format(...args) : ""), false);
+      }
+    },
+    count(label = "default") {
+      const c = (counters.get(label) || 0) + 1;
+      counters.set(label, c);
+      print(label + ": " + c, false);
+    },
+    countReset(label = "default") {
+      counters.delete(label);
+    },
+    table(data, columns) {
+      if (data === null || data === undefined || typeof data !== "object") {
+        print(String(data), false);
+        return;
+      }
+      // Collect rows
+      const rows = [];
+      const isArray = Array.isArray(data);
+      const keys = isArray ? Object.keys(data) : Object.keys(data);
+      const colSet = new Set();
+      for (const key of keys) {
+        const val = data[key];
+        if (val !== null && typeof val === "object" && !Array.isArray(val)) {
+          for (const k of Object.keys(val)) colSet.add(k);
+        }
+      }
+      const cols = columns || (colSet.size > 0 ? [...colSet] : null);
+      if (cols) {
+        // Object rows
+        const header = ["(index)", ...cols];
+        const rowData = [];
+        for (const key of keys) {
+          const val = data[key];
+          const row = [String(key)];
+          for (const col of cols) {
+            const cell = val !== null && typeof val === "object" ? val[col] : undefined;
+            row.push(cell === undefined ? "" : String(cell));
+          }
+          rowData.push(row);
+        }
+        // Calculate column widths
+        const widths = header.map((h, i) => {
+          let max = h.length;
+          for (const row of rowData) if (row[i] && row[i].length > max) max = row[i].length;
+          return max;
+        });
+        const pad = (s, w) => s + " ".repeat(Math.max(0, w - s.length));
+        const sep = widths.map(w => "-".repeat(w + 2)).join("+");
+        print(widths.map((w, i) => " " + pad(header[i], w) + " ").join("|"), false);
+        print(sep, false);
+        for (const row of rowData) {
+          print(widths.map((w, i) => " " + pad(row[i] || "", w) + " ").join("|"), false);
+        }
+      } else {
+        // Simple key-value
+        const header = ["(index)", "Values"];
+        const rowData = keys.map(k => [String(k), String(data[k])]);
+        const widths = header.map((h, i) => {
+          let max = h.length;
+          for (const row of rowData) if (row[i] && row[i].length > max) max = row[i].length;
+          return max;
+        });
+        const pad = (s, w) => s + " ".repeat(Math.max(0, w - s.length));
+        const sep = widths.map(w => "-".repeat(w + 2)).join("+");
+        print(widths.map((w, i) => " " + pad(header[i], w) + " ").join("|"), false);
+        print(sep, false);
+        for (const row of rowData) {
+          print(widths.map((w, i) => " " + pad(row[i] || "", w) + " ").join("|"), false);
+        }
       }
     },
     dir(value, options) {

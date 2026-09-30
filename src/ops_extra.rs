@@ -287,7 +287,7 @@ fn append_bytes_at(path: &str, data: &[u8]) -> Result<(), JsErrorBox> {
     .append(true)
     .open(path)
     .map_err(|e| io_box("open", path, e))?;
-  file.write_all(data).map_err(|e| io_box("open", path, e))
+  file.write_all(data).map_err(|e| io_box("write", path, e))
 }
 
 #[op2(fast)]
@@ -1020,7 +1020,7 @@ pub async fn op_net_connect(
   port: u32,
 ) -> Result<ConnInfo, JsErrorBox> {
   #[cfg(unix)]
-  if port == 0 || host.starts_with('/') || host.starts_with('.') {
+  if port == 0 && (host.starts_with('/') || host.starts_with('.')) {
     crate::permissions::check_read(&host)?;
     crate::permissions::check_write(&host)?;
     let stream = tokio::net::UnixStream::connect(&host)
@@ -1402,13 +1402,9 @@ pub async fn op_net_shutdown(state: Rc<RefCell<OpState>>, id: u32) -> Result<(),
 pub fn op_net_close(state: &mut OpState, id: u32) {
   let inner = net_inner(state);
   let mut guard = inner.lock().unwrap();
-  if let Some(conn) = guard.conns.get_mut(&id) {
-    conn.closed = true;
+  if let Some(mut conn) = guard.conns.remove(&id) {
     #[cfg(windows)]
     {
-      // The in-flight read holds the other clone and is blocked in
-      // `readable()`. Wake it so the last Arc can drop and the peer
-      // observes EOF.
       let wake = |io: &PipeIo| {
         io.close.store(true, Ordering::Release);
         io.wake.notify_one();
@@ -1420,8 +1416,7 @@ pub fn op_net_close(state: &mut OpState, id: u32) {
         wake(io);
       }
     }
-    conn.reader.take();
-    conn.writer.take();
+    drop(conn);
   }
 }
 
@@ -2679,6 +2674,97 @@ pub fn op_os_info() -> Result<OsInfo, JsErrorBox> {
 }
 
 
+#[derive(serde::Serialize)]
+struct CpuInfo {
+  model: String,
+  speed: u64,
+  user: u64,
+  nice: u64,
+  sys: u64,
+  idle: u64,
+  irq: u64,
+}
+
+#[op2]
+#[serde]
+pub fn op_cpus_info() -> Vec<CpuInfo> {
+  let mut sys = sysinfo::System::new();
+  sys.refresh_cpu_all();
+  // sysinfo needs two samples for usage; we just want static info + times.
+  sys.cpus().iter().map(|cpu| {
+    CpuInfo {
+      model: cpu.brand().to_string(),
+      speed: cpu.frequency(),
+      // sysinfo doesn't expose per-CPU times on all platforms;
+      // usage() gives a percentage. Approximate user time from it.
+      user: (cpu.cpu_usage() as u64) * 1000,
+      nice: 0,
+      sys: 0,
+      idle: ((100.0 - cpu.cpu_usage()) as u64) * 1000,
+      irq: 0,
+    }
+  }).collect()
+}
+
+#[op2]
+#[serde]
+pub fn op_loadavg() -> Vec<f64> {
+  #[cfg(unix)]
+  {
+    let mut avg = [0.0f64; 3];
+    let n = unsafe { nix::libc::getloadavg(avg.as_mut_ptr(), 3) };
+    if n == 3 { return avg.to_vec(); }
+    vec![0.0, 0.0, 0.0]
+  }
+  #[cfg(not(unix))]
+  {
+    vec![0.0, 0.0, 0.0]
+  }
+}
+
+#[op2(fast)]
+pub fn op_uptime() -> f64 {
+  #[cfg(target_os = "linux")]
+  {
+    let mut info: nix::libc::sysinfo = unsafe { std::mem::zeroed() };
+    if unsafe { nix::libc::sysinfo(&mut info) } == 0 {
+      return info.uptime as f64;
+    }
+    0.0
+  }
+  #[cfg(target_os = "macos")]
+  {
+    // kern.boottime sysctl
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut mib = [nix::libc::CTL_KERN, nix::libc::KERN_BOOTTIME];
+    let mut boottime: nix::libc::timeval = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of::<nix::libc::timeval>();
+    let ret = unsafe {
+      nix::libc::sysctl(
+        mib.as_mut_ptr(),
+        2,
+        &mut boottime as *mut _ as *mut _,
+        &mut size,
+        std::ptr::null_mut(),
+        0,
+      )
+    };
+    if ret == 0 {
+      let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+      return (now as i64 - boottime.tv_sec as i64).max(0) as f64;
+    }
+    0.0
+  }
+  #[cfg(windows)]
+  {
+    // Approximate via boot_time
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let boot = sysinfo::System::boot_time();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    (now - boot) as f64
+  }
+}
+
 fn get_cgroup_memory() -> Option<(u64, u64)> {
   // Try cgroups v2
   if let Ok(limit_str) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
@@ -3166,6 +3252,57 @@ pub fn op_ipc_client_close(state: &mut OpState, client_id: u32) {
     && let Some(shutdown) = client.shutdown.take()
   {
     let _ = shutdown.send(());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// process.stdin read
+// ---------------------------------------------------------------------------
+
+/// Read a chunk from process stdin. Returns empty vec on EOF.
+#[op2]
+#[buffer]
+pub async fn op_stdin_read() -> Result<Vec<u8>, JsErrorBox> {
+  use tokio::io::AsyncReadExt;
+  let mut buf = vec![0u8; 16 * 1024];
+  let mut stdin = tokio::io::stdin();
+  match stdin.read(&mut buf).await {
+    Ok(0) => Ok(Vec::new()),
+    Ok(n) => {
+      buf.truncate(n);
+      Ok(buf)
+    }
+    Err(e) => Err(JsErrorBox::generic(format!("stdin read: {e}"))),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// process.cpuUsage
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct CpuUsage {
+  user: f64,
+  system: f64,
+}
+
+#[op2]
+#[serde]
+pub fn op_cpu_usage() -> CpuUsage {
+  #[cfg(unix)]
+  {
+    let mut usage: nix::libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { nix::libc::getrusage(nix::libc::RUSAGE_SELF, &mut usage) } == 0 {
+      return CpuUsage {
+        user: usage.ru_utime.tv_sec as f64 * 1_000_000.0 + usage.ru_utime.tv_usec as f64,
+        system: usage.ru_stime.tv_sec as f64 * 1_000_000.0 + usage.ru_stime.tv_usec as f64,
+      };
+    }
+    CpuUsage { user: 0.0, system: 0.0 }
+  }
+  #[cfg(not(unix))]
+  {
+    CpuUsage { user: 0.0, system: 0.0 }
   }
 }
 

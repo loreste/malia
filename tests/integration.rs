@@ -296,6 +296,21 @@ fn wasm_cli_one_flag() {
 
 
 #[test]
+fn bugfix_regression() {
+  run_fixture("bugfix_regression.js");
+}
+
+#[test]
+fn perf_regression() {
+  run_fixture("perf_regression.js");
+}
+
+#[test]
+fn node_compat_improvements() {
+  run_fixture("node_compat_improvements.js");
+}
+
+#[test]
 fn cjs_interop() {
   run_fixture("cjs_main.js");
 }

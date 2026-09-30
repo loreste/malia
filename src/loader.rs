@@ -124,16 +124,31 @@ struct PackageJson {
 
 type SourceMapStore = Rc<RefCell<HashMap<String, Vec<u8>>>>;
 type PkgCache = Rc<RefCell<HashMap<PathBuf, Option<Rc<PackageJson>>>>>;
+/// Cache for has_esm_syntax results keyed by canonical path.
+type EsmCache = Rc<RefCell<HashMap<PathBuf, bool>>>;
+/// Directories known to have no config file (jse.json/tsconfig.json/etc).
+type ConfigNegCache = Rc<RefCell<std::collections::HashSet<PathBuf>>>;
 
 #[derive(Default)]
 pub struct JseModuleLoader {
   source_maps: SourceMapStore,
   pkg_cache: PkgCache,
+  esm_cache: EsmCache,
+  config_neg_cache: ConfigNegCache,
 }
 
 impl JseModuleLoader {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  fn cached_has_esm_syntax(&self, path: &Path, code: &str) -> bool {
+    if let Some(&result) = self.esm_cache.borrow().get(path) {
+      return result;
+    }
+    let result = has_esm_syntax(code);
+    self.esm_cache.borrow_mut().insert(path.to_path_buf(), result);
+    result
   }
 
   fn read_package_json(&self, dir: &Path) -> Option<Rc<PackageJson>> {
@@ -242,12 +257,19 @@ fn resolve_tsconfig_paths(
 ) -> Option<PathBuf> {
   let mut dir = Some(referrer_dir);
   while let Some(d) = dir {
+    // Skip directories already known to have no config files.
+    if loader.config_neg_cache.borrow().contains(d) {
+      dir = d.parent();
+      continue;
+    }
+    let mut found_any_config = false;
     // 1. Check jse.json, jse.toml, jse.config.json
     for config_name in ["jse.json", "jse.toml", "jse.config.json"] {
       let config_path = d.join(config_name);
       if config_path.is_file()
         && let Ok(content) = std::fs::read_to_string(&config_path)
       {
+        found_any_config = true;
         let maybe_cfg = if config_name.ends_with(".toml") {
           toml::from_str::<crate::config::JseConfig>(&content).ok()
         } else {
@@ -313,6 +335,7 @@ fn resolve_tsconfig_paths(
         && let Ok(content) = std::fs::read_to_string(&config_path)
         && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
       {
+        found_any_config = true;
         let opts = val.get("compilerOptions");
         let base_url = opts
           .and_then(|o| o.get("baseUrl"))
@@ -358,6 +381,9 @@ fn resolve_tsconfig_paths(
           }
         }
       }
+    }
+    if !found_any_config {
+      loader.config_neg_cache.borrow_mut().insert(d.to_path_buf());
     }
     dir = d.parent();
   }
@@ -807,10 +833,14 @@ impl JseModuleLoader {
           None,
         ));
       }
-      let bytes_js = bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",");
+      use base64::Engine;
+      let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
       let wrapper = format!(
         concat!(
-          "const __bytes = new Uint8Array([{bytes_js}]);\n",
+          "const __b64 = \"{b64}\";\n",
+          "const __raw = atob(__b64);\n",
+          "const __bytes = new Uint8Array(__raw.length);\n",
+          "for (let i = 0; i < __raw.length; i++) __bytes[i] = __raw.charCodeAt(i);\n",
           "const __mod = new WebAssembly.Module(__bytes);\n",
           "let __inst = null;\n",
           "try {{\n",
@@ -825,7 +855,7 @@ impl JseModuleLoader {
           "}}\n",
           "export default __inst ? __inst.exports : __mod;\n"
         ),
-        bytes_js = bytes_js
+        b64 = b64
       );
       return Ok(module_source(
         ModuleType::JavaScript,
@@ -850,7 +880,7 @@ impl JseModuleLoader {
       code
     };
 
-    let is_cjs = is_cjs && (explicit_cjs || !has_esm_syntax(&code));
+    let is_cjs = is_cjs && (explicit_cjs || !self.cached_has_esm_syntax(&path, &code));
 
     let code = if is_cjs {
       self.wrap_cjs(specifier, &code, lazy_cjs)?
@@ -893,7 +923,7 @@ impl JseModuleLoader {
   fn is_cjs_module(&self, url: &ModuleSpecifier) -> bool {
     let Ok(path) = url.to_file_path() else { return false };
     let (is_cjs, explicit) = self.cjs_kind(&path, MediaType::from_path(&path));
-    is_cjs && (explicit || std::fs::read_to_string(&path).is_ok_and(|code| !has_esm_syntax(&code)))
+    is_cjs && (explicit || std::fs::read_to_string(&path).is_ok_and(|code| !self.cached_has_esm_syntax(&path, &code)))
   }
 
   fn collect_reexported_named_exports(

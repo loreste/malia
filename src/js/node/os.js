@@ -16,12 +16,12 @@ export function arch() {
 }
 
 export function cpus() {
-  const n = ops.op_cpus();
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    out.push({ model: "jse-cpu", speed: 0, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } });
-  }
-  return out;
+  const info = ops.op_cpus_info();
+  return info.map(c => ({
+    model: c.model || "unknown",
+    speed: c.speed,
+    times: { user: c.user, nice: c.nice, sys: c.sys, idle: c.idle, irq: c.irq },
+  }));
 }
 
 export function homedir() {
@@ -105,11 +105,11 @@ export function availableParallelism() {
 }
 
 export function uptime() {
-  return typeof process.uptime === "function" ? process.uptime() : 0;
+  return ops.op_uptime();
 }
 
 export function loadavg() {
-  return [0.0, 0.0, 0.0];
+  return ops.op_loadavg();
 }
 
 export const constants = {

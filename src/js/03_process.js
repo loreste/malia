@@ -77,10 +77,37 @@
 
   // pid / ppid / isTTY / memory are getters: reading them during the
   // snapshot build would bake the build machine into the blob.
+  // Minimal writable stream for stdout/stderr with Node-compatible shape.
   function stdioStream(fd, isErr) {
-    return {
+    const ee = { _listeners: {} };
+    ee.on = function (ev, fn) {
+      (this._listeners[ev] || (this._listeners[ev] = [])).push(fn);
+      return this;
+    };
+    ee.once = function (ev, fn) {
+      const wrapped = (...a) => { this.removeListener(ev, wrapped); fn(...a); };
+      wrapped._orig = fn;
+      return this.on(ev, wrapped);
+    };
+    ee.removeListener = ee.off = function (ev, fn) {
+      const list = this._listeners[ev];
+      if (!list) return this;
+      this._listeners[ev] = list.filter(f => f !== fn && f._orig !== fn);
+      return this;
+    };
+    ee.emit = function (ev, ...args) {
+      const list = this._listeners[ev];
+      if (!list) return false;
+      for (const fn of list.slice()) fn(...args);
+      return true;
+    };
+    ee.addListener = ee.on;
+    ee.prependListener = ee.on;
+    return Object.assign(ee, {
       fd,
-      write(chunk) {
+      writable: true,
+      write(chunk, encoding, cb) {
+        if (typeof encoding === "function") { cb = encoding; encoding = undefined; }
         let text;
         if (typeof chunk === "string") {
           text = chunk;
@@ -90,12 +117,29 @@
           text = String(chunk);
         }
         ops.op_print(text, isErr);
+        if (cb) queueMicrotask(cb);
         return true;
+      },
+      end(chunk, encoding, cb) {
+        if (chunk !== undefined) this.write(chunk, encoding);
+        if (typeof cb === "function") queueMicrotask(cb);
+        else if (typeof encoding === "function") queueMicrotask(encoding);
       },
       get isTTY() {
         return ops.op_isatty(fd);
       },
-    };
+      get columns() {
+        return 80;
+      },
+      get rows() {
+        return 24;
+      },
+      cork() {},
+      uncork() {},
+      destroy() {},
+      setDefaultEncoding() { return this; },
+      _isStdio: true,
+    });
   }
 
   const listeners = new Map();
@@ -261,12 +305,7 @@
     },
     stdout: stdioStream(1, false),
     stderr: stdioStream(2, true),
-    stdin: {
-      fd: 0,
-      get isTTY() {
-        return ops.op_isatty(0);
-      },
-    },
+    stdin: null, // initialized below to avoid snapshot closures
     get pid() {
       return ops.op_pid();
     },
@@ -306,6 +345,13 @@
     hrtime,
     uptime,
     memoryUsage,
+    cpuUsage(prev) {
+      const usage = ops.op_cpu_usage();
+      if (prev) {
+        return { user: usage.user - prev.user, system: usage.system - prev.system };
+      }
+      return { user: usage.user, system: usage.system };
+    },
     on,
     off,
     once,
@@ -426,6 +472,75 @@
   };
 
   process._initIpc = initIpc;
+
+  // Build stdin as a readable stream. Done after object creation to keep
+  // closures out of the snapshot (V8 requires simple data in snapshots).
+  const stdinState = { _listeners: {}, _reading: false, _paused: true, _ended: false };
+  function stdinOn(ev, fn) {
+    (stdinState._listeners[ev] || (stdinState._listeners[ev] = [])).push(fn);
+    if ((ev === "data" || ev === "readable") && !stdinState._reading && !stdinState._ended) {
+      process.stdin.resume();
+    }
+    return process.stdin;
+  }
+  function stdinEmit(ev, ...args) {
+    const list = stdinState._listeners[ev];
+    if (!list) return false;
+    for (const fn of list.slice()) fn(...args);
+    return true;
+  }
+  function stdinPump() {
+    if (stdinState._paused || stdinState._ended) return;
+    stdinState._reading = true;
+    ops.op_stdin_read().then((buf) => {
+      if (!buf || buf.length === 0) {
+        stdinState._ended = true;
+        stdinState._reading = false;
+        stdinEmit("end");
+        return;
+      }
+      stdinEmit("data", new Uint8Array(buf.buffer || buf));
+      if (!stdinState._paused) queueMicrotask(stdinPump);
+      else stdinState._reading = false;
+    }, () => {
+      stdinState._ended = true;
+      stdinState._reading = false;
+      stdinEmit("end");
+    });
+  }
+  process.stdin = {
+    fd: 0,
+    readable: true,
+    get isTTY() { return ops.op_isatty(0); },
+    on: stdinOn,
+    addListener: stdinOn,
+    prependListener: stdinOn,
+    once(ev, fn) {
+      const w = (...a) => { process.stdin.removeListener(ev, w); fn(...a); };
+      w._orig = fn;
+      return stdinOn(ev, w);
+    },
+    removeListener(ev, fn) {
+      const list = stdinState._listeners[ev];
+      if (list) stdinState._listeners[ev] = list.filter(f => f !== fn && f._orig !== fn);
+      return process.stdin;
+    },
+    off(ev, fn) { return process.stdin.removeListener(ev, fn); },
+    emit: stdinEmit,
+    resume() { stdinState._paused = false; if (!stdinState._reading && !stdinState._ended) stdinPump(); return this; },
+    pause() { stdinState._paused = true; return this; },
+    read() { return null; },
+    setEncoding() { return this; },
+    destroy() { stdinState._ended = true; stdinState._paused = true; return this; },
+    pipe(dest) {
+      this.on("data", (chunk) => dest.write(chunk));
+      this.on("end", () => { if (typeof dest.end === "function") dest.end(); });
+      return dest;
+    },
+    unpipe() { return this; },
+    unshift() {},
+    wrap() { return this; },
+  };
 
   globalThis.process = process;
 

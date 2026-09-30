@@ -110,20 +110,20 @@ impl KvStore {
     let mut map = self.entries.write().map_err(|e| JsErrorBox::generic(format!("lock error: {e}")))?;
     let now = Instant::now();
 
-    let current_val: i64 = if let Some(entry) = map.get(key) {
+    let (current_val, existing_ttl) = if let Some(entry) = map.get(key) {
       if let Some(exp) = entry.expires_at {
         if now >= exp {
-          0
+          (0, None)
         } else {
           let s = std::str::from_utf8(&entry.value).unwrap_or("0");
-          s.parse::<i64>().unwrap_or(0)
+          (s.parse::<i64>().unwrap_or(0), entry.expires_at)
         }
       } else {
         let s = std::str::from_utf8(&entry.value).unwrap_or("0");
-        s.parse::<i64>().unwrap_or(0)
+        (s.parse::<i64>().unwrap_or(0), None)
       }
     } else {
-      0
+      (0, None)
     };
 
     let new_val = current_val.saturating_add(amount);
@@ -131,7 +131,7 @@ impl KvStore {
 
     map.insert(key.to_string(), KvEntry {
       value: new_val.to_string().into_bytes(),
-      expires_at: None,
+      expires_at: existing_ttl,
       version,
     });
 

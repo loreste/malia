@@ -180,13 +180,13 @@ async fn handle_request(
   let method = parts.method.to_string();
   let url = parts.uri.to_string();
   let body_bytes = body.collect().await?.to_bytes().to_vec();
-  let headers = parts
+  let headers: Vec<(String, String)> = parts
     .headers
     .iter()
     .map(|(name, value)| {
       (
-        name.as_str().to_string(),
-        value.to_str().unwrap_or("").to_string(),
+        name.as_str().to_owned(),
+        value.to_str().unwrap_or("").to_owned(),
       )
     })
     .collect();
@@ -201,6 +201,7 @@ async fn handle_request(
     is_websocket,
   };
   if req_tx.send(served).is_err() {
+    pending.lock().unwrap().remove(&id);
     let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
     crate::logger::log_http(&method, &url, 500, duration_ms, remote, 24);
     return Ok(error_response(500, "server is shutting down"));
