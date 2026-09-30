@@ -101,6 +101,7 @@
   }
 
   const sharedEncoder = new TextEncoder();
+  const sharedDecoder = new TextDecoder();
 
   function toBytes(chunk) {
     if (chunk instanceof Uint8Array) return chunk;
@@ -111,6 +112,9 @@
     }
     throw new TypeError("body chunk must be a string or typed array");
   }
+
+  // Shared with jse.serve (11_serve.js).
+  globalThis.__jse.toBytes = toBytes;
 
   function concatBytes(parts, length) {
     const out = new Uint8Array(length);
@@ -198,7 +202,7 @@
     }
 
     async text() {
-      return new TextDecoder().decode(await this._drainBytes());
+      return sharedDecoder.decode(await this._drainBytes());
     }
 
     async json() {

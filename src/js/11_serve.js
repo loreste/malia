@@ -7,7 +7,6 @@
 ((globalThis) => {
   const ops = Deno.core.ops;
   const sharedDecoder = new TextDecoder();
-  const sharedEncoder = new TextEncoder();
 
   // Decode a batch blob from op_serve_pull (see src/serve.rs pack_requests).
   function unpackServeRequests(blob) {
@@ -50,15 +49,7 @@
   // Shared between jse.serve and node:http.
   globalThis.__jse.unpackServeRequests = unpackServeRequests;
 
-  function toBytes(chunk) {
-    if (chunk instanceof Uint8Array) return chunk;
-    if (typeof chunk === "string") return sharedEncoder.encode(chunk);
-    if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
-    if (ArrayBuffer.isView(chunk)) {
-      return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-    }
-    throw new TypeError("response chunk must be a string or typed array");
-  }
+  const toBytes = globalThis.__jse.toBytes;
 
   function sendResponse(listenerId, reqId, resp) {
     if (resp._isUpgrade || resp.status === 101) {
@@ -90,7 +81,7 @@
     if (typeof value !== "string" && !(value instanceof Uint8Array)) {
       throw new TypeError(`jse.serve: ${what} must be a PEM string or a path`);
     }
-    const text = typeof value === "string" ? value : new TextDecoder().decode(value);
+    const text = typeof value === "string" ? value : sharedDecoder.decode(value);
     if (text.includes("-----BEGIN")) return text;
     return ops.op_read_text_file_sync(text);
   }

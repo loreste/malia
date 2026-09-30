@@ -199,10 +199,6 @@ export class ServerHttp2Stream extends Duplex {
     if (this.headersSent) throw new Error("Headers already sent");
     this.headersSent = true;
     this.sentHeaders = { ...headers };
-    // Automatically advertise HTTP/3 support via Alt-Svc if not present
-    if (!this.sentHeaders["alt-svc"] && !this.sentHeaders["Alt-Svc"]) {
-      this.sentHeaders["alt-svc"] = 'h3=":443"; ma=86400';
-    }
   }
 
   respondWithFD(fd, headers = {}, options = {}) {

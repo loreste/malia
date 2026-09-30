@@ -60,6 +60,7 @@ assertEq(p.toString(), "a=only&c=3", "params toString");
 assertEq(new URLSearchParams({ x: "1", y: "2" }).toString(), "x=1&y=2", "params from object");
 const enc = new URLSearchParams([["k", "v & ü"]]);
 assertEq(enc.toString(), "k=v+%26+%C3%BC", "params encode");
+assertEq(new URLSearchParams("e=😀x").get("e"), "😀x", "params decode raw astral char");
 
 // Iteration.
 const seen = [];

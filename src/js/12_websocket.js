@@ -4,6 +4,8 @@
 
 ((globalThis) => {
   const ops = Deno.core.ops;
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
 
   // ---- Standard DOM / Web Events -------------------------------------------
 
@@ -315,7 +317,7 @@
         }
         if (!event) break;
         if (event.kind === 1) { // text
-          const data = new TextDecoder().decode(event.data);
+          const data = decoder.decode(event.data);
           const msgEvent = new MessageEvent("message", { data, origin: this.#url });
           this.dispatchEvent(msgEvent);
         } else if (event.kind === 2) { // binary
@@ -367,7 +369,7 @@
         throw new Error("WebSocket is not open: readyState " + this.#readyState);
       }
       if (typeof data === "string") {
-        ops.op_ws_send(this.#id, new TextEncoder().encode(data), true);
+        ops.op_ws_send(this.#id, encoder.encode(data), true);
       } else if (data instanceof ArrayBuffer) {
         ops.op_ws_send(this.#id, new Uint8Array(data), false);
       } else if (ArrayBuffer.isView(data)) {
@@ -384,7 +386,7 @@
           "InvalidAccessError",
         );
       }
-      if (typeof reason === "string" && new TextEncoder().encode(reason).length > 123) {
+      if (typeof reason === "string" && encoder.encode(reason).length > 123) {
         throw new SyntaxError("The message must not be greater than 123 bytes.");
       }
       if (this.#readyState === 2 || this.#readyState === 3) return;

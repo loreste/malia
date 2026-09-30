@@ -9,11 +9,13 @@
   // ---- URLSearchParams ------------------------------------------------------
 
   const HEX = "0123456789ABCDEF";
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
 
   // application/x-www-form-urlencoded percent-encode: alphanumerics and
   // * - . _ pass through, space becomes '+', everything else %XX (UTF-8).
   function urlEncode(str) {
-    const bytes = new TextEncoder().encode(String(str));
+    const bytes = encoder.encode(String(str));
     let out = "";
     for (const b of bytes) {
       const c = String.fromCharCode(b);
@@ -44,12 +46,14 @@
         bytes.push(parseInt(s.slice(i + 1, i + 3), 16));
         i += 2;
       } else {
-        // Re-encode the char as UTF-8 bytes (lossless for the common case).
-        const encoded = new TextEncoder().encode(c);
-        for (const b of encoded) bytes.push(b);
+        // Re-encode the whole code point, not one UTF-16 unit, so astral
+        // characters (emoji) are not split into lone surrogates.
+        const cp = String.fromCodePoint(s.codePointAt(i));
+        for (const b of encoder.encode(cp)) bytes.push(b);
+        i += cp.length - 1;
       }
     }
-    return new TextDecoder().decode(new Uint8Array(bytes));
+    return decoder.decode(new Uint8Array(bytes));
   }
 
   // URL instances register a change callback here so mutating a URL's
