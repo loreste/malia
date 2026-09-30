@@ -1,5 +1,7 @@
 /target
 /dist
+.claude/
+.tokensave/
 /npm/jse/vendor
 /npm/malia/vendor
 node_modules/
