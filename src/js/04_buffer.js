@@ -12,17 +12,123 @@
       return ops.op_text_encode(String(str));
     }
   };
+  const UTF8_LABELS = new Set(["utf-8", "utf8", "unicode-1-1-utf-8"]);
+  const UTF16LE_LABELS = new Set(["utf-16le", "utf-16"]);
+  const LATIN1_LABELS = new Set(["latin1", "iso-8859-1", "ascii", "us-ascii", "windows-1252"]);
+
+  // Length of a trailing UTF-8 sequence that is cut off at the end of
+  // `bytes` (0 if the buffer ends on a character boundary).
+  function incompleteUtf8Tail(bytes) {
+    const n = bytes.length;
+    for (let back = 1; back <= 3 && back <= n; back++) {
+      const b = bytes[n - back];
+      if ((b & 0xc0) !== 0x80) {
+        const need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1;
+        return need > back ? back : 0;
+      }
+    }
+    return 0;
+  }
+
+  function toUint8(input) {
+    if (input instanceof Uint8Array) return input;
+    return ArrayBuffer.isView(input)
+      ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+      : new Uint8Array(input);
+  }
+
   globalThis.TextDecoder = class TextDecoder {
-    decode(input) {
-      if (!input) return "";
-      // op2 accepts a Uint8Array directly; only re-wrap other view types.
-      if (input instanceof Uint8Array) return ops.op_text_decode(input);
-      const bytes = ArrayBuffer.isView(input)
-        ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
-        : new Uint8Array(input);
-      return ops.op_text_decode(bytes);
+    #fatal;
+    #ignoreBOM;
+    #encoding;
+    #pending = null; // bytes held back from the previous { stream: true } call
+    #bomSeen = false;
+
+    constructor(label = "utf-8", options = {}) {
+      const name = String(label).trim().toLowerCase();
+      if (UTF8_LABELS.has(name)) this.#encoding = "utf-8";
+      else if (UTF16LE_LABELS.has(name)) this.#encoding = "utf-16le";
+      else if (LATIN1_LABELS.has(name)) this.#encoding = "windows-1252";
+      else {
+        const err = new RangeError(`The "${label}" encoding is not supported`);
+        err.code = "ERR_ENCODING_NOT_SUPPORTED";
+        throw err;
+      }
+      this.#fatal = Boolean(options?.fatal);
+      this.#ignoreBOM = Boolean(options?.ignoreBOM);
+    }
+
+    get encoding() {
+      return this.#encoding;
+    }
+
+    get fatal() {
+      return this.#fatal;
+    }
+
+    get ignoreBOM() {
+      return this.#ignoreBOM;
+    }
+
+    decode(input, options) {
+      const stream = Boolean(options?.stream);
+      // Hot path: one-shot UTF-8 decode with nothing buffered.
+      if (!stream && this.#pending === null && this.#encoding === "utf-8" && !this.#fatal) {
+        if (!input) return "";
+        const bytes = toUint8(input);
+        if (!this.#ignoreBOM && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+          return ops.op_text_decode(bytes.subarray(3));
+        }
+        return ops.op_text_decode(bytes);
+      }
+
+      let bytes = input ? toUint8(input) : new Uint8Array(0);
+      if (this.#pending !== null) {
+        const joined = new Uint8Array(this.#pending.length + bytes.length);
+        joined.set(this.#pending);
+        joined.set(bytes, this.#pending.length);
+        bytes = joined;
+        this.#pending = null;
+      }
+      if (stream) {
+        const keep = this.#encoding === "utf-8"
+          ? incompleteUtf8Tail(bytes)
+          : this.#encoding === "utf-16le" ? bytes.length % 2 : 0;
+        if (keep) {
+          this.#pending = bytes.slice(bytes.length - keep);
+          bytes = bytes.subarray(0, bytes.length - keep);
+        }
+      }
+
+      let text = this.#encoding === "utf-8"
+        ? ops.op_text_decode(bytes)
+        : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+          .toString(this.#encoding === "utf-16le" ? "utf16le" : "latin1");
+      if (this.#fatal && this.#encoding === "utf-8" && text.includes("\uFFFD") && !validUtf8(bytes)) {
+        this.#pending = null;
+        this.#bomSeen = false;
+        const err = new TypeError("The encoded data was not valid for encoding utf-8");
+        err.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
+        throw err;
+      }
+      if (!this.#bomSeen && text.length > 0) {
+        this.#bomSeen = true;
+        if (!this.#ignoreBOM && text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+      }
+      if (!stream) this.#bomSeen = false;
+      return text;
     }
   };
+
+  // Strict UTF-8 validation (only used when fatal is set and U+FFFD appears).
+  function validUtf8(bytes) {
+    try {
+      decodeURIComponent(Array.prototype.map.call(bytes, (b) => "%" + b.toString(16).padStart(2, "0")).join(""));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const B64_LOOKUP = new Map([...B64_CHARS].map((c, i) => [c, i]));

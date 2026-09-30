@@ -558,6 +558,9 @@ function normalizeRequest(input, options, cb) {
     opts.path = url.pathname + url.search;
     opts.method = "GET";
     opts.tls = url.protocol === "https:";
+    if (url.username || url.password) {
+      opts.auth = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+    }
   } else {
     opts = { ...input };
     if (typeof input === "object" && input !== null) cb = cb;
@@ -571,13 +574,110 @@ function normalizeRequest(input, options, cb) {
   return { opts, cb };
 }
 
+// Header names are tokens; values and the request line must not contain
+// CR/LF/NUL, which would let a caller inject headers or a second request.
+const TOKEN_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const INVALID_VALUE_RE = /[\r\n\0]/;
+
+function httpError(code, message) {
+  const err = new TypeError(message);
+  err.code = code;
+  return err;
+}
+
+function validateHeader(name, value) {
+  if (!TOKEN_RE.test(name)) {
+    throw httpError("ERR_INVALID_HTTP_TOKEN", `Header name must be a valid HTTP token ["${name}"]`);
+  }
+  if (value === undefined) {
+    throw httpError("ERR_HTTP_INVALID_HEADER_VALUE", `Invalid value "undefined" for header "${name}"`);
+  }
+  for (const v of Array.isArray(value) ? value : [value]) {
+    if (INVALID_VALUE_RE.test(String(v))) {
+      throw httpError("ERR_INVALID_CHAR", `Invalid character in header content ["${name}"]`);
+    }
+  }
+}
+
 class ClientRequest extends Writable {
   constructor(opts, cb) {
     super();
+    if (!TOKEN_RE.test(opts.method)) {
+      throw httpError("ERR_INVALID_HTTP_TOKEN", `Method must be a valid HTTP token ["${opts.method}"]`);
+    }
+    if (/[\s\0]/.test(opts.path)) {
+      throw httpError("ERR_UNESCAPED_CHARACTERS", "Request path contains unescaped characters");
+    }
     this._opts = opts;
     this._chunks = [];
+    // lowercase name -> [original name, value]
+    this._headers = new Map();
+    for (const name of Object.keys(opts.headers)) this.setHeader(name, opts.headers[name]);
+    if (opts.auth && !this._headers.has("authorization")) {
+      this.setHeader("Authorization", "Basic " + Buffer.from(opts.auth).toString("base64"));
+    }
+    this.method = opts.method;
+    this.path = opts.path;
     if (typeof cb === "function") this.once("response", cb);
+    if (opts.timeout) this.setTimeout(opts.timeout);
   }
+
+  setHeader(name, value) {
+    validateHeader(name, value);
+    this._headers.set(name.toLowerCase(), [name, value]);
+    return this;
+  }
+
+  getHeader(name) {
+    return this._headers.get(String(name).toLowerCase())?.[1];
+  }
+
+  hasHeader(name) {
+    return this._headers.has(String(name).toLowerCase());
+  }
+
+  removeHeader(name) {
+    this._headers.delete(String(name).toLowerCase());
+  }
+
+  getHeaders() {
+    const out = {};
+    for (const [key, [, value]] of this._headers) out[key] = value;
+    return out;
+  }
+
+  getHeaderNames() {
+    return [...this._headers.keys()];
+  }
+
+  // Emits "timeout" if no response has arrived after `ms`; like Node, the
+  // request is only aborted if a listener calls destroy()/abort().
+  setTimeout(ms, cb) {
+    if (typeof cb === "function") this.once("timeout", cb);
+    clearTimeout(this._timer);
+    if (ms > 0) {
+      this._timer = setTimeout(() => this.emit("timeout"), ms);
+      this.once("response", () => clearTimeout(this._timer));
+      this.once("close", () => clearTimeout(this._timer));
+    }
+    return this;
+  }
+
+  abort() {
+    this.aborted = true;
+    this.emit("abort");
+    this.destroy();
+  }
+
+  destroy(err) {
+    clearTimeout(this._timer);
+    this._sock?.destroy();
+    return super.destroy(err);
+  }
+
+  flushHeaders() {}
+  setNoDelay() {}
+  setSocketKeepAlive() {}
 
   _write(chunk, encoding, cb) {
     this._chunks.push(typeof chunk === "string" ? Buffer.from(chunk, encoding ?? "utf8") : Buffer.from(chunk));
@@ -587,16 +687,21 @@ class ClientRequest extends Writable {
   _final(cb) {
     const opts = this._opts;
     const payload = Buffer.concat(this._chunks);
-    const headers = {};
-    for (const name of Object.keys(opts.headers)) headers[name.toLowerCase()] = opts.headers[name];
-    headers["host"] = headers["host"] || `${opts.hostname}:${opts.port}`;
-    headers["content-length"] = String(payload.length);
-    headers["connection"] = headers["connection"] || "close";
+    const defaultPort = opts.tls ? 443 : 80;
+    if (!this.hasHeader("host")) {
+      const host = opts.hostname.includes(":") ? `[${opts.hostname}]` : opts.hostname;
+      this.setHeader("Host", Number(opts.port) === defaultPort ? host : `${host}:${opts.port}`);
+    }
+    this.removeHeader("transfer-encoding");
+    this.setHeader("Content-Length", String(payload.length));
+    if (!this.hasHeader("connection")) this.setHeader("Connection", "close");
     let head = `${opts.method} ${opts.path} HTTP/1.1\r\n`;
-    for (const name of Object.keys(headers)) head += `${name}: ${headers[name]}\r\n`;
+    for (const [name, value] of this._headers.values()) {
+      for (const v of Array.isArray(value) ? value : [value]) head += `${name}: ${v}\r\n`;
+    }
     head += "\r\n";
     const bytes = Buffer.concat([Buffer.from(head), payload]);
-    const sock = net.connect({
+    const sock = this._sock = net.connect({
       host: opts.hostname,
       port: opts.port,
       tls: !!opts.tls,

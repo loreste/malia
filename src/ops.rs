@@ -2332,6 +2332,7 @@ deno_core::extension!(
     "18_trace.js",
     "19_queue.js",
     "20_malia.js",
+    "21_web_streams.js",
   ],
 
   options = {

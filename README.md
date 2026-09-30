@@ -245,7 +245,7 @@ start = "jse start"
 
 | API | Description |
 |---|---|
-| `fetch`, `Request`, `Response`, `Headers` | reqwest + rustls. Response bodies stream (`response.body` is async-iterable and has `getReader()`) |
+| `fetch`, `Request`, `Response`, `Headers` | reqwest + rustls. Decodes gzip, deflate, and Brotli responses; `redirect` may be `follow`, `manual`, or `error`. Response bodies stream (`response.body` is async-iterable and has `getReader()`). Request bodies: string, `URLSearchParams`, `ArrayBuffer`/typed arrays, `ReadableStream`, async iterables |
 | `jse.serve(options, handler)` | Deno-style HTTP server. Handler returns a `Response` or a promise of one. Supports keep-alive, whole and chunked bodies, TLS |
 | `WebSocket`, `jse.upgradeWebSocket(req)` | WebSocket client and server upgrade. `binaryType` may be `nodebuffer`, `arraybuffer`, or `blob` |
 | `chan(capacity?)` | Channels with `send`/`recv`/`close`/`for await`, backed by tokio mpsc. Bounded channels apply backpressure |
@@ -264,7 +264,9 @@ start = "jse start"
 Browser globals used by SSR code are defined: `self`, `window`, `global`,
 `navigator`, `DOMException`, `btoa`, `atob`, `crypto.getRandomValues`,
 `crypto.randomUUID`, `EventTarget`, `Event`, `MessageEvent`, `CloseEvent`,
-`ErrorEvent`, `MessageChannel`, `BroadcastChannel`.
+`ErrorEvent`, `MessageChannel`, `BroadcastChannel`, and the WHATWG streams
+(`ReadableStream`, `WritableStream`, `TransformStream`, `TextEncoderStream`,
+`TextDecoderStream`, `CompressionStream`, `DecompressionStream`).
 
 ## Node builtins
 
@@ -349,8 +351,8 @@ See the [Dockerfile](Dockerfile) in the repository root and
 
 ## Limitations
 
-- `fetch` does not expose redirect, auth, or proxy options, does not decode
-  gzip, and sends request bodies whole (no streaming upload).
+- `fetch` buffers stream request bodies before sending them (no streaming
+  upload). `Blob` and `FormData` are not implemented.
 - HTTP server request bodies are read fully into memory. The `node:http`
   client sends buffered bodies with `Content-Length` and `Connection: close`.
 - A `WorkerPool` worker must reply with exactly one `postMessage` per

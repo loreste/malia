@@ -22,6 +22,11 @@ fn run_fixture(name: &str) {
 }
 
 #[test]
+fn web_compat() {
+  run_fixture("web_compat.mjs");
+}
+
+#[test]
 fn es_features() {
   run_fixture("es_features.js");
 }

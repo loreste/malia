@@ -116,6 +116,50 @@
   // Shared with jse.serve (11_serve.js).
   globalThis.__jse.toBytes = toBytes;
 
+  // Request body init -> { bytes, type } (type = default content-type or
+  // null). Streams and (async) iterables return null: use drainBody.
+  function extractBody(body) {
+    if (typeof body === "string") {
+      return { bytes: sharedEncoder.encode(body), type: "text/plain;charset=UTF-8" };
+    }
+    if (body instanceof URLSearchParams) {
+      return {
+        bytes: sharedEncoder.encode(body.toString()),
+        type: "application/x-www-form-urlencoded;charset=UTF-8",
+      };
+    }
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+      return { bytes: toBytes(body), type: null };
+    }
+    return null;
+  }
+
+  // ponytail: stream bodies are buffered before sending; pipe them into
+  // reqwest (Body::wrap_stream) if large uploads need to stream.
+  async function drainBody(body) {
+    if (typeof body.getReader === "function" && typeof body[Symbol.asyncIterator] !== "function") {
+      const reader = body.getReader();
+      body = (async function* () {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          yield value;
+        }
+      })();
+    }
+    if (typeof body[Symbol.asyncIterator] !== "function" && typeof body[Symbol.iterator] !== "function") {
+      throw new TypeError("unsupported request body type");
+    }
+    const parts = [];
+    let length = 0;
+    for await (const chunk of body) {
+      const bytes = toBytes(chunk);
+      parts.push(bytes);
+      length += bytes.length;
+    }
+    return { bytes: concatBytes(parts, length), type: null };
+  }
+
   function concatBytes(parts, length) {
     const out = new Uint8Array(length);
     let offset = 0;
@@ -246,9 +290,15 @@
         this.url = String(input?.href ?? input);
         this.method = String(init.method ?? "GET").toUpperCase();
         this._headersCache = new Headers(init.headers);
-        this._bodyBytes = init.body === undefined || init.body === null
-          ? new Uint8Array(0)
-          : toBytes(init.body);
+        this._bodyBytes = new Uint8Array(0);
+        if (init.body !== undefined && init.body !== null) {
+          const extracted = extractBody(init.body);
+          if (!extracted) throw new TypeError("Request: stream bodies are only supported by fetch()");
+          this._bodyBytes = extracted.bytes;
+          if (extracted.type && !this._headersCache.has("content-type")) {
+            this._headersCache.set("content-type", extracted.type);
+          }
+        }
       }
       this.redirect = init.redirect ?? (input instanceof Request ? input.redirect : "follow");
     }
@@ -378,8 +428,12 @@
     }
     let bodyBytes;
     const bodyInit = init.body ?? (input instanceof Request ? input._bodyBytes : undefined);
-    if (bodyInit !== undefined && bodyInit !== null && bodyInit.length !== 0) {
-      bodyBytes = toBytes(bodyInit);
+    if (bodyInit !== undefined && bodyInit !== null) {
+      const { bytes, type } = extractBody(bodyInit) ?? (await drainBody(bodyInit));
+      if (type && !headerPairs.some(([name]) => name.toLowerCase() === "content-type")) {
+        headerPairs.push(["content-type", type]);
+      }
+      if (bytes.length !== 0) bodyBytes = bytes;
     }
     const redirect = String(init.redirect ?? (input instanceof Request ? input.redirect : "follow"));
     const head = await ops.op_fetch_start(url, method, headerPairs, bodyBytes, redirect);
