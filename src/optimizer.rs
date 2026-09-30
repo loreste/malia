@@ -132,6 +132,8 @@ pub fn op_wasm_compile_app(
   #[string] entry: String,
   #[string] output: String,
 ) -> Result<WasmCompileOutput, JsErrorBox> {
+  crate::permissions::check_read(&entry)?;
+  crate::permissions::check_write(&output)?;
   let entry_path = Path::new(&entry);
   let output_path = Path::new(&output);
 

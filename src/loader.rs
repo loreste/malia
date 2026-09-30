@@ -819,11 +819,7 @@ impl JseModuleLoader {
       code
     };
 
-    let is_cjs = if is_cjs && (explicit_cjs || !has_esm_syntax(&code)) {
-      true
-    } else {
-      false
-    };
+    let is_cjs = is_cjs && (explicit_cjs || !has_esm_syntax(&code));
 
     let code = if is_cjs {
       self.wrap_cjs(specifier, &code)?
@@ -861,20 +857,19 @@ impl JseModuleLoader {
       for spec in specs {
         if let Ok(resolved) = self.resolve_internal(&spec, specifier.as_str(), true) {
           let resolved_str = resolved.to_string();
-          if visited.insert(resolved_str) {
-            if let Ok(file_path) = resolved.to_file_path() {
-              if let Ok(dep_code) = std::fs::read_to_string(&file_path) {
-                let dep_exports = self.collect_reexported_named_exports(
-                  &resolved,
-                  &dep_code,
-                  depth + 1,
-                  visited,
-                );
-                for exp in dep_exports {
-                  if !exports.contains(&exp) {
-                    exports.push(exp);
-                  }
-                }
+          if visited.insert(resolved_str)
+            && let Ok(file_path) = resolved.to_file_path()
+            && let Ok(dep_code) = std::fs::read_to_string(&file_path)
+          {
+            let dep_exports = self.collect_reexported_named_exports(
+              &resolved,
+              &dep_code,
+              depth + 1,
+              visited,
+            );
+            for exp in dep_exports {
+              if !exports.contains(&exp) {
+                exports.push(exp);
               }
             }
           }

@@ -10,6 +10,7 @@
 // Set once by the CLI before any runtime is created; workers inherit the
 // process-global set. Module-graph loading is exempt (like Deno); runtime
 // ops enforce. Unset means deny-all — tests grant explicitly.
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -61,8 +62,42 @@ fn denied(kind: &str, what: &str, flag: &str) -> JsErrorBox {
   ))
 }
 
-fn canonical(path: &str) -> PathBuf {
-  std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+/// Resolve `path` the way the kernel would: absolute, symlinks followed,
+/// `.`/`..` applied. Unlike `fs::canonicalize` this also works when the tail
+/// does not exist yet (a file about to be created), so `allowed/../../etc/x`
+/// and dangling symlinks cannot pass a prefix check.
+pub fn resolve(path: &str) -> PathBuf {
+  let p = Path::new(path);
+  if p.is_absolute() {
+    resolve_abs(p, 0)
+  } else {
+    resolve_abs(&std::env::current_dir().unwrap_or_default().join(p), 0)
+  }
+}
+
+fn resolve_abs(abs: &Path, depth: u32) -> PathBuf {
+  let mut out = PathBuf::new();
+  for c in abs.components() {
+    match c {
+      Component::Prefix(_) | Component::RootDir => out.push(c),
+      Component::CurDir => {}
+      Component::ParentDir => {
+        out.pop();
+      }
+      Component::Normal(name) => {
+        out.push(name);
+        // 40 hops mirrors Linux MAXSYMLINKS; past it the OS fails with ELOOP.
+        if depth < 40
+          && std::fs::symlink_metadata(&out).is_ok_and(|m| m.file_type().is_symlink())
+          && let Ok(target) = std::fs::read_link(&out)
+        {
+          out.pop();
+          out = resolve_abs(&out.join(target), depth + 1);
+        }
+      }
+    }
+  }
+  out
 }
 
 fn check_path(
@@ -78,7 +113,7 @@ fn check_path(
   match allowed {
     Allow::All => Ok(()),
     Allow::Only(roots) => {
-      let target = canonical(path);
+      let target = resolve(path);
       if roots.iter().any(|root| target.starts_with(root)) {
         Ok(())
       } else {
@@ -104,9 +139,14 @@ pub fn check_net(host: &str) -> Result<(), JsErrorBox> {
   if p.allow_all {
     return Ok(());
   }
-  let matches = |entry: &str| {
-    host == entry || host.split_once(':').is_some_and(|(h, _)| h == entry)
-  };
+  // Strip a trailing :port, leaving IPv6 literals ("[::1]") intact.
+  let bare = host
+    .rsplit_once(':')
+    .filter(|(h, port)| {
+      !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && (!h.contains(':') || h.ends_with(']'))
+    })
+    .map_or(host, |(h, _)| h);
+  let matches = |entry: &str| host == entry || bare == entry;
   match &p.net {
     Allow::All => Ok(()),
     Allow::Only(hosts) if hosts.iter().any(|h| matches(h)) => Ok(()),
@@ -114,20 +154,51 @@ pub fn check_net(host: &str) -> Result<(), JsErrorBox> {
   }
 }
 
-pub fn check_run(binary: &str) -> Result<(), JsErrorBox> {
+/// Check `--allow-run` for spawning `binary` with the child's `cwd` and
+/// `PATH`. With an allowlist, returns the resolved executable, which the
+/// caller must spawn instead of `binary`: a bare name is looked up in the
+/// child's PATH, so checking the name alone would let `env.PATH` or a file
+/// named like an allowed binary slip through.
+pub fn check_run(
+  binary: &str,
+  cwd: Option<&str>,
+  path_env: Option<&str>,
+) -> Result<Option<PathBuf>, JsErrorBox> {
   let p = permissions();
   if p.allow_all {
-    return Ok(());
+    return Ok(None);
   }
-  let name = Path::new(binary)
-    .file_name()
-    .map(|n| n.to_string_lossy().into_owned())
-    .unwrap_or_else(|| binary.to_string());
+  let deny = || denied("run", &format!("\"{binary}\""), "--allow-run");
   match &p.run {
-    Allow::All => Ok(()),
-    Allow::Only(bins) if bins.iter().any(|b| b == binary || *b == name) => Ok(()),
-    _ => Err(denied("run", &format!("\"{binary}\""), "--allow-run")),
+    Allow::All => Ok(None),
+    Allow::Only(bins) => {
+      let target = locate_program(binary, cwd, path_env).ok_or_else(deny)?;
+      let process_path = std::env::var("PATH").ok();
+      if bins
+        .iter()
+        .any(|b| locate_program(b, None, process_path.as_deref()).is_some_and(|allowed| allowed == target))
+      {
+        Ok(Some(target))
+      } else {
+        Err(deny())
+      }
+    }
+    Allow::Deny => Err(deny()),
   }
+}
+
+/// Resolve a program name to a canonical file path: names containing a path
+/// separator are taken relative to `cwd`, bare names are searched in `path_env`.
+fn locate_program(program: &str, cwd: Option<&str>, path_env: Option<&str>) -> Option<PathBuf> {
+  let base = || cwd.map_or_else(|| std::env::current_dir().unwrap_or_default(), PathBuf::from);
+  if program.contains('/') || (cfg!(windows) && program.contains('\\')) {
+    return std::fs::canonicalize(base().join(program)).ok();
+  }
+  let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+  std::env::split_paths(path_env?)
+    .flat_map(|dir| exts.iter().map(move |ext| dir.join(format!("{program}{ext}"))))
+    .find(|cand| cand.is_file())
+    .and_then(|cand| std::fs::canonicalize(base().join(cand)).ok())
 }
 
 pub fn check_env() -> Result<(), JsErrorBox> {
@@ -184,7 +255,7 @@ impl Allow<String> {
     match self {
       Allow::Deny => Allow::Deny,
       Allow::All => Allow::All,
-      Allow::Only(paths) => Allow::Only(paths.iter().map(|p| canonical(p)).collect()),
+      Allow::Only(paths) => Allow::Only(paths.iter().map(|p| resolve(p)).collect()),
     }
   }
 }
@@ -203,4 +274,28 @@ pub fn from_flags(flags: Vec<PermFlag>) -> Permissions {
     }
   }
   p
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn resolve_applies_dotdot_to_missing_paths() {
+    let base = resolve(&std::env::temp_dir().to_string_lossy());
+    let p = base.join("jse-no-such-dir/../../escape");
+    assert_eq!(resolve(p.to_str().unwrap()), base.parent().unwrap().join("escape"));
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn resolve_follows_dangling_symlinks() {
+    let dir = std::env::temp_dir().join(format!("jse-resolve-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let link = dir.join("link");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink("/nonexistent-target/file", &link).unwrap();
+    assert_eq!(resolve(link.to_str().unwrap()), PathBuf::from("/nonexistent-target/file"));
+    let _ = std::fs::remove_dir_all(&dir);
+  }
 }

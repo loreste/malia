@@ -112,6 +112,10 @@ fn sqlite_to_json(val: ValueRef) -> serde_json::Value {
 
 #[op2(fast)]
 pub fn op_sql_open(#[string] path: String) -> Result<u32, JsErrorBox> {
+  if path != ":memory:" && !path.is_empty() {
+    crate::permissions::check_read(&path)?;
+    crate::permissions::check_write(&path)?;
+  }
   GLOBAL_SQL.open(&path)
 }
 

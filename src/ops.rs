@@ -1199,7 +1199,17 @@ fn get_http_client(redirect: &str) -> &'static reqwest::Client {
     }),
     _ => FOLLOW_CLIENT.get_or_init(|| {
       reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(20))
+        // Like Policy::limited(20), but each hop must pass --allow-net too,
+        // or an allowed host could redirect to a denied one.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+          if attempt.previous().len() >= 20 {
+            attempt.error("too many redirects")
+          } else if let Err(e) = crate::permissions::check_net(&url_host_for_perm(attempt.url().as_str())) {
+            attempt.error(e)
+          } else {
+            attempt.follow()
+          }
+        }))
         .build()
         .expect("follow reqwest client")
     }),
@@ -1667,7 +1677,7 @@ pub async fn op_ws_connect(
   state: Rc<RefCell<OpState>>,
   #[string] url: String,
 ) -> Result<u32, JsErrorBox> {
-  crate::permissions::check_net(&url)?;
+  crate::permissions::check_net(&url_host_for_perm(&url))?;
   let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
     .await
     .map_err(|e| JsErrorBox::generic(format!("WebSocket connect failed: {e}")))?;
@@ -1870,6 +1880,18 @@ fn child_table(state: &mut OpState) -> &mut ChildTable {
   state.borrow_mut::<ChildTable>()
 }
 
+/// Permission-check the spawn and return the program to execute: the path
+/// `check_run` resolved (under an allowlist) or the command as given.
+fn checked_program(spec: &SpawnSpec) -> Result<std::ffi::OsString, JsErrorBox> {
+  let child_path = spec
+    .env
+    .as_ref()
+    .and_then(|env| env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone()))
+    .or_else(|| std::env::var("PATH").ok());
+  let resolved = crate::permissions::check_run(&spec.cmd, spec.cwd.as_deref(), child_path.as_deref())?;
+  Ok(resolved.map_or_else(|| spec.cmd.clone().into(), std::path::PathBuf::into_os_string))
+}
+
 fn apply_spec(cmd: &mut tokio::process::Command, spec: &SpawnSpec) {
   cmd.args(&spec.args);
   if let Some(cwd) = &spec.cwd {
@@ -1924,8 +1946,7 @@ struct SpawnedChild {
 #[op2]
 #[serde]
 pub fn op_child_spawn(state: &mut OpState, #[serde] spec: SpawnSpec) -> Result<SpawnedChild, JsErrorBox> {
-  crate::permissions::check_run(&spec.cmd)?;
-  let mut cmd = tokio::process::Command::new(&spec.cmd);
+  let mut cmd = tokio::process::Command::new(checked_program(&spec)?);
   cmd
     .stdin(stdio_of(&spec.stdin))
     .stdout(stdio_of(&spec.stdout))
@@ -2061,8 +2082,7 @@ fn read_pipe_to_end(pipe: Option<impl std::io::Read>) -> Vec<u8> {
 #[op2]
 #[serde]
 pub fn op_child_spawn_sync(#[serde] spec: SpawnSpec) -> Result<ChildResult, JsErrorBox> {
-  crate::permissions::check_run(&spec.cmd)?;
-  let mut cmd = std::process::Command::new(&spec.cmd);
+  let mut cmd = std::process::Command::new(checked_program(&spec)?);
   cmd.args(&spec.args);
   if let Some(cwd) = &spec.cwd {
     cmd.current_dir(cwd);

@@ -502,6 +502,57 @@ fn permissions_cli() {
   );
 }
 
+/// Allowlisted permissions must not be escapable via `..`, dangling
+/// symlinks, sqlite paths, a child's PATH, or fetch redirects.
+#[cfg(unix)]
+#[test]
+fn permissions_cannot_be_bypassed() {
+  use std::os::unix::fs::PermissionsExt;
+
+  let dir = std::env::temp_dir().join(format!("jse-perm-bypass-{}", std::process::id()));
+  let _ = std::fs::remove_dir_all(&dir);
+  std::fs::create_dir_all(dir.join("ok")).unwrap();
+  std::fs::create_dir_all(dir.join("evil")).unwrap();
+  std::os::unix::fs::symlink(dir.join("outside.txt"), dir.join("ok/link")).unwrap();
+  let evil_sh = dir.join("evil/sh");
+  std::fs::write(&evil_sh, "#!/bin/sh\nexit 0\n").unwrap();
+  std::fs::set_permissions(&evil_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+  let ok = dir.join("ok");
+  let port = (20000 + std::process::id() % 20000).to_string();
+  let out = std::process::Command::new(env!("CARGO_BIN_EXE_jse"))
+    .args([
+      "run",
+      &format!("--allow-read={}", ok.display()),
+      &format!("--allow-write={}", ok.display()),
+      "--allow-run=sh",
+      "--allow-net=0.0.0.0,127.0.0.1",
+      &fixture("perm_bypass.mjs"),
+      dir.to_str().unwrap(),
+      &port,
+    ])
+    .output()
+    .unwrap();
+  let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+  let stderr = String::from_utf8_lossy(&out.stderr);
+  let result = |probe: &str| {
+    stdout
+      .lines()
+      .find_map(|l| l.strip_prefix(&format!("{probe}: ")))
+      .unwrap_or_else(|| panic!("no result for {probe}; stdout: {stdout} stderr: {stderr}"))
+      .to_string()
+  };
+
+  assert_eq!(result("write-inside"), "ALLOWED");
+  assert_eq!(result("run-allowed"), "ALLOWED");
+  for probe in ["write-traversal", "write-dangling-symlink", "sqlite-outside", "run-path-override"] {
+    assert_eq!(result(probe), "DENIED", "{probe}");
+  }
+  assert_ne!(result("fetch-redirect"), "ALLOWED");
+  assert!(!dir.join("escape.txt").exists() && !dir.join("outside.txt").exists());
+  let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Full Express 5 app: routing, query arrays, JSON body parsing, custom
 /// middleware, static files, error handler — all responses must match.
 /// Requires `npm install` in examples/express_demo (skipped otherwise).

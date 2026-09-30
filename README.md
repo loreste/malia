@@ -111,9 +111,17 @@ malia run --allow-all script.js                   # everything
 ```
 
 A denied call throws `PermissionDenied: <kind> access to <what>, run again
-with <flag>`. Module imports are not checked (same as Deno). Checks apply to
-runtime fs, fetch, serve, child_process, and env operations. Workers inherit
-the process permissions.
+with <flag>`. Without `--allow-env`, `process.env` is empty instead of
+throwing. Module imports are not checked (same as Deno). Checks apply to
+runtime fs (including SQLite databases), fetch (every redirect hop), serve,
+WebSocket, child_process, and env operations. Workers inherit the process
+permissions.
+
+Path lists are compared after resolving `..` and symlinks, including
+symlinks whose target does not exist yet. `--allow-run` entries are resolved
+to executables through `PATH`, and a spawn is allowed only if the program it
+would actually run (looked up in the child's `PATH` and `cwd`) is one of
+them.
 
 ## Configuration
 
