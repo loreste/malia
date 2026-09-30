@@ -1394,8 +1394,24 @@ fn z_feed(stream: &mut ZStream, data: &[u8], finish: bool) -> Result<Vec<u8>, Js
       if !data.is_empty() {
         enc.write_all(data).map_err(err)?;
       }
+      if finish {
+        // into_inner() writes the final meta-block; flush() alone leaves
+        // the stream unterminated.
+        let done = std::mem::replace(enc, Box::new(brotli::CompressorWriter::new(Vec::new(), 4096, 11, 22)));
+        return Ok(done.into_inner());
+      }
       enc.flush().map_err(err)?;
       Ok(std::mem::take(enc.get_mut()))
+    }
+    ZStream::BrotliDec(dec) if finish => {
+      if !data.is_empty() {
+        dec.write_all(data).map_err(err)?;
+      }
+      let done = std::mem::replace(dec, Box::new(brotli::DecompressorWriter::new(Vec::new(), 4096)));
+      // into_inner() fails when the compressed stream is incomplete.
+      done
+        .into_inner()
+        .map_err(|_| JsErrorBox::from_err(ZlibError("unexpected end of file".into())))
     }
     ZStream::BrotliDec(dec) => {
       if !data.is_empty() {

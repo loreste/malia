@@ -1,0 +1,19 @@
+{
+  "name": "jse-db-driver-tests",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@elastic/elasticsearch": "^8.15.0",
+    "cassandra-driver": "^4.7.2",
+    "drizzle-orm": "^0.36.0",
+    "ioredis": "^5.4.1",
+    "knex": "^3.1.0",
+    "mongodb": "^6.10.0",
+    "mongoose": "^8.8.0",
+    "mysql2": "^3.11.4",
+    "pg": "^8.13.1",
+    "postgres": "^3.4.5",
+    "redis": "^4.7.0"
+  }
+}

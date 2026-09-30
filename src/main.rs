@@ -323,6 +323,14 @@ fn check_standalone_binary() -> Option<String> {
 }
 
 fn create_standalone_binary(entry_path: &Path, output_path: &Path) -> anyhow::Result<()> {
+  // Windows only runs files with an executable extension.
+  let with_exe;
+  let output_path = if cfg!(windows) && output_path.extension().is_none() {
+    with_exe = output_path.with_extension("exe");
+    with_exe.as_path()
+  } else {
+    output_path
+  };
   let current_exe = std::env::current_exe()?;
   let exe_bytes = std::fs::read(&current_exe)?;
 
@@ -336,6 +344,12 @@ fn create_standalone_binary(entry_path: &Path, output_path: &Path) -> anyhow::Re
   } else {
     raw_code
   };
+
+  if let Some(parent) = output_path.parent()
+    && !parent.as_os_str().is_empty()
+  {
+    std::fs::create_dir_all(parent)?;
+  }
 
   let code_bytes = code.as_bytes();
   let code_len = (code_bytes.len() as u64).to_le_bytes();
@@ -423,7 +437,7 @@ fn run_with_watch(
 
     // Not supervise(): a non-zero exit code must not end the watcher.
     let result = tokio_rt
-      .block_on(tokio::task::spawn_blocking(move || js_engine::runtime::run_file_blocking(&f)))
+      .block_on(async move { tokio::task::spawn_blocking(move || js_engine::runtime::run_file_blocking(&f)).await })
       .map_err(anyhow::Error::from)
       .and_then(|r| r);
     if let Err(e) = result {
@@ -491,6 +505,30 @@ async fn supervise_cluster(
   Ok(())
 }
 
+/// Run an external tool with inherited stdio; returns its exit code.
+/// Package-manager launchers are .cmd scripts on Windows, and Command only
+/// tries appending .exe.
+fn tool_program(program: &str) -> String {
+  match program {
+    "npm" | "npx" | "yarn" | "pnpm" if cfg!(windows) => format!("{program}.cmd"),
+    _ => program.to_string(),
+  }
+}
+
+fn run_tool(program: &str, args: &[String]) -> anyhow::Result<i32> {
+  Ok(std::process::Command::new(tool_program(program)).args(args).status()?.code().unwrap_or(0))
+}
+
+/// `jse x <bin>`: a node_modules/.bin binary, falling back to npx.
+fn run_package_bin(current_dir: &Path, command: &str, args: &[String]) -> anyhow::Result<i32> {
+  if let Some(local_bin) = find_local_bin(current_dir, command) {
+    return run_tool(&local_bin.to_string_lossy(), args);
+  }
+  let mut npx_args = vec![command.to_string()];
+  npx_args.extend_from_slice(args);
+  run_tool("npx", &npx_args)
+}
+
 #[allow(dead_code)]
 fn main() -> anyhow::Result<()> {
   run()
@@ -515,6 +553,18 @@ pub fn run() -> anyhow::Result<()> {
   }
 
   let mut raw_args: Vec<String> = std::env::args().collect();
+
+  // `npm` and `x`/`exec`/`dlx` pass everything after them to the tool;
+  // clap would otherwise take global flags such as --version for itself.
+  match raw_args.get(1).map(String::as_str) {
+    Some("npm") => std::process::exit(run_tool("npm", &raw_args[2..])?),
+    Some("x" | "exec" | "dlx") if raw_args.len() > 2 => {
+      let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+      std::process::exit(run_package_bin(&current_dir, &raw_args[2], &raw_args[3..])?);
+    }
+    _ => {}
+  }
+
   if let Ok(node_opts) = std::env::var("NODE_OPTIONS") {
     let opts = node_opts.split_whitespace().map(String::from).collect::<Vec<_>>();
     if raw_args.len() > 1 {
@@ -539,6 +589,21 @@ pub fn run() -> anyhow::Result<()> {
     } else {
       let exe_name = current_exe_name();
       println!("{} {}", exe_name, env!("CARGO_PKG_VERSION"));
+    }
+    return Ok(());
+  }
+
+  // -c / --check: parse the file (the first non-flag argument, after an
+  // optional `run`) without executing it.
+  if cli.check {
+    let target = raw_args.iter().skip(1).find(|a| !a.starts_with('-') && a.as_str() != "run");
+    let Some(target) = target else {
+      eprintln!("error: --check needs a file");
+      std::process::exit(9);
+    };
+    if let Err(e) = js_engine::ts::check_syntax(Path::new(target)) {
+      eprintln!("{e}");
+      std::process::exit(1);
     }
     return Ok(());
   }
@@ -859,7 +924,7 @@ pub fn run() -> anyhow::Result<()> {
 
     Some(Command::Install { packages, save_dev }) => {
       let pm = detect_package_manager(&current_dir);
-      let mut cmd = std::process::Command::new(pm);
+      let mut cmd = std::process::Command::new(tool_program(pm));
       if packages.is_empty() {
         cmd.arg("install");
       } else {
@@ -881,7 +946,7 @@ pub fn run() -> anyhow::Result<()> {
       }
 
       let status = cmd.status().or_else(|_| {
-        let mut fallback = std::process::Command::new("npm");
+        let mut fallback = std::process::Command::new(tool_program("npm"));
         if packages.is_empty() {
           fallback.arg("install");
         } else {
@@ -896,27 +961,9 @@ pub fn run() -> anyhow::Result<()> {
       std::process::exit(status.code().unwrap_or(0));
     }
 
-    Some(Command::X { command, args }) => {
-      if let Some(local_bin) = find_local_bin(&current_dir, &command) {
-        let status = std::process::Command::new(&local_bin)
-          .args(&args)
-          .status()?;
-        std::process::exit(status.code().unwrap_or(0));
-      }
+    Some(Command::X { command, args }) => std::process::exit(run_package_bin(&current_dir, &command, &args)?),
 
-      let mut npx_cmd = std::process::Command::new("npx");
-      npx_cmd.arg(&command);
-      npx_cmd.args(&args);
-      let status = npx_cmd.status()?;
-      std::process::exit(status.code().unwrap_or(0));
-    }
-
-    Some(Command::Npm { args }) => {
-      let status = std::process::Command::new("npm")
-        .args(&args)
-        .status()?;
-      std::process::exit(status.code().unwrap_or(0));
-    }
+    Some(Command::Npm { args }) => std::process::exit(run_tool("npm", &args)?),
 
     Some(Command::Run {
       file,

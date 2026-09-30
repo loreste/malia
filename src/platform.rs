@@ -242,17 +242,20 @@ pub fn ppid() -> u32 {
   }
 }
 
-/// A handle that may change timestamps: Unix only needs read access;
-/// Windows needs write access, and backup semantics to open directories.
+/// A handle that may change timestamps: Unix only needs read access.
+/// Windows `SetFileTime` needs `FILE_WRITE_ATTRIBUTES`. Opening with
+/// `GENERIC_WRITE` plus backup semantics is denied without the backup
+/// privilege (`EPERM`); directories still need backup semantics.
 pub fn open_for_set_times(path: &str) -> io::Result<File> {
   #[cfg(unix)]
   return File::open(path);
   #[cfg(windows)]
   {
     use std::os::windows::fs::OpenOptionsExt;
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     std::fs::OpenOptions::new()
-      .write(true)
+      .access_mode(FILE_WRITE_ATTRIBUTES)
       .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
       .open(path)
   }

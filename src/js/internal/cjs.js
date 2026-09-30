@@ -66,6 +66,15 @@ export function __makeRequire(parentUrl, modules, urls) {
   return require;
 }
 
+// Value of a detected named export. Like Node's CommonJS export detection,
+// a non-enumerable getter (e.g. a lazy optional dependency) is not read.
+export function __namedExport(exp, key) {
+  if (exp === null || (typeof exp !== "object" && typeof exp !== "function")) return undefined;
+  const desc = Object.getOwnPropertyDescriptor(exp, key);
+  if (desc && desc.get && !desc.enumerable) return undefined;
+  return exp[key];
+}
+
 export function __filenameOf(url) {
   return decodeURIComponent(String(url).replace(/^file:\/\//, ""));
 }

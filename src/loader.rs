@@ -21,6 +21,9 @@ use deno_core::ResolutionKind;
 use deno_core::error::ModuleLoaderError;
 use deno_error::JsErrorBox;
 
+/// URL fragment marking the lazy CommonJS variant (see load_inner).
+const LAZY_CJS_FRAGMENT: &str = "jse-cjs-lazy";
+
 /// Bare specifiers that map to builtin shims.
 const BUILTINS: &[&str] = &[
   "assert", "assert/strict", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto",
@@ -752,6 +755,13 @@ impl JseModuleLoader {
       ));
     }
 
+    // CommonJS required from CommonJS is linked through a lazy variant
+    // (URL fragment #jse-cjs-lazy) whose body only runs at require() time.
+    let lazy_cjs = specifier.fragment() == Some(LAZY_CJS_FRAGMENT);
+    let mut canonical = specifier.clone();
+    canonical.set_fragment(None);
+    let specifier = &canonical;
+
     let path = specifier
       .to_file_path()
       .map_err(|_| err(format!("Only file:// URLs are supported, got {spec_str}")))?;
@@ -825,21 +835,7 @@ impl JseModuleLoader {
       ));
     }
 
-    let (is_cjs, explicit_cjs) = match media_type {
-      MediaType::Cjs => (true, true),
-      MediaType::JavaScript => {
-        let dir = path.parent().unwrap_or(Path::new("/"));
-        match self.nearest_package_json(dir) {
-          Some(pkg) => {
-            let is_mod = pkg.type_.as_deref() == Some("module");
-            let is_explicit_cjs = pkg.type_.as_deref() == Some("commonjs");
-            (!is_mod, is_explicit_cjs)
-          }
-          None => (true, false), // Node semantics: no package.json => CommonJS
-        }
-      }
-      _ => (false, false),
-    };
+    let (is_cjs, explicit_cjs) = self.cjs_kind(&path, media_type);
 
     let code = std::fs::read_to_string(&path).map_err(err)?;
 
@@ -857,7 +853,7 @@ impl JseModuleLoader {
     let is_cjs = is_cjs && (explicit_cjs || !has_esm_syntax(&code));
 
     let code = if is_cjs {
-      self.wrap_cjs(specifier, &code)?
+      self.wrap_cjs(specifier, &code, lazy_cjs)?
     } else {
       code
     };
@@ -866,8 +862,38 @@ impl JseModuleLoader {
     // previous run); V8 falls back to a full compile when it rejects the
     // cached data, and code_cache_ready then stores a fresh cache.
     let code_cache = code_cache_for(&code);
+    let requested = if lazy_cjs {
+      let mut url = specifier.clone();
+      url.set_fragment(Some(LAZY_CJS_FRAGMENT));
+      url
+    } else {
+      specifier.clone()
+    };
 
-    Ok(module_source(ModuleType::JavaScript, code, specifier, code_cache))
+    Ok(module_source(ModuleType::JavaScript, code, &requested, code_cache))
+  }
+
+  /// (is CommonJS, explicitly so): .cjs/.cts always; .js by the nearest
+  /// package.json "type" (no package.json means CommonJS, as in Node).
+  fn cjs_kind(&self, path: &Path, media_type: MediaType) -> (bool, bool) {
+    match media_type {
+      MediaType::Cjs | MediaType::Cts => (true, true),
+      MediaType::JavaScript => {
+        let dir = path.parent().unwrap_or(Path::new("/"));
+        match self.nearest_package_json(dir) {
+          Some(pkg) => (pkg.type_.as_deref() != Some("module"), pkg.type_.as_deref() == Some("commonjs")),
+          None => (true, false),
+        }
+      }
+      _ => (false, false),
+    }
+  }
+
+  /// Whether the module at `url` will be wrapped as CommonJS.
+  fn is_cjs_module(&self, url: &ModuleSpecifier) -> bool {
+    let Ok(path) = url.to_file_path() else { return false };
+    let (is_cjs, explicit) = self.cjs_kind(&path, MediaType::from_path(&path));
+    is_cjs && (explicit || std::fs::read_to_string(&path).is_ok_and(|code| !has_esm_syntax(&code)))
   }
 
   fn collect_reexported_named_exports(
@@ -918,10 +944,13 @@ impl JseModuleLoader {
   /// are hoisted to real ESM imports (resolved through this same loader, so
   /// npm/relative/builtin specifiers all work); the `require` function
   /// becomes a lookup into the hoisted namespace objects.
+  /// `lazy`: the variant CommonJS dependents link to; it exports the body
+  /// without running it, so require() decides when it executes.
   fn wrap_cjs(
     &self,
     specifier: &ModuleSpecifier,
     code: &str,
+    lazy: bool,
   ) -> Result<String, ModuleLoaderError> {
     let code = code.strip_prefix("#!").map_or(code, |rest| {
       // Strip shebang line.
@@ -931,7 +960,7 @@ impl JseModuleLoader {
     let specs = scan_requires(code);
     let mut out = String::with_capacity(code.len() + 1024);
     out.push_str(
-      "import { __makeRequire as __jse_mr, __filenameOf as __jse_fo, __dirnameOf as __jse_do, __initCjs as __jse_ic } from \"jse:internal/cjs\";\n",
+      "import { __makeRequire as __jse_mr, __filenameOf as __jse_fo, __dirnameOf as __jse_do, __initCjs as __jse_ic, __namedExport as __jse_ne } from \"jse:internal/cjs\";\n",
     );
     let mut map_entries = String::new();
     let mut url_entries = String::new();
@@ -956,7 +985,13 @@ impl JseModuleLoader {
           "jse:internal/cjs-missing".to_string()
         }
       };
-      out.push_str(&format!("import * as __jse_m{i} from \"{url}\";\n"));
+      // CommonJS dependencies link to their lazy variant; the URL map keeps
+      // the plain URL, which keys the shared exports cache.
+      let import_url = match ModuleSpecifier::parse(&url) {
+        Ok(u) if u.scheme() == "file" && self.is_cjs_module(&u) => format!("{url}#{LAZY_CJS_FRAGMENT}"),
+        _ => url.clone(),
+      };
+      out.push_str(&format!("import * as __jse_m{i} from \"{import_url}\";\n"));
       let key = serde_json::to_string(spec).unwrap_or_else(|_| "\"?\"".into());
       map_entries.push_str(&format!("{key}: __jse_m{i},"));
       url_entries.push_str(&format!("{key}: \"{url}\","));
@@ -966,6 +1001,9 @@ impl JseModuleLoader {
     out.push_str("export function __jse_body(module, exports, require, __filename, __dirname) {\n");
     out.push_str(code);
     out.push_str("\n}\n");
+    if lazy {
+      return Ok(out);
+    }
     out.push_str("const __jse_exp = __jse_ic(import.meta.url, __jse_body, __jse_modules(), __jse_urls());\n");
     let mut visited = std::collections::HashSet::new();
     visited.insert(specifier.to_string());
@@ -973,7 +1011,7 @@ impl JseModuleLoader {
     for (i, name) in named_exports.iter().enumerate() {
       let key = serde_json::to_string(name).unwrap_or_else(|_| format!("\"{name}\""));
       out.push_str(&format!(
-        "const __jse_exp_{i} = (__jse_exp && (typeof __jse_exp === 'object' || typeof __jse_exp === 'function')) ? __jse_exp[{key}] : undefined;\nexport {{ __jse_exp_{i} as {name} }};\n"
+        "const __jse_exp_{i} = __jse_ne(__jse_exp, {key});\nexport {{ __jse_exp_{i} as {name} }};\n"
       ));
     }
     out.push_str("export default __jse_exp;\n");
@@ -1617,5 +1655,27 @@ mod tests {
       exports,
       vec!["foo", "bar", "baz", "qux", "prop1", "prop2", "alpha", "beta", "gamma", "delta", "epsilon"]
     );
+  }
+}
+
+/// createRequire(): resolve `specifier` from the file `parent` with require()
+/// semantics (node_modules, "exports" require conditions, extensions,
+/// index files). Returns a file path, or "node:<name>" for builtins.
+#[deno_core::op2]
+#[string]
+pub fn op_require_resolve(#[string] specifier: String, #[string] parent: String) -> Result<String, deno_error::JsErrorBox> {
+  thread_local! {
+    static LOADER: JseModuleLoader = JseModuleLoader::new();
+  }
+  let not_found = || deno_error::JsErrorBox::generic(format!("Cannot find module '{specifier}' required from {parent}"));
+  let referrer = ModuleSpecifier::from_file_path(&parent).map_err(|_| not_found())?;
+  let resolved = LOADER
+    .with(|loader| loader.resolve_internal(&specifier, referrer.as_str(), true))
+    .map_err(|_| not_found())?;
+  if resolved.scheme() == "file" {
+    let path = resolved.to_file_path().map_err(|_| not_found())?;
+    Ok(path.to_string_lossy().into_owned())
+  } else {
+    Ok(resolved.to_string())
   }
 }

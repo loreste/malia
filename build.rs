@@ -94,6 +94,16 @@ mod production {
   include!("src/production.rs");
 }
 
+// The snapshot only needs the op's declaration.
+#[allow(dead_code)]
+mod loader {
+  #[deno_core::op2]
+  #[string]
+  pub fn op_require_resolve(#[string] _specifier: String, #[string] _parent: String) -> Result<String, deno_error::JsErrorBox> {
+    Err(deno_error::JsErrorBox::generic("unavailable during snapshot build"))
+  }
+}
+
 #[allow(dead_code)]
 mod sql {
   use deno_core::op2;

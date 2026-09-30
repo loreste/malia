@@ -197,16 +197,14 @@ export function createRequire(filename) {
     if (Object.prototype.hasOwnProperty.call(BUILTIN_MAP, text)) {
       return `node:${text}`;
     }
-    const target = path.isAbsolute(text) ? text : path.resolve(dir, text);
-    const exts = ["", ".js", ".json", ".wasm", ".cjs", ".mjs", "/index.js", "/index.json"];
-    for (const ext of exts) {
-      const candidate = target + ext;
-      try {
-        const stat = Deno.core.ops.op_stat_sync(candidate);
-        if (stat && stat.is_file) return candidate;
-      } catch (_) {}
+    // Same resolution as require() in CommonJS modules (Rust loader).
+    try {
+      return Deno.core.ops.op_require_resolve(text, path.join(dir, "__require__.js"));
+    } catch (err) {
+      const notFound = new Error(err.message);
+      notFound.code = "MODULE_NOT_FOUND";
+      throw notFound;
     }
-    return target;
   }
 
   function require(spec) {

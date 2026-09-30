@@ -22,6 +22,11 @@ fn run_fixture(name: &str) {
 }
 
 #[test]
+fn claims_compat() {
+  run_fixture("claims_compat.mjs");
+}
+
+#[test]
 fn node_runtime_compat() {
   run_fixture("node_runtime_compat.mjs");
 }

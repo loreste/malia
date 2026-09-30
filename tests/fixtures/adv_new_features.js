@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 
 console.log("=== RUNNING ADVANCED FEATURES ADVERSARIAL TEST ===");
 
@@ -186,7 +187,7 @@ console.log("   jse.trace Distributed Tracing: PASS");
 console.log("5. Testing jse.queue Embedded Task Queue...");
 assert(globalThis.jse?.queue, "jse.queue must exist globally");
 
-const queuePath = `${os.tmpdir()}/jse-queue-test-${Date.now()}.db`;
+const queuePath = path.join(os.tmpdir(), `jse-queue-test-${Date.now()}.db`);
 const q = jse.queue.open(queuePath);
 
 try {

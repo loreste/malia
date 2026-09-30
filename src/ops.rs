@@ -2402,6 +2402,7 @@ deno_core::extension!(
     op_hmac_update,
     op_hmac_digest,
     op_crypto_pbkdf2,
+    crate::loader::op_require_resolve,
     crate::crypto::op_crypto_key_import,
     crate::crypto::op_crypto_public_from_private,
     crate::crypto::op_crypto_generate_key_pair,

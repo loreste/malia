@@ -184,6 +184,8 @@ pub fn exit_code() -> i32 {
 pub async fn run_module(specifier: &ModuleSpecifier) -> anyhow::Result<()> {
   crate::logger::init();
   crate::panic::init();
+  // Each run is its own process from the caller's point of view.
+  EXIT_CODE.store(0, std::sync::atomic::Ordering::Relaxed);
   let mut rt = create_runtime(None);
 
   // Execute preloaded modules (--require / -r) if any
@@ -399,73 +401,193 @@ fn format_value(rt: &mut JsRuntime, value: &v8::Global<v8::Value>) -> String {
 }
 
 /// Interactive REPL: one line in, evaluated with execute_script; promises
-/// are awaited against the event loop.
+/// are awaited against the event loop. A pipe (no terminal) is read as
+/// plain lines so `jse repl` works without a tty.
 pub async fn repl() -> anyhow::Result<()> {
   let mut rt = create_runtime(None);
-  let mut editor = rustyline::DefaultEditor::new()?;
   println!("jse REPL (V8). Type .exit or Ctrl-D to quit.");
-  loop {
-    let line = match editor.readline("> ") {
-      Ok(line) => line,
-      Err(rustyline::error::ReadlineError::Interrupted) => continue,
-      Err(rustyline::error::ReadlineError::Eof) => break,
-      Err(e) => return Err(e.into()),
-    };
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-      continue;
-    }
-    if trimmed == ".exit" {
-      break;
-    }
-    let _ = editor.add_history_entry(&line);
-    // Evaluate; on an `await`-related syntax error, retry wrapped in an
-    // async IIFE for top-level-await support.
-    let mut value = match rt.execute_script("<repl>", line.clone()) {
-      Ok(value) => Some(value),
-      Err(e) => {
-        if format!("{e}").contains("await") {
-          match rt.execute_script("<repl>", format!("(async () => ( {line} ))()")) {
-            Ok(value) => Some(value),
-            Err(e) => {
-              eprintln!("Uncaught {e}");
-              None
-            }
-          }
-        } else {
-          eprintln!("Uncaught {e}");
-          None
-        }
+  if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+    let mut editor = rustyline::DefaultEditor::new()?;
+    loop {
+      let line = match editor.readline("> ") {
+        Ok(line) => line,
+        Err(rustyline::error::ReadlineError::Interrupted) => continue,
+        Err(rustyline::error::ReadlineError::Eof) => break,
+        Err(e) => return Err(e.into()),
+      };
+      let _ = editor.add_history_entry(&line);
+      if !eval_repl_line(&mut rt, &line).await? {
+        break;
       }
-    };
-    let Some(value) = value.take() else {
-      continue;
-    };
-    // Resolve promises while driving the event loop.
-    let resolved = {
-      let resolve_fut = rt.resolve(value);
-      match rt
-        .with_event_loop_promise(resolve_fut, PollEventLoopOptions::default())
-        .await
-      {
-        Ok(v) => v,
-        Err(e) => {
-          eprintln!("Uncaught (in promise) {e}");
-          continue;
-        }
+    }
+  } else {
+    let stdin = std::io::stdin();
+    for line in stdin.lines() {
+      if !eval_repl_line(&mut rt, &line?).await? {
+        break;
       }
-    };
-    // Drain any work scheduled while resolving.
-    let _ = rt.run_event_loop(PollEventLoopOptions::default()).await;
-    let rendered = format_value(&mut rt, &resolved);
-    let is_undefined = {
-      deno_core::scope!(scope, &mut rt);
-      v8::Local::new(scope, &resolved).is_undefined()
-    };
-    if !is_undefined {
-      println!("{rendered}");
     }
   }
   crate::ops::shutdown_workers(&mut rt.op_state().borrow_mut());
   Ok(())
+}
+
+/// Evaluate one REPL line. Returns false when the session should end.
+async fn eval_repl_line(rt: &mut JsRuntime, line: &str) -> anyhow::Result<bool> {
+  let trimmed = line.trim();
+  if trimmed.is_empty() {
+    return Ok(true);
+  }
+  if trimmed == ".exit" {
+    return Ok(false);
+  }
+  // Evaluate; on an `await`-related syntax error, retry wrapped in an
+  // async IIFE for top-level-await support.
+  let value = match rt.execute_script("<repl>", line.to_string()) {
+    Ok(value) => Some(value),
+    Err(e) => {
+      if format!("{e}").contains("await") {
+        match rt.execute_script("<repl>", wrap_top_level_await(line)) {
+          Ok(value) => Some(value),
+          Err(e) => {
+            eprintln!("Uncaught {e}");
+            None
+          }
+        }
+      } else {
+        eprintln!("Uncaught {e}");
+        None
+      }
+    }
+  };
+  let Some(value) = value else {
+    return Ok(true);
+  };
+  // Resolve promises while driving the event loop.
+  let resolved = {
+    let resolve_fut = rt.resolve(value);
+    match rt
+      .with_event_loop_promise(resolve_fut, PollEventLoopOptions::default())
+      .await
+    {
+      Ok(v) => v,
+      Err(e) => {
+        eprintln!("Uncaught (in promise) {e}");
+        return Ok(true);
+      }
+    }
+  };
+  // Drain any work scheduled while resolving.
+  let _ = rt.run_event_loop(PollEventLoopOptions::default()).await;
+  let rendered = format_value(rt, &resolved);
+  let is_undefined = {
+    deno_core::scope!(scope, rt);
+    v8::Local::new(scope, &resolved).is_undefined()
+  };
+  if !is_undefined {
+    println!("{rendered}");
+  }
+  Ok(true)
+}
+
+/// REPL input that uses top-level `await` runs inside an async function.
+/// Simple declarations (`const x = ...`) become globals so later lines see
+/// them, and a trailing expression is returned so the REPL prints it.
+fn wrap_top_level_await(line: &str) -> String {
+  let statements = split_statements(line);
+  let last = statements.len().saturating_sub(1);
+  let body: Vec<String> = statements
+    .iter()
+    .enumerate()
+    .map(|(i, stmt)| {
+      if let Some((name, value)) = simple_declaration(stmt) {
+        format!("globalThis.{name} = ({value});")
+      } else if i == last && is_expression_statement(stmt) {
+        format!("return ({stmt});")
+      } else {
+        format!("{stmt};")
+      }
+    })
+    .collect();
+  format!("(async () => {{ {} }})()", body.join("\n"))
+}
+
+/// Split at top-level `;`, ignoring those inside strings, template
+/// literals, comments, and brackets.
+fn split_statements(src: &str) -> Vec<String> {
+  let chars: Vec<char> = src.chars().collect();
+  let mut out = Vec::new();
+  let mut current = String::new();
+  let mut depth = 0i32;
+  let mut i = 0;
+  while i < chars.len() {
+    let c = chars[i];
+    match c {
+      '\'' | '"' | '`' => {
+        current.push(c);
+        i += 1;
+        while i < chars.len() && chars[i] != c {
+          if chars[i] == '\\' && i + 1 < chars.len() {
+            current.push(chars[i]);
+            i += 1;
+          }
+          current.push(chars[i]);
+          i += 1;
+        }
+        if i < chars.len() {
+          current.push(chars[i]);
+        }
+      }
+      '/' if chars.get(i + 1) == Some(&'/') => break,
+      '(' | '[' | '{' => {
+        depth += 1;
+        current.push(c);
+      }
+      ')' | ']' | '}' => {
+        depth -= 1;
+        current.push(c);
+      }
+      ';' if depth == 0 => out.push(std::mem::take(&mut current)),
+      _ => current.push(c),
+    }
+    i += 1;
+  }
+  out.push(current);
+  out.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+}
+
+/// `const|let|var <identifier> = <value>` -> (identifier, value).
+fn simple_declaration(stmt: &str) -> Option<(&str, &str)> {
+  let rest = ["const ", "let ", "var "].iter().find_map(|kw| stmt.strip_prefix(kw))?.trim_start();
+  let name_len = rest.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))?;
+  let (name, after) = rest.split_at(name_len);
+  let value = after.trim_start().strip_prefix('=')?;
+  if name.is_empty() || value.starts_with('=') {
+    return None;
+  }
+  Some((name, value.trim()))
+}
+
+fn is_expression_statement(stmt: &str) -> bool {
+  const KEYWORDS: [&str; 16] = [
+    "if", "for", "while", "do", "switch", "try", "throw", "return", "function", "class", "const", "let", "var",
+    "import", "export", "{",
+  ];
+  !KEYWORDS.iter().any(|kw| {
+    stmt.starts_with(kw)
+      && stmt[kw.len()..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '$'))
+  })
+}
+
+#[cfg(test)]
+mod repl_tests {
+  use super::*;
+
+  #[test]
+  fn wraps_declarations_and_returns_last_expression() {
+    let wrapped = wrap_top_level_await("const x = await f(1, \"a;b\"); x + 2");
+    assert_eq!(wrapped, "(async () => { globalThis.x = (await f(1, \"a;b\"));\nreturn (x + 2); })()");
+    assert_eq!(wrap_top_level_await("await g()"), "(async () => { return (await g()); })()");
+    assert!(wrap_top_level_await("for (const a of await xs()) {}").contains("for (const a of await xs()) {};"));
+  }
 }
