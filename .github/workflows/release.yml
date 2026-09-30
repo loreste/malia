@@ -22,7 +22,7 @@ jobs:
             archive: tar.gz
             asset_name: malia-darwin-arm64
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             archive: tar.gz
             asset_name: malia-darwin-x64
           - target: x86_64-unknown-linux-gnu
