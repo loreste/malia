@@ -134,6 +134,23 @@ fn error_response(status: u16, message: &'static str) -> Response<BoxBody<Bytes,
     .unwrap()
 }
 
+/// Active-connection gauge for jse.metrics: incremented on creation,
+/// decremented on drop.
+struct ConnCount;
+
+impl ConnCount {
+  fn new() -> Self {
+    crate::production::GLOBAL_TELEMETRY.inc_conns();
+    ConnCount
+  }
+}
+
+impl Drop for ConnCount {
+  fn drop(&mut self) {
+    crate::production::GLOBAL_TELEMETRY.dec_conns();
+  }
+}
+
 async fn handle_request(
   mut req: Request<Incoming>,
   id: u32,
@@ -143,6 +160,7 @@ async fn handle_request(
   remote: &str,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
   let start = std::time::Instant::now();
+  crate::production::GLOBAL_TELEMETRY.inc_requests();
   // WebSocket upgrade? Capture the OnUpgrade handle and the client key
   // before the request is disassembled; JS accepts via op_ws_upgrade.
   let ws_key = req
@@ -307,6 +325,9 @@ pub fn start_listener(
         let upgrades = upgrades.clone();
         let tls_acceptor = tls_acceptor.clone();
         let task = tokio::spawn(async move {
+          // Counts the connection for jse.metrics until the task ends or is
+          // aborted (dropped).
+          let _conn = ConnCount::new();
           let remote_for_svc = remote_str.clone();
           let service = hyper::service::service_fn(move |req: Request<Incoming>| {
             let req_tx = req_tx.clone();

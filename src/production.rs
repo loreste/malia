@@ -3,12 +3,10 @@
 // drain hooks for containerized (Kubernetes/Docker/systemd) deployments.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 use deno_core::op2;
 use serde::{Deserialize, Serialize};
 
 pub struct ProductionTelemetry {
-  pub start_time: Instant,
   pub requests_total: AtomicU64,
   pub active_conns: AtomicU64,
 }
@@ -22,7 +20,6 @@ impl Default for ProductionTelemetry {
 impl ProductionTelemetry {
   pub fn new() -> Self {
     Self {
-      start_time: Instant::now(),
       requests_total: AtomicU64::new(0),
       active_conns: AtomicU64::new(0),
     }
@@ -56,7 +53,8 @@ pub struct ProductionMetrics {
 #[op2]
 #[serde]
 pub fn op_production_metrics() -> ProductionMetrics {
-  let uptime = GLOBAL_TELEMETRY.start_time.elapsed().as_secs_f64();
+  // Same clock as performance.now(), which starts during runtime bootstrap.
+  let uptime = crate::ops::monotonic_start().elapsed().as_secs_f64();
   let requests = GLOBAL_TELEMETRY.requests_total.load(Ordering::Relaxed);
   let conns = GLOBAL_TELEMETRY.active_conns.load(Ordering::Relaxed);
 
@@ -67,17 +65,3 @@ pub fn op_production_metrics() -> ProductionMetrics {
   }
 }
 
-#[op2(fast)]
-pub fn op_production_record_request() {
-  GLOBAL_TELEMETRY.inc_requests();
-}
-
-#[op2(fast)]
-pub fn op_production_inc_conn() {
-  GLOBAL_TELEMETRY.inc_conns();
-}
-
-#[op2(fast)]
-pub fn op_production_dec_conn() {
-  GLOBAL_TELEMETRY.dec_conns();
-}

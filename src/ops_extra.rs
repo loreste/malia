@@ -2920,18 +2920,6 @@ pub fn op_log(level: u8, #[string] target: String, #[string] message: String) {
 }
 
 #[op2(fast)]
-pub fn op_log_http(
-  #[string] method: String,
-  #[string] url: String,
-  status: u16,
-  duration_ms: f64,
-  #[string] remote: String,
-  bytes: u32,
-) {
-  crate::logger::log_http(&method, &url, status, duration_ms, &remote, bytes as usize);
-}
-
-#[op2(fast)]
 pub fn op_log_get_level() -> u8 {
   crate::logger::get_level() as u8
 }

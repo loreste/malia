@@ -58,10 +58,6 @@ pub fn op_is_wasm_mode() -> bool {
   is_wasm_mode()
 }
 
-#[op2(fast)]
-pub fn op_set_wasm_mode(enabled: bool) {
-  set_wasm_mode(enabled);
-}
 
 
 #[op2]

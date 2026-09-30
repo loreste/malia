@@ -76,6 +76,8 @@ assertEq(await post({ body: "hi" }), "text/plain;charset=UTF-8|hi", "string body
 assertEq(await post({ body: "{}", headers: { "Content-Type": "application/json" } }), "application/json|{}", "explicit content-type kept");
 assertEq(await post({ body: streamOf(new TextEncoder().encode("rs")) }), "null|rs", "ReadableStream body");
 assertEq(await post({ body: (async function* () { yield "a"; yield new Uint8Array([98]); })() }), "null|ab", "async iterable body");
+// jse.metrics counts requests handled by the server (it stayed at 0).
+if (!(jse.metrics().requestsTotal >= 5)) throw new Error(`metrics requestsTotal: ${jse.metrics().requestsTotal}`);
 echo.close();
 
 // ---- node:http client -----------------------------------------------------------

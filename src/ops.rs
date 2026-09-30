@@ -178,7 +178,7 @@ pub fn shutdown_workers(state: &mut OpState) {
 // Time
 // ---------------------------------------------------------------------------
 
-fn monotonic_start() -> &'static std::time::Instant {
+pub(crate) fn monotonic_start() -> &'static std::time::Instant {
   static START: OnceLock<std::time::Instant> = OnceLock::new();
   START.get_or_init(std::time::Instant::now)
 }
@@ -318,12 +318,6 @@ pub fn op_write_file_bytes_sync(
 pub fn op_exists_sync(#[string] path: String) -> Result<bool, JsErrorBox> {
   crate::permissions::check_read(&path)?;
   Ok(std::path::Path::new(&path).exists())
-}
-
-#[op2(fast)]
-pub fn op_is_dir_sync(#[string] path: String) -> Result<bool, JsErrorBox> {
-  crate::permissions::check_read(&path)?;
-  Ok(std::path::Path::new(&path).is_dir())
 }
 
 #[derive(serde::Serialize)]
@@ -2197,7 +2191,6 @@ deno_core::extension!(
     op_write_file_bytes,
     op_write_file_bytes_sync,
     op_exists_sync,
-    op_is_dir_sync,
     op_stat_sync,
     op_stat,
     op_env,
@@ -2339,7 +2332,6 @@ deno_core::extension!(
     op_ipc_client_send,
     op_ipc_client_close,
     op_log,
-    op_log_http,
     op_log_get_level,
     op_log_set_level,
     op_log_get_format,
@@ -2347,7 +2339,6 @@ deno_core::extension!(
     op_log_is_http_enabled,
     op_log_set_http_enabled,
     crate::optimizer::op_is_wasm_mode,
-    crate::optimizer::op_set_wasm_mode,
     crate::optimizer::op_optimizer_heap_stats,
     crate::optimizer::op_optimizer_compact_memory,
     crate::optimizer::op_optimizer_stats,
@@ -2370,9 +2361,6 @@ deno_core::extension!(
     crate::sql::op_sql_last_insert_rowid,
     crate::sql::op_sql_query,
     crate::production::op_production_metrics,
-    crate::production::op_production_record_request,
-    crate::production::op_production_inc_conn,
-    crate::production::op_production_dec_conn,
   ],
   js = [
     dir "src/js",
