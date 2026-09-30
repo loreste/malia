@@ -303,7 +303,7 @@ ECDSA, Ed25519), `encrypt`/`decrypt` (AES-GCM, AES-CBC, AES-CTR, RSA-OAEP),
 | `child_process` | `spawn`, `exec`, `execFile`, their `*Sync` forms, `fork` with IPC |
 | `cluster` | `isPrimary`, `isWorker`, `fork`, lifecycle events, IPC. Workers bind the same port with `SO_REUSEPORT` |
 | `console` | `log`, `info`, `warn`, `error`, `debug`, `trace`, `assert`, `time`, `timeEnd`, `timeLog`, `count`, `countReset`, `table`, `dir`, `group`, `groupEnd`, `groupCollapsed`, `clear` |
-| `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`, `scrypt`; ciphers `aes-{128,192,256}-{cbc,ctr}`, `aes-{128,256}-gcm`, `chacha20-poly1305`; `KeyObject`, `createPrivateKey`/`createPublicKey`/`createSecretKey` (PEM, DER, JWK; PKCS#1, PKCS#8, SEC1, SPKI), `generateKeyPair(Sync)` for RSA, EC (P-256/384/521), Ed25519; `sign`/`verify`, `createSign`/`createVerify` (RSA PKCS#1 v1.5 and PSS, ECDSA DER or IEEE P1363, Ed25519); `publicEncrypt`/`privateDecrypt` (OAEP, PKCS#1 v1.5); `webcrypto` |
+| `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`, `scrypt`; ciphers `aes-{128,192,256}-{cbc,ctr}`, `aes-{128,256}-gcm`, `chacha20-poly1305`; `KeyObject`, `createPrivateKey`/`createPublicKey`/`createSecretKey` (PEM, DER, JWK; PKCS#1, PKCS#8, SEC1, SPKI), `generateKeyPair(Sync)` for RSA, EC (P-256/384/521), Ed25519; `sign`/`verify`, `createSign`/`createVerify` (RSA PKCS#1 v1.5 and PSS, ECDSA DER or IEEE P1363, Ed25519); `publicEncrypt`/`privateDecrypt` (OAEP, PKCS#1 v1.5); `createECDH` (P-256, P-384, P-521, X25519), `diffieHellman`; `webcrypto` |
 | `diagnostics_channel` | `channel`, `subscribe`, `unsubscribe`, `hasSubscribers`, `tracingChannel` |
 | `dgram` | UDP sockets: `createSocket`, `bind`, `send`, `close`, message events, auto-bind on send |
 | `dns`, `dns/promises` | `lookup`, `lookupService`, `resolve4`, `resolve6`, `resolveTxt`, `resolveSrv`, `resolveMx`, `resolveNs`, `resolveCname`, `resolvePtr`, `reverse` |
@@ -378,19 +378,14 @@ See the [Dockerfile](Dockerfile) in the repository root and
 
 ## Limitations
 
-- `Blob` contents are held in memory.
-- Crypto limits: no encrypted (passphrase-protected) PEM keys, no ECDH or
-  X25519, RSA key generation only for 2048/3072/4096/8192 bits with exponent
-  65537, RSA-PSS salt length must equal the digest length, and
-  `setAutoPadding(false)` is not supported.
+- `Blob` contents are held in memory (same as Node).
+- Crypto: no encrypted (passphrase-protected) PEM import/export, RSA key
+  generation only for 2048/3072/4096/8192 bits with exponent 65537, and
+  RSA-PSS salt length must equal the digest length.
 - Windows: `node:cluster` workers cannot share a port (it relies on
   `SO_REUSEPORT`), and `chmod` only toggles the read-only attribute.
 - HTTP server request bodies are read fully into memory. The `node:http`
   client sends buffered bodies with `Content-Length` and `Connection: close`.
-- A `WorkerPool` worker must reply with exactly one `postMessage` per
-  message it receives.
-- Timers have 1 ms resolution and may fire up to about 1 ms early. A pending
-  `sleep()` cannot be cancelled.
 - Small Buffers share an 8 KB slab, so `buf.buffer.byteLength` can be larger
   than `buf.length` (same as Node).
 - Standalone executables are not type-checked; TypeScript is transpiled only.

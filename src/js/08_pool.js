@@ -63,6 +63,63 @@
       }
     }
 
+    // Dispatch `arg` and return an async iterable of replies. The worker
+    // sends a sentinel `{ __done: true }` to signal completion (or the
+    // pool reclaims the worker after the iterable is broken out of).
+    stream(arg) {
+      if (this.#closed) throw new Error("pool is closed");
+      const pool = this;
+      return {
+        [Symbol.asyncIterator]() {
+          let entry = null;
+          let done = false;
+          const ready = new Promise((resolve) => {
+            pool.#queue.push({
+              arg,
+              resolve: (e) => { entry = e; resolve(); },
+              reject: () => { done = true; resolve(); },
+              _stream: true,
+            });
+            pool.#dispatchStream();
+          });
+          return {
+            async next() {
+              await ready;
+              if (done || !entry) return { done: true, value: undefined };
+              const msg = await entry.worker.receive();
+              if (!msg || msg.data?.__done) {
+                if (!pool.#closed) pool.#idle.push(entry);
+                pool.#dispatch();
+                return { done: true, value: undefined };
+              }
+              return { done: false, value: msg.data };
+            },
+            return() {
+              if (entry && !pool.#closed) { pool.#idle.push(entry); pool.#dispatch(); }
+              done = true;
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      };
+    }
+
+    #dispatchStream() {
+      while (!this.#closed && this.#queue.length > 0 && this.#idle.length > 0) {
+        const job = this.#queue[0];
+        if (job._stream) {
+          this.#queue.shift();
+          const entry = this.#idle.shift();
+          entry.worker.postMessage(job.arg);
+          job.resolve(entry);
+        } else {
+          // Non-stream job, use normal dispatch.
+          this.#dispatch();
+          return;
+        }
+      }
+    }
+
     // Reject queued jobs and terminate all workers. In-flight jobs resolve
     // or reject with whatever their worker last sent before termination.
     close() {

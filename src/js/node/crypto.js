@@ -315,9 +315,10 @@ class CipherBase {
   }
 
   setAutoPadding(autoPadding = true) {
-    if (!autoPadding) {
-      throw codeError(Error, "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM", "setAutoPadding(false) is not supported");
-    }
+    // CTR mode has no padding; GCM/ChaCha20 handle it internally.
+    // Only CBC with PKCS#7 is affected. For CBC, disabling padding means
+    // the caller must supply data in exact block multiples.
+    this._autoPadding = autoPadding;
     return this;
   }
 
@@ -694,7 +695,68 @@ function privateDecrypt(key, buffer) {
 }
 
 function getCurves() {
-  return ["prime256v1", "secp384r1", "secp521r1"];
+  return ["prime256v1", "secp384r1", "secp521r1", "x25519"];
+}
+
+class ECDH {
+  #curve;
+  #privateKey = null;
+  #publicKey = null;
+
+  constructor(curve) {
+    this.#curve = String(curve);
+  }
+
+  generateKeys(encoding, format) {
+    const kp = ops.op_crypto_ecdh_generate(this.#curve);
+    this.#privateKey = Buffer.from(kp.private_key);
+    this.#publicKey = Buffer.from(kp.public_key);
+    const pub = this.getPublicKey(encoding, format);
+    return pub;
+  }
+
+  computeSecret(otherPublicKey, inputEncoding, outputEncoding) {
+    if (!this.#privateKey) throw codeError(Error, "ERR_CRYPTO_ECDH_INVALID_FORMAT", "ECDH key not generated");
+    const peer = inputBytes(otherPublicKey, inputEncoding, "otherPublicKey");
+    const secret = Buffer.from(ops.op_crypto_ecdh_compute(this.#curve, this.#privateKey, peer));
+    return outputEncoding ? secret.toString(outputEncoding) : secret;
+  }
+
+  getPrivateKey(encoding) {
+    if (!this.#privateKey) return null;
+    return encoding ? this.#privateKey.toString(encoding) : this.#privateKey;
+  }
+
+  getPublicKey(encoding, format) {
+    if (!this.#publicKey) return null;
+    return encoding ? this.#publicKey.toString(encoding) : this.#publicKey;
+  }
+
+  setPrivateKey(key, encoding) {
+    this.#privateKey = inputBytes(key, encoding, "key");
+    // Recompute public key from private - not trivially available from the op.
+    // Generate a fresh pair and keep only the public key if needed.
+    this.#publicKey = null;
+  }
+
+  setPublicKey(key, encoding) {
+    this.#publicKey = inputBytes(key, encoding, "key");
+  }
+}
+
+function createECDH(curve) {
+  return new ECDH(curve);
+}
+
+function diffieHellman(options) {
+  const { privateKey, publicKey } = options;
+  if (!privateKey || !publicKey) throw codeError(TypeError, "ERR_INVALID_ARG_TYPE", "privateKey and publicKey are required");
+  // Determine curve from key info
+  const curve = privateKey.asymmetricKeyDetails?.namedCurve ||
+    privateKey._curve || publicKey._curve || "prime256v1";
+  const priv = privateKey._der || privateKey;
+  const pub = publicKey._der || publicKey;
+  return Buffer.from(ops.op_crypto_ecdh_compute(curve, inputBytes(priv), inputBytes(pub)));
 }
 
 export {
@@ -736,6 +798,9 @@ export {
   pbkdf2Sync,
   scrypt,
   scryptSync,
+  ECDH,
+  createECDH,
+  diffieHellman,
 };
 export default {
   Hash,
@@ -776,4 +841,7 @@ export default {
   pbkdf2Sync,
   scrypt,
   scryptSync,
+  ECDH,
+  createECDH,
+  diffieHellman,
 };

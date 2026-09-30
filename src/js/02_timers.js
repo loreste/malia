@@ -172,26 +172,45 @@
   // allocating and resolving N promises.
   const sleepCache = new Map(); // deadline -> promise
 
-  globalThis.sleep = (ms) => {
+  globalThis.sleep = (ms, options) => {
+    const signal = options?.signal;
+    if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
     const deadline = Math.floor(ops.op_now() + Math.max(ms, 0));
-    let promise = sleepCache.get(deadline);
-    if (!promise) {
-      promise = new Promise((resolve) => {
-        const entry = {
-          deadline,
-          run: () => {
-            sleepCache.delete(deadline);
-            resolve();
-          },
-          cancelled: false,
-          refed: false,
-        };
-        setEntryRef(entry, true);
-        schedule(entry);
-      });
-      sleepCache.set(deadline, promise);
+    // Without an AbortSignal, shared-deadline optimization applies.
+    if (!signal) {
+      let promise = sleepCache.get(deadline);
+      if (!promise) {
+        promise = new Promise((resolve) => {
+          const entry = {
+            deadline,
+            run: () => { sleepCache.delete(deadline); resolve(); },
+            cancelled: false,
+            refed: false,
+          };
+          setEntryRef(entry, true);
+          schedule(entry);
+        });
+        sleepCache.set(deadline, promise);
+      }
+      return promise;
     }
-    return promise;
+    // Cancellable sleep: unique promise + abort listener.
+    return new Promise((resolve, reject) => {
+      const entry = {
+        deadline,
+        run: () => { signal.removeEventListener("abort", onAbort); resolve(); },
+        cancelled: false,
+        refed: false,
+      };
+      function onAbort() {
+        entry.cancelled = true;
+        setEntryRef(entry, false);
+        reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+      setEntryRef(entry, true);
+      schedule(entry);
+    });
   };
 
   // Node clamps delays outside [1, 2^31 - 1] to 1ms.

@@ -2451,6 +2451,8 @@ deno_core::extension!(
     crate::crypto::op_crypto_stream_cipher_new,
     crate::crypto::op_crypto_stream_cipher_update,
     crate::crypto::op_crypto_stream_cipher_final,
+    crate::crypto::op_crypto_ecdh_generate,
+    crate::crypto::op_crypto_ecdh_compute,
     op_no_warnings,
     op_umask,
     op_crypto_scrypt_sync,

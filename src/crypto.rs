@@ -427,3 +427,67 @@ pub fn op_crypto_stream_cipher_final(state: &mut OpState, id: u32) -> Result<Vec
   out.truncate(written);
   Ok(out)
 }
+
+// ---- ECDH / X25519 key agreement ---------------------------------------------------
+
+fn ecdh_algo(curve: &str) -> Result<&'static aws_lc_rs::agreement::Algorithm, JsErrorBox> {
+  Ok(match curve {
+    "prime256v1" | "P-256" | "p256" => &aws_lc_rs::agreement::ECDH_P256,
+    "secp384r1" | "P-384" | "p384" => &aws_lc_rs::agreement::ECDH_P384,
+    "secp521r1" | "P-521" | "p521" => &aws_lc_rs::agreement::ECDH_P521,
+    "x25519" | "X25519" => &aws_lc_rs::agreement::X25519,
+    _ => return Err(type_err(format!("Unsupported ECDH curve: {curve}"))),
+  })
+}
+
+#[derive(serde::Serialize)]
+pub struct EcdhKeyPair {
+  #[serde(with = "serde_bytes")]
+  private_key: Vec<u8>,
+  #[serde(with = "serde_bytes")]
+  public_key: Vec<u8>,
+}
+
+/// Generate an ECDH/X25519 key pair.
+#[op2]
+#[serde]
+pub fn op_crypto_ecdh_generate(#[string] curve: String) -> Result<EcdhKeyPair, JsErrorBox> {
+  use aws_lc_rs::encoding::{AsBigEndian, AsDer};
+  let algo = ecdh_algo(&curve)?;
+  let private = aws_lc_rs::agreement::PrivateKey::generate(algo)
+    .map_err(|_| err("ECDH key generation failed"))?;
+  let public = private.compute_public_key()
+    .map_err(|_| err("ECDH public key computation failed"))?;
+  // Try PKCS#8 DER first (EC curves), fall back to raw seed (X25519).
+  let priv_bytes = if let Ok(pkcs8) = AsDer::<aws_lc_rs::encoding::Pkcs8V1Der>::as_der(&private) {
+    pkcs8.as_ref().to_vec()
+  } else if let Ok(seed) = AsBigEndian::<aws_lc_rs::encoding::Curve25519SeedBin>::as_be_bytes(&private) {
+    seed.as_ref().to_vec()
+  } else if let Ok(raw) = AsBigEndian::<aws_lc_rs::encoding::EcPrivateKeyBin>::as_be_bytes(&private) {
+    raw.as_ref().to_vec()
+  } else {
+    return Err(err("ECDH private key export failed"));
+  };
+  Ok(EcdhKeyPair {
+    private_key: priv_bytes,
+    public_key: public.as_ref().to_vec(),
+  })
+}
+
+/// Compute the ECDH/X25519 shared secret. Private key may be PKCS#8 DER or raw bytes.
+#[op2]
+#[buffer]
+pub fn op_crypto_ecdh_compute(
+  #[string] curve: String,
+  #[buffer] private_key: &[u8],
+  #[buffer] peer_public_key: &[u8],
+) -> Result<Vec<u8>, JsErrorBox> {
+  let algo = ecdh_algo(&curve)?;
+  let private = aws_lc_rs::agreement::PrivateKey::from_private_key_der(algo, private_key)
+    .or_else(|_| aws_lc_rs::agreement::PrivateKey::from_private_key(algo, private_key))
+    .map_err(|_| err("Invalid ECDH private key"))?;
+  let peer = aws_lc_rs::agreement::UnparsedPublicKey::new(algo, peer_public_key);
+  aws_lc_rs::agreement::agree(&private, peer, err("ECDH key agreement failed"), |shared| {
+    Ok(shared.to_vec())
+  })
+}
