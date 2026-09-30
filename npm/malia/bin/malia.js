@@ -87,9 +87,7 @@ function resolveBinary() {
 
   throw new Error(
     `[malia] Native binary not found for platform '${pkg}'.\n` +
-    `Install the prebuilt binary or package via npm:\n` +
-    `  npm install -g malia\n` +
-    `Or use the installation script:\n` +
+    `Install using the installer script:\n` +
     `  curl -fsSL https://raw.githubusercontent.com/loreste/malia/main/scripts/install.sh | sh`
   );
 }

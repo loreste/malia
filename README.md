@@ -33,18 +33,7 @@ irm https://raw.githubusercontent.com/loreste/malia/main/scripts/install.ps1 | i
 
 Installs `malia.exe` and `jse.exe` to `%LOCALAPPDATA%\malia\bin` and adds them to your PATH.
 
-### 3. NPM / NPX (Zero-Rust)
-
-```sh
-# Run directly with npx (malia or jse)
-npx malia app.ts
-npx jse app.ts
-
-# Or install globally via npm
-npm install -g malia
-```
-
-### 4. Prebuilt Binary Downloads
+### 3. Prebuilt Binary Downloads
 
 Standalone tarballs and zip archives for every release are published on [GitHub Releases](https://github.com/loreste/malia/releases):
 - **macOS (Apple Silicon)**: `malia-darwin-arm64.tar.gz`
@@ -56,7 +45,7 @@ Standalone tarballs and zip archives for every release are published on [GitHub 
 
 Extract and place `malia` (and `jse`) anywhere on your `$PATH`.
 
-### 5. Building from Source (Optional)
+### 4. Building from Source (Optional)
 
 If you prefer building from source:
 ```sh
@@ -604,27 +593,12 @@ jse x prettier --write .
 - **`exports` & `module` fields**: Resolves modern ESM-first and dual CJS/ESM npm packages.
 - **`NODE_PATH` Support**: Fully respects `NODE_PATH` for global libraries, workspace monorepos, and containerized volume mounts.
 
-#### 4. Distributable via NPM (`npx jse`)
-`jse` includes a complete npm distribution package (`npm/jse`) with platform-specific native binary packages:
-- `@jse/darwin-arm64` (Apple Silicon M1/M2/M3/M4)
-- `@jse/darwin-x64` (macOS Intel)
-- `@jse/linux-x64-gnu` (Linux glibc)
-- `@jse/linux-x64-musl` (Alpine Linux musl)
-- `@jse/linux-arm64-gnu` (Linux ARM64 glibc)
-- `@jse/linux-arm64-musl` (Linux ARM64 musl)
-- `@jse/win32-x64` (Windows x64)
-
-Run without installation anywhere Node/npm is present:
+#### 4. Standalone Binary Deployment
+With standalone compilation (`malia compile src/index.ts -o dist/server`), you do not need Node or any runtime installed on production servers:
 ```bash
-npx jse app.ts
-# Or install globally:
-npm install -g jse
-```
-
-#### 5. Standalone Binary Deployment
-With standalone compilation (`jse build --standalone`), you do not need Node or npm on production servers:
-```bash
-jse build --standalone src/index.ts -o dist/server
+malia compile src/index.ts -o dist/server
+# Or using the jse command alias:
+jse compile src/index.ts -o dist/server
 ```
 
 ---
