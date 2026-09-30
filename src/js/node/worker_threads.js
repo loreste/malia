@@ -190,85 +190,12 @@ export class MessageChannel {
   }
 }
 
-const broadcastHubs = new Map();
-
-export class BroadcastChannel extends EventEmitter {
-  #name;
-  #closed = false;
-  #onmessage = null;
-
-  constructor(name) {
-    super();
-    this.#name = String(name);
-    let channels = broadcastHubs.get(this.#name);
-    if (!channels) {
-      channels = new Set();
-      broadcastHubs.set(this.#name, channels);
-    }
-    channels.add(this);
-  }
-
-  get name() {
-    return this.#name;
-  }
-
-  get onmessage() {
-    return this.#onmessage;
-  }
-
-  set onmessage(fn) {
-    this.#onmessage = fn;
-  }
-
-  postMessage(value) {
-    if (this.#closed) throw new Error("BroadcastChannel is closed");
-    const channels = broadcastHubs.get(this.#name);
-    if (!channels) return;
-    for (const ch of channels) {
-      if (ch === this || ch.#closed) continue;
-      queueMicrotask(() => {
-        if (ch.#closed) return;
-        const event = { data: structuredClone(value), target: ch };
-        if (ch.#onmessage) {
-          try {
-            ch.#onmessage(event);
-          } catch (e) {
-            console.error("BroadcastChannel onmessage error:", e);
-          }
-        }
-        ch.emit("message", event.data);
-      });
-    }
-  }
-
-  close() {
-    if (this.#closed) return;
-    this.#closed = true;
-    const channels = broadcastHubs.get(this.#name);
-    if (channels) {
-      channels.delete(this);
-      if (channels.size === 0) {
-        broadcastHubs.delete(this.#name);
-      }
-    }
-    this.emit("close");
-  }
-
-  ref() {
-    return this;
-  }
-
-  unref() {
-    return this;
-  }
-}
+// The global BroadcastChannel reaches channels in every thread.
+export const BroadcastChannel = globalThis.BroadcastChannel;
 
 if (!globalThis.MessageChannel) {
   globalThis.MessageChannel = MessageChannel;
   globalThis.MessagePort = MessagePort;
-}
-if (!globalThis.BroadcastChannel) {
-  globalThis.BroadcastChannel = BroadcastChannel;
 }
 
 export default {

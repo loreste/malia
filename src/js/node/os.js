@@ -28,8 +28,15 @@ export function homedir() {
   return process.env.HOME || "/";
 }
 
+// Node's lookup order, without a trailing separator (except a drive root).
 export function tmpdir() {
-  return osInfo().tmpdir || process.env.TMPDIR || "/tmp";
+  const env = process.env;
+  if (process.platform === "win32") {
+    const dir = env.TEMP || env.TMP || `${env.SystemRoot || env.windir}\\temp`;
+    return dir.length > 1 && dir.endsWith("\\") && !dir.endsWith(":\\") ? dir.slice(0, -1) : dir;
+  }
+  const dir = env.TMPDIR || env.TMP || env.TEMP || "/tmp";
+  return dir.length > 1 && dir.endsWith("/") ? dir.slice(0, -1) : dir;
 }
 
 

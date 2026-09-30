@@ -147,13 +147,18 @@ class ChildProcess extends EventEmitter {
     this.#exitPromise.catch(() => {});
   }
 
-  static _spawnError(err) {
+  // Like Node: a failed spawn still has its pipes (already ended) and
+  // reports the failure through 'error'.
+  static _spawnError(err, spec) {
     const child = new EventEmitter();
+    child.pid = undefined;
     child.killed = false;
     child.exitCode = null;
-    child.stdout = null;
-    child.stderr = null;
-    child.stdin = null;
+    child.kill = () => false;
+    const pipe = (mode) => (mode === "pipe" ? Readable.from([]) : null);
+    child.stdout = pipe(spec.stdout);
+    child.stderr = pipe(spec.stderr);
+    child.stdin = spec.stdin === "pipe" ? new Writable({ write: (c, e, cb) => cb(err) }) : null;
     queueMicrotask(() => {
       child.emit("error", err);
       child.emit("close", null, null);
@@ -180,7 +185,7 @@ function spawn(command, args, options) {
   try {
     spawned = ops.op_child_spawn(spec);
   } catch (err) {
-    return ChildProcess._spawnError(err);
+    return ChildProcess._spawnError(err, spec);
   }
   return new ChildProcess(spawned.id, spawned.pid, spec);
 }

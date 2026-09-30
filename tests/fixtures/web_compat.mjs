@@ -76,6 +76,23 @@ assertEq(await post({ body: "hi" }), "text/plain;charset=UTF-8|hi", "string body
 assertEq(await post({ body: "{}", headers: { "Content-Type": "application/json" } }), "application/json|{}", "explicit content-type kept");
 assertEq(await post({ body: streamOf(new TextEncoder().encode("rs")) }), "null|rs", "ReadableStream body");
 assertEq(await post({ body: (async function* () { yield "a"; yield new Uint8Array([98]); })() }), "null|ab", "async iterable body");
+// Stream bodies are uploaded chunked, not buffered first.
+{
+  let produced = 0;
+  const body = new ReadableStream({
+    pull(c) {
+      if (produced++ >= 4) return c.close();
+      c.enqueue(new Uint8Array(256 * 1024).fill(produced));
+    },
+  });
+  const res = await fetch("http://127.0.0.1:23481/", { method: "POST", body, duplex: "half" });
+  assertEq((await res.text()).length, "null|".length + 1024 * 1024, "streamed upload size");
+  let rejected = false;
+  const failing = (async function* () { yield "a"; throw new Error("source broke"); })();
+  await fetch("http://127.0.0.1:23481/", { method: "POST", body: failing }).catch(() => (rejected = true));
+  assertEq(rejected, true, "failing upload source rejects");
+}
+
 // jse.metrics counts requests handled by the server (it stayed at 0).
 if (!(jse.metrics().requestsTotal >= 5)) throw new Error(`metrics requestsTotal: ${jse.metrics().requestsTotal}`);
 echo.close();

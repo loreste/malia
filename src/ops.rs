@@ -638,14 +638,30 @@ pub fn op_exit(code: i32) {
 
 #[op2]
 #[string]
+/// process.platform: Node's names, not Rust's ("darwin", "win32", ...).
 pub fn op_platform() -> String {
-  std::env::consts::OS.to_string()
+  match std::env::consts::OS {
+    "macos" => "darwin",
+    "windows" => "win32",
+    "solaris" | "illumos" => "sunos",
+    os => os,
+  }
+  .to_string()
 }
 
 #[op2]
 #[string]
+/// process.arch: Node's names ("x64", "arm64", ...).
 pub fn op_arch() -> String {
-  std::env::consts::ARCH.to_string()
+  match std::env::consts::ARCH {
+    "x86_64" => "x64",
+    "aarch64" => "arm64",
+    "x86" => "ia32",
+    "powerpc64" => "ppc64",
+    "loongarch64" => "loong64",
+    arch => arch,
+  }
+  .to_string()
 }
 
 fn get_cgroup_cpus() -> Option<u32> {
@@ -690,6 +706,67 @@ pub fn op_cpus() -> u32 {
 // ---------------------------------------------------------------------------
 // Channels
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// BroadcastChannel: a process-wide hub keyed by channel name, so channels in
+// different isolates (main thread and workers) reach each other. Messages
+// are V8 structured-clone bytes.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct BroadcastHub {
+  next_id: u32,
+  /// id -> (channel name, sender to that channel's inbox)
+  members: HashMap<u32, (String, mpsc::UnboundedSender<Vec<u8>>)>,
+  inboxes: HashMap<u32, SharedRx>,
+}
+
+fn broadcast_hub() -> &'static StdMutex<BroadcastHub> {
+  static HUB: OnceLock<StdMutex<BroadcastHub>> = OnceLock::new();
+  HUB.get_or_init(Default::default)
+}
+
+#[op2(fast)]
+pub fn op_broadcast_open(#[string] name: String) -> u32 {
+  let (tx, rx) = mpsc::unbounded_channel();
+  let mut hub = broadcast_hub().lock().unwrap();
+  hub.next_id += 1;
+  let id = hub.next_id;
+  hub.members.insert(id, (name, tx));
+  hub.inboxes.insert(id, Arc::new(TokioMutex::new(rx)));
+  id
+}
+
+/// Deliver to every other open channel with the same name.
+#[op2(fast)]
+pub fn op_broadcast_post(id: u32, #[buffer] message: &[u8]) {
+  let hub = broadcast_hub().lock().unwrap();
+  let Some((name, _)) = hub.members.get(&id) else {
+    return;
+  };
+  for (other, (other_name, tx)) in &hub.members {
+    if *other != id && other_name == name {
+      let _ = tx.send(message.to_vec());
+    }
+  }
+}
+
+/// Next message for this channel, or null once it is closed.
+#[op2]
+#[buffer]
+pub async fn op_broadcast_recv(id: u32) -> Option<Vec<u8>> {
+  let inbox = broadcast_hub().lock().unwrap().inboxes.get(&id).cloned()?;
+  let mut rx = inbox.lock().await;
+  rx.recv().await
+}
+
+#[op2(fast)]
+pub fn op_broadcast_close(id: u32) {
+  let mut hub = broadcast_hub().lock().unwrap();
+  // Dropping the sender ends the pending recv with None.
+  hub.members.remove(&id);
+  hub.inboxes.remove(&id);
+}
 
 #[op2(fast)]
 pub fn op_chan_new(state: &mut OpState, capacity: u32) -> u32 {
@@ -1187,6 +1264,9 @@ struct FetchHead {
 struct FetchTable {
   next_id: u32,
   responses: HashMap<u32, reqwest::Response>,
+  /// Streaming request bodies: JS writes chunks, reqwest reads them.
+  body_senders: HashMap<u32, tokio::sync::mpsc::Sender<Result<bytes::Bytes, std::io::Error>>>,
+  body_receivers: HashMap<u32, tokio::sync::mpsc::Receiver<Result<bytes::Bytes, std::io::Error>>>,
 }
 
 fn fetch_table(state: &mut OpState) -> &mut FetchTable {
@@ -1246,6 +1326,46 @@ fn url_host_for_perm(url_str: &str) -> String {
     .unwrap_or_else(|| url_str.to_string())
 }
 
+/// Create a streaming request body; pass the id to op_fetch_start and feed
+/// it with op_fetch_body_write / op_fetch_body_close. The small bound makes
+/// writers wait while the upload is slower than the source.
+#[op2(fast)]
+pub fn op_fetch_body_new(state: &mut OpState) -> u32 {
+  let (tx, rx) = tokio::sync::mpsc::channel(4);
+  let table = fetch_table(state);
+  table.next_id += 1;
+  let id = table.next_id;
+  table.body_senders.insert(id, tx);
+  table.body_receivers.insert(id, rx);
+  id
+}
+
+#[op2]
+pub async fn op_fetch_body_write(
+  state: Rc<RefCell<OpState>>,
+  id: u32,
+  #[buffer(copy)] chunk: Vec<u8>,
+) -> Result<(), JsErrorBox> {
+  let sender = fetch_table(&mut state.borrow_mut()).body_senders.get(&id).cloned();
+  let Some(sender) = sender else {
+    return Err(JsErrorBox::generic("request body stream is closed"));
+  };
+  sender
+    .send(Ok(bytes::Bytes::from(chunk)))
+    .await
+    .map_err(|_| JsErrorBox::generic("request body stream is closed"))
+}
+
+/// End the body; with an error message, abort the upload instead.
+#[op2(fast)]
+pub fn op_fetch_body_close(state: &mut OpState, id: u32, #[string] error: String) {
+  if let Some(sender) = fetch_table(state).body_senders.remove(&id)
+    && !error.is_empty()
+  {
+    let _ = sender.try_send(Err(std::io::Error::other(error)));
+  }
+}
+
 /// Send the request and return the head; the body streams via op_fetch_read.
 #[op2]
 #[serde]
@@ -1256,6 +1376,7 @@ pub async fn op_fetch_start(
   #[serde] headers: Vec<(String, String)>,
   #[serde] body: Option<serde_bytes::ByteBuf>,
   #[string] redirect: String,
+  body_stream: u32,
 ) -> Result<FetchHead, JsErrorBox> {
   crate::permissions::check_net(&url_host_for_perm(&url))?;
   let method = reqwest::Method::from_bytes(method.as_bytes())
@@ -1267,6 +1388,12 @@ pub async fn op_fetch_start(
   }
   if let Some(body) = body {
     request = request.body(body.into_vec());
+  } else if body_stream != 0 {
+    let receiver = fetch_table(&mut state.borrow_mut()).body_receivers.remove(&body_stream);
+    let Some(receiver) = receiver else {
+      return Err(JsErrorBox::generic("request body stream is unknown"));
+    };
+    request = request.body(reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(receiver)));
   }
   let response = request
     .send()
@@ -2165,6 +2292,10 @@ deno_core::extension!(
     op_platform,
     op_arch,
     op_cpus,
+    op_broadcast_open,
+    op_broadcast_post,
+    op_broadcast_recv,
+    op_broadcast_close,
     op_chan_new,
     op_chan_capacity,
     op_chan_send,
@@ -2186,6 +2317,9 @@ deno_core::extension!(
     op_url_parse,
     op_url_set_part,
     op_fetch_start,
+    op_fetch_body_new,
+    op_fetch_body_write,
+    op_fetch_body_close,
     op_fetch_read,
     op_fetch_close,
     op_serve_listen,
@@ -2268,6 +2402,16 @@ deno_core::extension!(
     op_hmac_update,
     op_hmac_digest,
     op_crypto_pbkdf2,
+    crate::crypto::op_crypto_key_import,
+    crate::crypto::op_crypto_public_from_private,
+    crate::crypto::op_crypto_generate_key_pair,
+    crate::crypto::op_crypto_sign,
+    crate::crypto::op_crypto_verify,
+    crate::crypto::op_crypto_rsa_encrypt,
+    crate::crypto::op_crypto_rsa_decrypt,
+    crate::crypto::op_crypto_stream_cipher_new,
+    crate::crypto::op_crypto_stream_cipher_update,
+    crate::crypto::op_crypto_stream_cipher_final,
     op_no_warnings,
     op_umask,
     op_crypto_scrypt_sync,
@@ -2352,6 +2496,7 @@ deno_core::extension!(
     "20_malia.js",
     "21_web_streams.js",
     "22_blob.js",
+    "23_broadcast_channel.js",
   ],
 
   options = {

@@ -31,6 +31,22 @@ const BUILTINS: &[&str] = &[
   "tty", "url", "util", "util/types", "v8", "vm", "wasi", "worker_threads", "ws", "zlib", "sqlite",
 ];
 
+/// Apply `.` and `..` without touching the filesystem, so one file always
+/// maps to one module URL.
+fn normalize_lexically(path: &Path) -> PathBuf {
+  let mut out = PathBuf::new();
+  for component in path.components() {
+    match component {
+      std::path::Component::CurDir => {}
+      std::path::Component::ParentDir => {
+        out.pop();
+      }
+      other => out.push(other),
+    }
+  }
+  out
+}
+
 fn builtin_source(spec: &str) -> Option<&'static str> {
   match spec {
     "jse:internal/cjs" => Some(include_str!("js/internal/cjs.js")),
@@ -562,6 +578,16 @@ impl JseModuleLoader {
     let referrer_dir = referrer_path
       .parent()
       .ok_or_else(|| err(format!("Invalid file referrer '{referrer}'")))?;
+
+    // OS paths the URL form below cannot express: Windows absolute paths
+    // (C:\x, \\server\share) and backslash-relative ones (.\x, ..\x).
+    let windows_relative = cfg!(windows) && (specifier.starts_with(".\\") || specifier.starts_with("..\\"));
+    if windows_relative || (cfg!(windows) && std::path::Path::new(specifier).is_absolute()) {
+      let joined = normalize_lexically(&referrer_dir.join(specifier));
+      let resolved = resolve_file_or_dir(self, &joined)?;
+      return ModuleSpecifier::from_file_path(&resolved)
+        .map_err(|_| err(format!("Invalid path '{}'", resolved.display())));
+    }
 
     // Relative or absolute paths.
     if specifier.starts_with("./")

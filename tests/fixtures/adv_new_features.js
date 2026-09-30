@@ -97,32 +97,35 @@ console.log("   Ed25519 Signatures: PASS");
 // ---------------------------------------------------------------------------
 // 3. Unix Domain Sockets (node:net IPC)
 // ---------------------------------------------------------------------------
-console.log("3. Testing Unix Domain Sockets...");
-const sockPath = `/tmp/jse-ipc-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`;
+// Unix domain sockets only (Windows named pipes are not supported).
+if (process.platform !== "win32") {
+  console.log("3. Testing Unix Domain Sockets...");
+  const sockPath = `/tmp/jse-ipc-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`;
 
-const udsServer = net.createServer((sock) => {
-  sock.on("data", (chunk) => sock.end(chunk));
-});
+  const udsServer = net.createServer((sock) => {
+    sock.on("data", (chunk) => sock.end(chunk));
+  });
 
-await new Promise((resolve, reject) => {
-  udsServer.once("error", reject);
-  udsServer.listen(sockPath, resolve);
-});
+  await new Promise((resolve, reject) => {
+    udsServer.once("error", reject);
+    udsServer.listen(sockPath, resolve);
+  });
 
-const echoed = await new Promise((resolve, reject) => {
-  const sock = net.connect({ path: sockPath }, () => sock.write("HELLO_FROM_UNIX_SOCKET"));
-  const chunks = [];
-  sock.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-  sock.on("end", () => resolve(Buffer.concat(chunks).toString()));
-  sock.on("error", reject);
-});
+  const echoed = await new Promise((resolve, reject) => {
+    const sock = net.connect({ path: sockPath }, () => sock.write("HELLO_FROM_UNIX_SOCKET"));
+    const chunks = [];
+    sock.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    sock.on("end", () => resolve(Buffer.concat(chunks).toString()));
+    sock.on("error", reject);
+  });
 
-assert.strictEqual(echoed, "HELLO_FROM_UNIX_SOCKET", "unix domain socket echo match");
-udsServer.close();
-try {
-  if (fs.existsSync(sockPath)) fs.unlinkSync(sockPath);
-} catch (_) {}
-console.log("   Unix Domain Sockets: PASS");
+  assert.strictEqual(echoed, "HELLO_FROM_UNIX_SOCKET", "unix domain socket echo match");
+  udsServer.close();
+  try {
+    if (fs.existsSync(sockPath)) fs.unlinkSync(sockPath);
+  } catch (_) {}
+  console.log("   Unix Domain Sockets: PASS");
+}
 
 // ---------------------------------------------------------------------------
 // 4. OpenTelemetry Distributed Tracing (jse.trace)

@@ -335,7 +335,7 @@ export class ClientHttp2Stream extends Duplex {
         }
       }
       const body = this._requestChunks.length > 0 ? Buffer.concat(this._requestChunks) : undefined;
-      const respHead = await ops.op_fetch_start(url, method, headers, body, "follow");
+      const respHead = await ops.op_fetch_start(url, method, headers, body, "follow", 0);
       const respHeaders = {
         ":status": respHead.status,
       };

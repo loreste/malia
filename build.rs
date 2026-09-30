@@ -83,6 +83,9 @@ mod router {
 }
 
 #[allow(dead_code)]
+mod crypto {
+  include!("src/crypto.rs");
+}
 mod platform {
   include!("src/platform.rs");
 }

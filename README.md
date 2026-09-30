@@ -245,7 +245,7 @@ start = "jse start"
 
 | API | Description |
 |---|---|
-| `fetch`, `Request`, `Response`, `Headers` | reqwest + rustls. Decodes gzip, deflate, and Brotli responses; `redirect` may be `follow`, `manual`, or `error`. Response bodies stream (`response.body` is async-iterable and has `getReader()`). Request bodies: string, `URLSearchParams`, `ArrayBuffer`/typed arrays, `ReadableStream`, async iterables |
+| `fetch`, `Request`, `Response`, `Headers` | reqwest + rustls. Decodes gzip, deflate, and Brotli responses; `redirect` may be `follow`, `manual`, or `error`. Response bodies stream (`response.body` is async-iterable and has `getReader()`). Request bodies: string, `URLSearchParams`, `Blob`, `FormData`, `ArrayBuffer`/typed arrays, and streamed (chunked) `ReadableStream`/async iterables |
 | `jse.serve(options, handler)` | Deno-style HTTP server. Handler returns a `Response` or a promise of one. Supports keep-alive, whole and chunked bodies, TLS |
 | `WebSocket`, `jse.upgradeWebSocket(req)` | WebSocket client and server upgrade. `binaryType` may be `nodebuffer`, `arraybuffer`, or `blob` |
 | `chan(capacity?)` | Channels with `send`/`recv`/`close`/`for await`, backed by tokio mpsc. Bounded channels apply backpressure |
@@ -266,7 +266,7 @@ Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 `crypto.subtle.digest`, `EventTarget`, `Event`, `CustomEvent`,
 `MessageEvent`, `CloseEvent`, `ErrorEvent`, `AbortController`,
 `AbortSignal` (`abort`, `timeout`, `any`), `Blob`, `File`, `FormData`,
-`MessageChannel`, `TextEncoder`/`TextDecoder` (utf-8, utf-16le, latin1;
+`MessageChannel`, `BroadcastChannel`, `TextEncoder`/`TextDecoder` (utf-8, utf-16le, latin1;
 `fatal`, `ignoreBOM`, `stream`), and the WHATWG streams (`ReadableStream`,
 `WritableStream`, `TransformStream`, `TextEncoderStream`, `TextDecoderStream`,
 `CompressionStream`, `DecompressionStream`).
@@ -307,7 +307,7 @@ Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 | `v8` | `getHeapStatistics`, `serialize`, `deserialize`, `Serializer`, `Deserializer` |
 | `vm` | `createContext`, `runInContext`, `runInNewContext`, `runInThisContext`, `Script` |
 | `wasi` | WASI Preview 1: args, env, clocks, random, stdio, exit |
-| `worker_threads` | `Worker`, `isMainThread`, `threadId`, `workerData`, `parentPort`, `MessageChannel`, `BroadcastChannel` (same thread only), `SHARE_ENV` |
+| `worker_threads` | `Worker`, `isMainThread`, `threadId`, `workerData`, `parentPort`, `MessageChannel`, `BroadcastChannel` (across threads), `SHARE_ENV` |
 | `ws` | `WebSocket` and `WebSocketServer` compatible with the `ws` package |
 | `zlib` | gzip, deflate, raw deflate, Brotli, `unzip`; sync, callback, and stream forms; CRC-32 |
 
@@ -357,13 +357,13 @@ See the [Dockerfile](Dockerfile) in the repository root and
 
 ## Limitations
 
-- `fetch` buffers stream request bodies before sending them (no streaming
-  upload). `Blob` contents are held in memory.
+- `Blob` contents are held in memory.
 - `crypto.subtle` implements `digest` only; other WebCrypto methods reject
   with `NotSupportedError`. Ciphers are limited to the AEAD modes listed
   above and key pairs to Ed25519.
-- `BroadcastChannel` delivers messages within one thread, not across
-  workers.
+- Windows: `net` paths (Unix domain sockets) and Windows named pipes are not
+  supported, and `node:cluster` workers cannot share a port (it relies on
+  `SO_REUSEPORT`). `chmod` only toggles the read-only attribute.
 - HTTP server request bodies are read fully into memory. The `node:http`
   client sends buffered bodies with `Content-Length` and `Connection: close`.
 - A `WorkerPool` worker must reply with exactly one `postMessage` per

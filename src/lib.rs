@@ -3,6 +3,7 @@
 // OS-thread workers and channel-based async messaging.
 pub mod cache;
 pub mod config;
+pub mod crypto;
 pub mod kv;
 pub mod loader;
 pub mod logger;

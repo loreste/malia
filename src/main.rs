@@ -385,20 +385,18 @@ fn find_local_bin(start_dir: &Path, bin_name: &str) -> Option<PathBuf> {
   let mut cur = Some(start_dir);
   while let Some(d) = cur {
     let bin_dir = d.join("node_modules").join(".bin");
+    // On Windows npm writes a .cmd shim next to an extensionless shell
+    // script that Windows cannot execute, so the shims come first.
+    #[cfg(windows)]
+    for ext in ["cmd", "exe"] {
+      let candidate = bin_dir.join(format!("{bin_name}.{ext}"));
+      if candidate.is_file() {
+        return Some(candidate);
+      }
+    }
     let exact = bin_dir.join(bin_name);
     if exact.is_file() {
       return Some(exact);
-    }
-    #[cfg(windows)]
-    {
-      let cmd_candidate = bin_dir.join(format!("{}.cmd", bin_name));
-      if cmd_candidate.is_file() {
-        return Some(cmd_candidate);
-      }
-      let exe_candidate = bin_dir.join(format!("{}.exe", bin_name));
-      if exe_candidate.is_file() {
-        return Some(exe_candidate);
-      }
     }
     cur = d.parent();
   }

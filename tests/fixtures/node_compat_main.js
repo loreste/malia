@@ -436,7 +436,7 @@ assert(typeof BroadcastChannel === "function", "BroadcastChannel function");
 const bc1 = new BroadcastChannel("test-channel");
 const bc2 = new BroadcastChannel("test-channel");
 const bcMsg = await new Promise((resolve) => {
-  bc2.on("message", resolve);
+  bc2.onmessage = (event) => resolve(event.data);
   bc1.postMessage({ broadcast: "data" });
 });
 assert(bcMsg && bcMsg.broadcast === "data", `bcMsg ${JSON.stringify(bcMsg)}`);

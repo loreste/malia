@@ -105,4 +105,22 @@ assert.ok(n >= 5 && n < 10);
 }
 
 assert.throws(() => structuredClone(() => {}), { name: "DataCloneError" });
+
+// Node's platform/arch names, not Rust's ("macos", "aarch64").
+assert.ok(["darwin", "linux", "win32", "freebsd", "openbsd", "sunos", "aix"].includes(process.platform), process.platform);
+assert.ok(["x64", "arm64", "ia32", "arm", "ppc64", "s390x", "riscv64", "loong64"].includes(process.arch), process.arch);
+assert.equal(os.tmpdir().endsWith(path.sep) && os.tmpdir().length > 3, false);
+
+{
+  const a = new BroadcastChannel("compat");
+  const b = new BroadcastChannel("compat");
+  const got = new Promise((resolve) => (b.onmessage = (event) => resolve(event.data)));
+  a.postMessage({ n: 1, m: new Map([[1, 2]]) });
+  const data = await got;
+  assert.equal(data.n, 1);
+  assert.ok(data.m instanceof Map);
+  a.close();
+  b.close();
+  assert.throws(() => a.postMessage(1), { name: "InvalidStateError" });
+}
 console.log("node_runtime_compat: ok");

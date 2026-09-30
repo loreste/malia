@@ -88,6 +88,8 @@ fn compression_adversarial() {
   run_fixture("compression_adversarial.js");
 }
 
+// Workers share the port through SO_REUSEPORT, which Windows lacks.
+#[cfg(unix)]
 #[test]
 fn cluster_adversarial() {
   run_fixture("cluster_adversarial.js");
@@ -367,6 +369,8 @@ fn http_server_node_api() {
   run_fixture("node_http_main.js");
 }
 
+// The fixture runs /bin/echo, /bin/sh, and /bin/sleep.
+#[cfg(unix)]
 #[test]
 fn node_child_process() {
   run_fixture("child_process_main.js");
@@ -755,6 +759,9 @@ fn npm_compatibility_and_portability() {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(&mock_bin, std::fs::Permissions::from_mode(0o755));
   }
+  // Windows runs the .cmd shim npm installs alongside the shell script.
+  #[cfg(windows)]
+  std::fs::write(bin_dir.join("mock-tool.cmd"), "@echo MOCK_TOOL_RUN: %1 %2\r\n").unwrap();
 
   // jse x mock-tool foo bar
   let x_out = std::process::Command::new(jse)

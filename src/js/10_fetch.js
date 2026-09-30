@@ -117,7 +117,7 @@
   globalThis.__jse.toBytes = toBytes;
 
   // Request body init -> { bytes, type } (type = default content-type or
-  // null). Streams and (async) iterables return null: use drainBody.
+  // null). Streams and (async) iterables return null: fetch streams them.
   function extractBody(body) {
     if (typeof body === "string") {
       return { bytes: sharedEncoder.encode(body), type: "text/plain;charset=UTF-8" };
@@ -138,12 +138,11 @@
     return null;
   }
 
-  // ponytail: stream bodies are buffered before sending; pipe them into
-  // reqwest (Body::wrap_stream) if large uploads need to stream.
-  async function drainBody(body) {
+  // ReadableStream (reader only) or (async) iterable -> async iterable.
+  function asAsyncIterable(body) {
     if (typeof body.getReader === "function" && typeof body[Symbol.asyncIterator] !== "function") {
       const reader = body.getReader();
-      body = (async function* () {
+      return (async function* () {
         for (;;) {
           const { done, value } = await reader.read();
           if (done) return;
@@ -154,14 +153,7 @@
     if (typeof body[Symbol.asyncIterator] !== "function" && typeof body[Symbol.iterator] !== "function") {
       throw new TypeError("unsupported request body type");
     }
-    const parts = [];
-    let length = 0;
-    for await (const chunk of body) {
-      const bytes = toBytes(chunk);
-      parts.push(bytes);
-      length += bytes.length;
-    }
-    return { bytes: concatBytes(parts, length), type: null };
+    return body;
   }
 
   function concatBytes(parts, length) {
@@ -492,17 +484,41 @@
       for (const [name, value] of new Headers(headerInit)) headerPairs.push([name, value]);
     }
     let bodyBytes;
+    let bodyStream = 0;
     const bodyInit = init.body ?? (input instanceof Request ? input._bodyBytes : undefined);
     if (bodyInit !== undefined && bodyInit !== null) {
-      const { bytes, type } = extractBody(bodyInit) ?? (await drainBody(bodyInit));
-      if (type && !headerPairs.some(([name]) => name.toLowerCase() === "content-type")) {
-        headerPairs.push(["content-type", type]);
+      const extracted = extractBody(bodyInit);
+      if (extracted) {
+        if (extracted.type && !headerPairs.some(([name]) => name.toLowerCase() === "content-type")) {
+          headerPairs.push(["content-type", extracted.type]);
+        }
+        if (extracted.bytes.length !== 0) bodyBytes = extracted.bytes;
+      } else {
+        bodyStream = streamBody(bodyInit);
       }
-      if (bytes.length !== 0) bodyBytes = bytes;
     }
     const redirect = String(init.redirect ?? (input instanceof Request ? input.redirect : "follow"));
-    const head = await ops.op_fetch_start(url, method, headerPairs, bodyBytes, redirect);
+    const head = await ops.op_fetch_start(url, method, headerPairs, bodyBytes, redirect, bodyStream);
     return Response._fromFetch(head, url);
+  }
+
+  // Upload a ReadableStream / (async) iterable body chunk by chunk. Each
+  // write waits for room in the op's bounded channel (backpressure); a
+  // failing source aborts the request.
+  function streamBody(body) {
+    const chunks = asAsyncIterable(body); // throws for unsupported types
+    const id = ops.op_fetch_body_new();
+    (async () => {
+      try {
+        for await (const chunk of chunks) {
+          await ops.op_fetch_body_write(id, toBytes(chunk));
+        }
+        ops.op_fetch_body_close(id, "");
+      } catch (err) {
+        ops.op_fetch_body_close(id, String(err?.message ?? err) || "request body stream failed");
+      }
+    })();
+    return id;
   }
 
   globalThis.fetch = fetch;
