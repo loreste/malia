@@ -299,7 +299,7 @@ ECDSA, Ed25519), `encrypt`/`decrypt` (AES-GCM, AES-CBC, AES-CTR, RSA-OAEP),
 | `http2` | Server and client; ALPN `h2` and cleartext `h2c` with prior knowledge |
 | `inspector` | `Session`, `open`, `close`, `url` |
 | `module` | `createRequire`, `builtinModules`, `isBuiltin`, `Module` |
-| `net`, `tls` | TCP and Unix domain sockets, `Socket`, `Server`, `isIP`, `SocketAddress`, `BlockList` |
+| `net`, `tls` | TCP, Unix domain sockets, and Windows named pipes; `Socket`, `Server`, `isIP`, `SocketAddress`, `BlockList` |
 | `os` | Platform, CPU, memory, network, and user info. Reports cgroup limits inside containers |
 | `path` | Port of Node's implementation; `posix` and `win32`, with the platform's variant as the default |
 | `process` | `argv`, `env`, `cwd`, `chdir`, `nextTick`, `hrtime`, `memoryUsage`, `exit` and error events, signals. `process.version` is `v20.18.0` |
@@ -367,9 +367,8 @@ See the [Dockerfile](Dockerfile) in the repository root and
   X25519, RSA key generation only for 2048/3072/4096/8192 bits with exponent
   65537, RSA-PSS salt length must equal the digest length, and
   `setAutoPadding(false)` is not supported.
-- Windows: `net` paths (Unix domain sockets) and Windows named pipes are not
-  supported, and `node:cluster` workers cannot share a port (it relies on
-  `SO_REUSEPORT`). `chmod` only toggles the read-only attribute.
+- Windows: `node:cluster` workers cannot share a port (it relies on
+  `SO_REUSEPORT`), and `chmod` only toggles the read-only attribute.
 - HTTP server request bodies are read fully into memory. The `node:http`
   client sends buffered bodies with `Content-Length` and `Connection: close`.
 - A `WorkerPool` worker must reply with exactly one `postMessage` per

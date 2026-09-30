@@ -123,6 +123,23 @@ assert.equal(os.tmpdir().endsWith(path.sep) && os.tmpdir().length > 3, false);
   b.close();
   assert.throws(() => a.postMessage(1), { name: "InvalidStateError" });
 }
+// ---- IPC paths: Unix domain sockets, or named pipes on Windows ------------------------
+{
+  const ipcPath = process.platform === "win32"
+    ? `\\\\.\\pipe\\jse-compat-${process.pid}`
+    : path.join(os.tmpdir(), `jse-compat-${process.pid}.sock`);
+  const server = net.createServer((sock) => sock.on("data", (d) => sock.end(`echo:${d}`)));
+  await new Promise((resolve, reject) => server.once("error", reject).listen(ipcPath, resolve));
+  const reply = await new Promise((resolve, reject) => {
+    const sock = net.connect(ipcPath, () => sock.write("ipc"));
+    let text = "";
+    sock.on("data", (d) => (text += d)).on("end", () => resolve(text)).on("error", reject);
+  });
+  assert.equal(reply, "echo:ipc");
+  await new Promise((resolve) => server.close(resolve));
+  if (process.platform !== "win32") fs.rmSync(ipcPath, { force: true });
+}
+
 // ---- crypto: ciphers, keys, signatures, WebCrypto ------------------------------------
 {
   const key = Buffer.alloc(32, 7);

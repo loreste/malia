@@ -40,6 +40,11 @@ function toBytes(chunk, encoding) {
   return Buffer.from(chunk ?? []);
 }
 
+// Like Node: a non-numeric string is a Unix socket or Windows pipe path.
+function isPipePath(value) {
+  return typeof value === "string" && value !== "" && !/^\d+$/.test(value);
+}
+
 function Socket(options = {}) {
   Duplex.call(this, options);
   this.connecting = false;
@@ -77,7 +82,7 @@ Socket.prototype._onConnect = function (info) {
 
 Socket.prototype.connect = function (port, host, cb) {
   let opts;
-  if (typeof port === "string" && (port.startsWith("/") || port.startsWith("."))) {
+  if (isPipePath(port)) {
     opts = { path: port };
     cb = typeof host === "function" ? host : cb;
   } else if (typeof port === "object" && port !== null) {
@@ -259,7 +264,7 @@ Server.prototype.constructor = Server;
 
 Server.prototype.listen = function (port, host, backlog, cb) {
   let listenPath = null;
-  if (typeof port === "string" && (port.startsWith("/") || port.startsWith("."))) {
+  if (isPipePath(port)) {
     listenPath = port;
     cb = typeof host === "function" ? host : cb;
   } else if (typeof port === "object" && port !== null && port.path) {
@@ -268,7 +273,10 @@ Server.prototype.listen = function (port, host, backlog, cb) {
   }
 
   if (listenPath) {
-    ops.op_net_listen(String(listenPath), 0).then(
+    // Bare Unix socket names are relative to the cwd, as in Node.
+    listenPath = String(listenPath);
+    if (process.platform !== "win32" && !/^[/.]/.test(listenPath)) listenPath = `./${listenPath}`;
+    ops.op_net_listen(listenPath, 0).then(
       (info) => {
         this._id = info.id;
         this._port = 0;

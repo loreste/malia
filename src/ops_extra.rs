@@ -638,6 +638,10 @@ enum NetReader {
   Tls(tokio::io::ReadHalf<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>),
   #[cfg(unix)]
   Unix(tokio::net::unix::OwnedReadHalf),
+  #[cfg(windows)]
+  PipeServer(tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeServer>),
+  #[cfg(windows)]
+  PipeClient(tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>),
 }
 
 enum NetWriter {
@@ -645,6 +649,10 @@ enum NetWriter {
   Tls(tokio::io::WriteHalf<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>),
   #[cfg(unix)]
   Unix(tokio::net::unix::OwnedWriteHalf),
+  #[cfg(windows)]
+  PipeServer(tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeServer>),
+  #[cfg(windows)]
+  PipeClient(tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>),
 }
 
 struct Conn {
@@ -712,7 +720,14 @@ fn insert_conn(inner: &StdMutex<NetInner>, reader: NetReader, writer: NetWriter,
   conn_info(id, info_peer, local)
 }
 
-#[cfg(unix)]
+/// Windows named pipe paths (\\.\pipe\name, \\?\pipe\name).
+#[cfg(windows)]
+fn is_pipe_name(path: &str) -> bool {
+  let lower = path.to_ascii_lowercase();
+  lower.starts_with(r"\\.\pipe\") || lower.starts_with(r"\\?\pipe\")
+}
+
+#[cfg(any(unix, windows))]
 fn insert_conn_unix(inner: &StdMutex<NetInner>, reader: NetReader, writer: NetWriter, path: &str) -> ConnInfo {
   let mut guard = inner.lock().unwrap();
   let id = guard.next_id;
@@ -815,6 +830,61 @@ pub async fn op_net_listen(
       port: 0,
       host,
     });
+  }
+
+  // Windows named pipe server: one pipe instance per client; the next
+  // instance is created before a connected one is handed off, so a client
+  // arriving in between is not refused.
+  #[cfg(windows)]
+  if port == 0 && is_pipe_name(&host) {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    crate::permissions::check_write(&host)?;
+    let first = ServerOptions::new()
+      .first_pipe_instance(true)
+      .create(&host)
+      .map_err(|e| io_box("listen", &host, e))?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (acc_tx, acc_rx) = mpsc::unbounded_channel();
+    let inner = {
+      let mut st = state.borrow_mut();
+      net_inner(&mut st)
+    };
+    let id = {
+      let mut guard = inner.lock().unwrap();
+      let id = guard.next_id;
+      guard.next_id += 1;
+      guard.servers.insert(
+        id,
+        ServerSlot {
+          shutdown: Some(shutdown_tx),
+          incoming: Arc::new(TokioMutex::new(acc_rx)),
+        },
+      );
+      id
+    };
+    let task_inner = inner.clone();
+    let pipe_name = host.clone();
+    tokio::spawn(async move {
+      let mut shutdown_rx = shutdown_rx;
+      let mut server = first;
+      loop {
+        let connected = tokio::select! {
+          biased;
+          _ = &mut shutdown_rx => break,
+          result = server.connect() => result,
+        };
+        if connected.is_err() {
+          break;
+        }
+        let Ok(next) = ServerOptions::new().create(&pipe_name) else { break };
+        let (reader, writer) = tokio::io::split(std::mem::replace(&mut server, next));
+        let info = insert_conn_unix(&task_inner, NetReader::PipeServer(reader), NetWriter::PipeServer(writer), &pipe_name);
+        if acc_tx.send(info).is_err() {
+          break;
+        }
+      }
+    });
+    return Ok(ListenInfo { id, port: 0, host });
   }
 
   crate::permissions::check_net(&host)?;
@@ -927,6 +997,28 @@ pub async fn op_net_connect(
       net_inner(&mut st)
     };
     return Ok(insert_conn_unix(&inner, NetReader::Unix(reader), NetWriter::Unix(writer), &host));
+  }
+
+  #[cfg(windows)]
+  if is_pipe_name(&host) {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    crate::permissions::check_read(&host)?;
+    crate::permissions::check_write(&host)?;
+    // ERROR_PIPE_BUSY (231): every instance is taken; the server creates
+    // another as soon as it hands one off.
+    let client = loop {
+      match ClientOptions::new().open(&host) {
+        Ok(client) => break client,
+        Err(e) if e.raw_os_error() == Some(231) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+        Err(e) => return Err(io_box("connect", &host, e)),
+      }
+    };
+    let (reader, writer) = tokio::io::split(client);
+    let inner = {
+      let mut st = state.borrow_mut();
+      net_inner(&mut st)
+    };
+    return Ok(insert_conn_unix(&inner, NetReader::PipeClient(reader), NetWriter::PipeClient(writer), &host));
   }
 
   crate::permissions::check_net(&host)?;
@@ -1059,6 +1151,10 @@ async fn read_some(reader: &mut NetReader) -> std::io::Result<Vec<u8>> {
     NetReader::Tls(r) => r.read(&mut buf).await?,
     #[cfg(unix)]
     NetReader::Unix(r) => r.read(&mut buf).await?,
+    #[cfg(windows)]
+    NetReader::PipeServer(r) => r.read(&mut buf).await?,
+    #[cfg(windows)]
+    NetReader::PipeClient(r) => r.read(&mut buf).await?,
   };
   buf.truncate(n);
   Ok(buf)
@@ -1128,6 +1224,10 @@ pub async fn op_net_write(
     NetWriter::Tls(w) => w.write_all(&data).await,
     #[cfg(unix)]
     NetWriter::Unix(w) => w.write_all(&data).await,
+    #[cfg(windows)]
+    NetWriter::PipeServer(w) => w.write_all(&data).await,
+    #[cfg(windows)]
+    NetWriter::PipeClient(w) => w.write_all(&data).await,
   };
   {
     let st = state.borrow();
@@ -1160,6 +1260,10 @@ pub async fn op_net_shutdown(state: Rc<RefCell<OpState>>, id: u32) -> Result<(),
       NetWriter::Tls(w) => w.shutdown().await,
       #[cfg(unix)]
       NetWriter::Unix(w) => w.shutdown().await,
+      #[cfg(windows)]
+      NetWriter::PipeServer(w) => w.shutdown().await,
+      #[cfg(windows)]
+      NetWriter::PipeClient(w) => w.shutdown().await,
     };
   }
   Ok(())
