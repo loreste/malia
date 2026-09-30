@@ -83,6 +83,10 @@ mod router {
 }
 
 #[allow(dead_code)]
+mod platform {
+  include!("src/platform.rs");
+}
+#[allow(dead_code)]
 mod production {
   include!("src/production.rs");
 }

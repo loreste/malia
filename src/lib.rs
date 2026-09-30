@@ -10,6 +10,7 @@ pub mod ops;
 pub mod optimizer;
 pub mod panic;
 pub mod permissions;
+pub mod platform;
 pub mod production;
 pub mod router;
 pub mod runtime;

@@ -86,6 +86,39 @@ fn uv_description(code: &str) -> Option<&'static str> {
   })
 }
 
+/// Node's errno: libuv's negated error number. On Unix that is the OS errno;
+/// on Windows libuv has its own numbering (uv/errno.h).
+fn uv_errno(code: &str, err: &std::io::Error) -> i32 {
+  if cfg!(windows) {
+    return match code {
+      "ENOENT" => -4058,
+      "EEXIST" => -4075,
+      "EACCES" => -4092,
+      "EPERM" => -4048,
+      "EISDIR" => -4068,
+      "ENOTDIR" => -4052,
+      "ENOTEMPTY" => -4051,
+      "EBADF" => -4083,
+      "EINVAL" => -4071,
+      "EMFILE" => -4066,
+      "ELOOP" => -4067,
+      "EXDEV" => -4037,
+      "ENAMETOOLONG" => -4064,
+      "EBUSY" => -4082,
+      "ENOSPC" => -4055,
+      "EROFS" => -4036,
+      "EAGAIN" => -4088,
+      "ECONNREFUSED" => -4078,
+      "ECONNRESET" => -4077,
+      "EADDRINUSE" => -4091,
+      "ETIMEDOUT" => -4039,
+      "EPIPE" => -4047,
+      _ => -4070, // EIO
+    };
+  }
+  err.raw_os_error().map_or(-5, |n| -n)
+}
+
 fn node_io_error(syscall: &str, path: Option<&str>, dest: Option<&str>, err: std::io::Error) -> JsErrorBox {
   let code = deno_error::get_error_code(&err).unwrap_or("EIO");
   let description = uv_description(code).map(str::to_string).unwrap_or_else(|| {
@@ -102,9 +135,7 @@ fn node_io_error(syscall: &str, path: Option<&str>, dest: Option<&str>, err: std
   if let Some(dest) = dest {
     message.push_str(&format!(" -> '{dest}'"));
   }
-  // ponytail: errno is the negated OS error, which matches libuv on Unix
-  // only; Windows would need libuv's error table.
-  let errno = err.raw_os_error().map_or(-5, |n| -n);
+  let errno = uv_errno(code, &err);
   JsErrorBox::from_err(NodeIoError {
     code,
     errno,
@@ -280,33 +311,9 @@ pub fn op_realpath_sync(#[string] path: String) -> Result<String, JsErrorBox> {
 
 fn access_at(path: &str, mode: u32) -> Result<(), JsErrorBox> {
   crate::permissions::check_read(path)?;
-  use std::os::unix::fs::MetadataExt;
-  let meta = match std::fs::metadata(path) {
-    Ok(meta) => meta,
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-      return Err(JsErrorBox::generic(format!("ENOENT: {path}")));
-    }
-    Err(e) => return Err(JsErrorBox::generic(format!("EACCES: {path}: {e}"))),
-  };
-  if mode == 0 {
-    return Ok(());
-  }
-  let uid = nix::unistd::Uid::current().as_raw();
-  let gid = nix::unistd::Gid::current().as_raw();
-  let bits = meta.mode();
-  let (r, w, x) = if uid == 0 {
-    (true, true, bits & 0o111 != 0)
-  } else if meta.uid() == uid {
-    (bits & 0o400 != 0, bits & 0o200 != 0, bits & 0o100 != 0)
-  } else if meta.gid() == gid {
-    (bits & 0o040 != 0, bits & 0o020 != 0, bits & 0o010 != 0)
-  } else {
-    (bits & 0o004 != 0, bits & 0o002 != 0, bits & 0o001 != 0)
-  };
-  let want = |bit: u32, ok: bool| mode & bit != 0 && !ok;
-  if want(nix::libc::R_OK as u32, r) || want(nix::libc::W_OK as u32, w) || want(nix::libc::X_OK as u32, x)
-  {
-    return Err(JsErrorBox::generic(format!("EACCES: {path}")));
+  let meta = std::fs::metadata(path).map_err(|e| io_box("access", path, e))?;
+  if mode != 0 && crate::platform::access_denied(&meta, mode) {
+    return Err(io_box("access", path, std::io::ErrorKind::PermissionDenied.into()));
   }
   Ok(())
 }
@@ -317,10 +324,8 @@ pub fn op_access_sync(#[string] path: String, mode: u32) -> Result<(), JsErrorBo
 }
 
 fn chmod_at(path: &str, mode: u32) -> Result<(), JsErrorBox> {
-  use std::os::unix::fs::PermissionsExt;
   crate::permissions::check_write(path)?;
-  let perms = std::fs::Permissions::from_mode(mode);
-  std::fs::set_permissions(path, perms).map_err(|e| io_box("chmod", path, e))
+  crate::platform::set_mode(path, mode).map_err(|e| io_box("chmod", path, e))
 }
 
 #[op2(fast)]
@@ -371,7 +376,7 @@ pub fn op_read_range(#[string] path: String, offset: f64, len: u32) -> Result<Ve
 fn symlink_at(target: &str, link: &str) -> Result<(), JsErrorBox> {
   // The target may not exist; only the new link path is a write.
   crate::permissions::check_write(link)?;
-  std::os::unix::fs::symlink(target, link).map_err(|e| io_box_dest("symlink", target, link, e))
+  crate::platform::symlink(target, link).map_err(|e| io_box_dest("symlink", target, link, e))
 }
 
 #[op2(fast)]
@@ -589,19 +594,21 @@ struct FsConstants {
 #[op2]
 #[serde]
 pub fn op_fs_constants() -> FsConstants {
+  use crate::platform::{F_OK, R_OK, W_OK, X_OK};
+  let [o_rdonly, o_wronly, o_rdwr, o_append, o_creat, o_excl, o_trunc, o_sync] = crate::platform::open_flags();
   FsConstants {
-    f_ok: nix::libc::F_OK,
-    r_ok: nix::libc::R_OK,
-    w_ok: nix::libc::W_OK,
-    x_ok: nix::libc::X_OK,
-    o_rdonly: nix::libc::O_RDONLY,
-    o_wronly: nix::libc::O_WRONLY,
-    o_rdwr: nix::libc::O_RDWR,
-    o_append: nix::libc::O_APPEND,
-    o_creat: nix::libc::O_CREAT,
-    o_excl: nix::libc::O_EXCL,
-    o_trunc: nix::libc::O_TRUNC,
-    o_sync: nix::libc::O_SYNC,
+    f_ok: F_OK as i32,
+    r_ok: R_OK as i32,
+    w_ok: W_OK as i32,
+    x_ok: X_OK as i32,
+    o_rdonly,
+    o_wronly,
+    o_rdwr,
+    o_append,
+    o_creat,
+    o_excl,
+    o_trunc,
+    o_sync,
   }
 }
 
@@ -2394,27 +2401,23 @@ struct OsInfo {
   release: String,
   version: String,
   machine: String,
-  uid: u32,
-  gid: u32,
+  uid: i64,
+  gid: i64,
   tmpdir: String,
-}
-
-fn os_text(value: &std::ffi::OsStr) -> String {
-  value.to_string_lossy().into_owned()
 }
 
 #[op2]
 #[serde]
 pub fn op_os_info() -> Result<OsInfo, JsErrorBox> {
-  let uname = nix::sys::utsname::uname().map_err(|e| JsErrorBox::generic(format!("uname: {e}")))?;
+  let names = crate::platform::os_names().map_err(|e| JsErrorBox::generic(format!("uname: {e}")))?;
   Ok(OsInfo {
-    hostname: os_text(uname.nodename()),
-    sysname: os_text(uname.sysname()),
-    release: os_text(uname.release()),
-    version: os_text(uname.version()),
-    machine: os_text(uname.machine()),
-    uid: nix::unistd::Uid::current().as_raw(),
-    gid: nix::unistd::Gid::current().as_raw(),
+    hostname: names.hostname,
+    sysname: names.sysname,
+    release: names.release,
+    version: names.version,
+    machine: names.machine,
+    uid: names.uid,
+    gid: names.gid,
     tmpdir: std::env::temp_dir().to_string_lossy().into_owned(),
   })
 }
@@ -2563,7 +2566,7 @@ pub fn op_pid() -> u32 {
 
 #[op2(fast)]
 pub fn op_ppid() -> u32 {
-  nix::unistd::getppid().as_raw() as u32
+  crate::platform::ppid()
 }
 
 #[op2]

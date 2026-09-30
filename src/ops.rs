@@ -341,68 +341,41 @@ struct StatInfo {
   is_symlink: bool,
 }
 
-fn unix_ms(secs: i64, nsec: i64) -> f64 {
-  secs as f64 * 1000.0 + nsec as f64 / 1_000_000.0
-}
-
 fn stat_info(path: &str, follow: bool) -> Result<StatInfo, JsErrorBox> {
-  use std::os::unix::fs::MetadataExt;
   let meta = if follow {
     std::fs::metadata(path)
   } else {
     std::fs::symlink_metadata(path)
   }
   .map_err(|e| io_box(if follow { "stat" } else { "lstat" }, path, e))?;
-  let birthtime_ms = meta
-    .created()
-    .ok()
-    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-    .map(|d| d.as_secs_f64() * 1000.0)
-    .unwrap_or(0.0);
-  Ok(StatInfo {
-    size: meta.len(),
-    mtime_ms: unix_ms(meta.mtime(), meta.mtime_nsec()),
-    ctime_ms: unix_ms(meta.ctime(), meta.ctime_nsec()),
-    atime_ms: unix_ms(meta.atime(), meta.atime_nsec()),
-    birthtime_ms,
-    ino: meta.ino(),
-    mode: meta.mode(),
-    uid: meta.uid(),
-    gid: meta.gid(),
-    nlink: meta.nlink(),
-    dev: meta.dev(),
-    rdev: meta.rdev(),
-    blksize: meta.blksize(),
-    blocks: meta.blocks(),
-    is_dir: meta.is_dir(),
-    is_file: meta.is_file(),
-    is_symlink: !follow && meta.file_type().is_symlink(),
-  })
+  let mut info = fstat_info(&meta);
+  info.is_symlink = !follow && meta.file_type().is_symlink();
+  Ok(info)
 }
 
 fn fstat_info(meta: &std::fs::Metadata) -> StatInfo {
-  use std::os::unix::fs::MetadataExt;
   let birthtime_ms = meta
     .created()
     .ok()
     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
     .map(|d| d.as_secs_f64() * 1000.0)
     .unwrap_or(0.0);
+  let f = crate::platform::stat_fields(meta);
   StatInfo {
     size: meta.len(),
-    mtime_ms: unix_ms(meta.mtime(), meta.mtime_nsec()),
-    ctime_ms: unix_ms(meta.ctime(), meta.ctime_nsec()),
-    atime_ms: unix_ms(meta.atime(), meta.atime_nsec()),
+    mtime_ms: f.mtime_ms,
+    ctime_ms: f.ctime_ms,
+    atime_ms: f.atime_ms,
     birthtime_ms,
-    ino: meta.ino(),
-    mode: meta.mode(),
-    uid: meta.uid(),
-    gid: meta.gid(),
-    nlink: meta.nlink(),
-    dev: meta.dev(),
-    rdev: meta.rdev(),
-    blksize: meta.blksize(),
-    blocks: meta.blocks(),
+    ino: f.ino,
+    mode: f.mode,
+    uid: f.uid,
+    gid: f.gid,
+    nlink: f.nlink,
+    dev: f.dev,
+    rdev: f.rdev,
+    blksize: f.blksize,
+    blocks: f.blocks,
     is_dir: meta.is_dir(),
     is_file: meta.is_file(),
     is_symlink: meta.file_type().is_symlink(),
@@ -544,9 +517,7 @@ pub fn op_fs_read(
   let mut guard = file.lock().unwrap();
   let mut buf = vec![0u8; len as usize];
   let n = if position >= 0.0 {
-    use std::os::unix::fs::FileExt;
-    guard
-      .read_at(&mut buf, position as u64)
+    crate::platform::read_at(&guard, &mut buf, position as u64)
       .map_err(|e| io_box_fd("read", e))?
   } else {
     use std::io::Read;
@@ -573,9 +544,7 @@ pub fn op_fs_write(
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
   let mut guard = file.lock().unwrap();
   let n = if position >= 0.0 {
-    use std::os::unix::fs::FileExt;
-    guard
-      .write_at(data, position as u64)
+    crate::platform::write_at(&guard, data, position as u64)
       .map_err(|e| io_box_fd("write", e))?
   } else {
     use std::io::Write;
@@ -2112,11 +2081,7 @@ pub fn op_child_kill(state: &mut OpState, id: u32) -> bool {
   if child.pid <= 0 {
     return false;
   }
-  nix::sys::signal::kill(
-    nix::unistd::Pid::from_raw(child.pid),
-    nix::sys::signal::Signal::SIGKILL,
-  )
-  .is_ok()
+  crate::platform::kill(child.pid)
 }
 
 fn read_pipe_to_end(pipe: Option<impl std::io::Read>) -> Vec<u8> {

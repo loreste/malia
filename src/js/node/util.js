@@ -4,13 +4,29 @@ import { __isDeepEqual } from "node:assert";
 
 const { format, formatWithOptions, inspect } = __jse;
 
-function promisify(fn) {
-  return function (...args) {
+const kCustomPromisify = Symbol.for("nodejs.util.promisify.custom");
+
+// Node's promisify: honors fn[util.promisify.custom] and keeps the
+// original's properties.
+function promisify(original) {
+  if (typeof original !== "function") throw __jse.invalidArgType("original", "function", original);
+  const custom = original[kCustomPromisify];
+  if (custom !== undefined) {
+    if (typeof custom !== "function") {
+      throw __jse.invalidArgType("util.promisify.custom", "function", custom);
+    }
+    return Object.defineProperty(custom, kCustomPromisify, { value: custom, configurable: true });
+  }
+  function fn(...args) {
     return new Promise((resolve, reject) => {
-      fn.call(this, ...args, (err, value) => (err ? reject(err) : resolve(value)));
+      Reflect.apply(original, this, [...args, (err, value) => (err ? reject(err) : resolve(value))]);
     });
-  };
+  }
+  Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
+  Object.defineProperty(fn, kCustomPromisify, { value: fn, configurable: true });
+  return Object.defineProperties(fn, Object.getOwnPropertyDescriptors(original));
 }
+promisify.custom = kCustomPromisify;
 
 function callbackify(fn) {
   return function (...args) {

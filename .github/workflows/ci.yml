@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install example and fixture dependencies
+        run: |
+          npm install --no-audit --no-fund --prefix examples/express_demo
+          npm install --no-audit --no-fund --prefix examples/cjs_demo
+          npm install --no-audit --no-fund --prefix tests/fixtures/frameworks
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  windows:
+    name: Build and test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --bins
+      - name: Smoke test
+        shell: bash
+        run: |
+          ./target/debug/malia run examples/hello.ts
+          ./target/debug/malia eval --allow-all "const fs = await import('node:fs'); const os = await import('node:os'); const p = await import('node:path'); const f = p.join(os.tmpdir(), 'jse-ci.txt'); fs.writeFileSync(f, 'ok'); console.log(fs.readFileSync(f, 'utf8'), p.sep, os.platform(), fs.statSync(f).isFile());"
+      - run: cargo test

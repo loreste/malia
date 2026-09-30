@@ -27,7 +27,6 @@ md5 = "0.7"
 flate2 = "1.1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 if-addrs = "0.14"
-nix = { version = "0.31", default-features = false, features = ["signal", "user", "feature", "fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "brotli", "gzip", "deflate"] }
 rustyline = "18.0.1"
 sysinfo = "0.36"
@@ -66,7 +65,6 @@ flate2 = "1.1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 if-addrs = "0.14"
 md5 = "0.7"
-nix = { version = "0.31", default-features = false, features = ["signal", "user", "feature", "fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "brotli", "gzip", "deflate"] }
 serde = { version = "1", features = ["derive"] }
 sysinfo = "0.36"
@@ -86,6 +84,12 @@ ring = "0.17"
 scrypt = { version = "0.11", default-features = false }
 
 url = "2"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal", "user", "feature", "fs"] }
+
+[target.'cfg(unix)'.build-dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal", "user", "feature", "fs"] }
 
 [[bin]]
 name = "malia"

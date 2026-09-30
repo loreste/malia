@@ -829,6 +829,10 @@ fn node_directory_and_package_entry_resolution() {
   let jse = env!("CARGO_BIN_EXE_jse");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let express_demo_dir = root.join("examples").join("express_demo");
+  if !express_demo_dir.join("node_modules/express").is_dir() {
+    eprintln!("skipping: examples/express_demo/node_modules not installed");
+    return;
+  }
 
   // 1. Run via `jse run --allow-all examples/express_demo --selftest`
   let out_run = std::process::Command::new(jse)

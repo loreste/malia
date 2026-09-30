@@ -16,12 +16,27 @@ function modeOf(value) {
   return "pipe";
 }
 
+// How Node runs a command line through a shell: /bin/sh -c on Unix,
+// %ComSpec% /d /s /c on Windows, or the shell named by options.shell.
+// ponytail: on Windows the command is passed as one quoted argument, so
+// embedded double quotes may be escaped differently than Node's verbatim
+// cmd.exe arguments.
+function shellInvocation(commandLine, shell) {
+  const isWindows = process.platform === "win32";
+  const file = typeof shell === "string" ? shell : isWindows ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
+  const cmdExe = /(?:^|[\\/])cmd(?:\.exe)?$/i.test(file);
+  return [file, cmdExe ? ["/d", "/s", "/c", commandLine] : ["-c", commandLine]];
+}
+
 function normalizeSpec(command, args, options) {
   if (args !== undefined && !Array.isArray(args)) {
     options = args;
     args = undefined;
   }
   options = options ?? {};
+  if (options.shell) {
+    [command, args] = shellInvocation([command, ...(args ?? [])].join(" "), options.shell);
+  }
   return {
     cmd: String(command),
     args: (args ?? []).map(String),
@@ -40,7 +55,7 @@ function asOutput(bytes, encoding) {
   if (Buffer.isBuffer(bytes)) buf = bytes;
   else if (bytes instanceof Uint8Array) buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   else buf = Buffer.from(bytes ?? []);
-  return encoding ? buf.toString(encoding) : buf;
+  return encoding && encoding !== "buffer" ? buf.toString(encoding) : buf;
 }
 
 function asBuffer(bytes) {
@@ -179,7 +194,8 @@ function execFile(file, args, options, cb) {
     cb = options;
     options = undefined;
   }
-  const encoding = options?.encoding;
+  // exec/execFile output is text unless encoding is "buffer".
+  const encoding = options?.encoding ?? "utf8";
   const promise = new Promise((resolve, reject) => {
     const child = spawn(file, args, options);
     child.on("error", reject);
@@ -187,32 +203,52 @@ function execFile(file, args, options, cb) {
       reject(new Error("spawn failed"));
       return;
     }
-    child._result().then(
-      (result) =>
-        resolve({
-          stdout: asOutput(result.stdout, encoding),
-          stderr: asOutput(result.stderr, encoding),
-        }),
-      reject,
-    );
+    child._result().then((result) => {
+      const stdout = asOutput(result.stdout, encoding);
+      const stderr = asOutput(result.stderr, encoding);
+      if (result.code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      // Like Node: a non-zero exit is an error carrying the exit code and
+      // the captured output.
+      const cmd = [file, ...(Array.isArray(args) ? args : [])].join(" ");
+      const err = new Error(`Command failed: ${options?.shell ? file : cmd}\n${stderr}`);
+      Object.assign(err, { code: result.code, killed: false, signal: null, cmd, stdout, stderr });
+      reject(err);
+    }, reject);
   });
   if (cb) {
     promise.then(
       ({ stdout, stderr }) => cb(null, stdout, stderr),
-      (err) => cb(err, "", ""),
+      (err) => cb(err, err.stdout ?? "", err.stderr ?? ""),
     );
     return undefined;
   }
   return promise;
 }
 
+// util.promisify(exec/execFile) resolves to { stdout, stderr }, as in Node.
+execFile[Symbol.for("nodejs.util.promisify.custom")] = (file, args, options) =>
+  new Promise((resolve, reject) => {
+    const done = (err, stdout, stderr) => (err ? reject(err) : resolve({ stdout, stderr }));
+    if (typeof args === "function" || args === undefined) execFile(file, done);
+    else if (options === undefined) execFile(file, args, done);
+    else execFile(file, args, options, done);
+  });
+
 function exec(command, options, cb) {
   if (typeof options === "function") {
     cb = options;
     options = undefined;
   }
-  return execFile("/bin/sh", ["-c", String(command)], options, cb);
+  return execFile(String(command), [], { ...options, shell: options?.shell || true }, cb);
 }
+
+exec[Symbol.for("nodejs.util.promisify.custom")] = (command, options) =>
+  new Promise((resolve, reject) => {
+    exec(command, options, (err, stdout, stderr) => (err ? reject(err) : resolve({ stdout, stderr })));
+  });
 
 function spawnSync(command, args, options) {
   const spec = normalizeSpec(command, args, options);
@@ -246,7 +282,7 @@ function execFileSync(file, args, options) {
 }
 
 function execSync(command, options) {
-  const result = spawnSync("/bin/sh", ["-c", String(command)], options);
+  const result = spawnSync(String(command), [], { ...options, shell: options?.shell || true });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     const err = new Error(`Command failed: ${command}`);
