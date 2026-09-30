@@ -17,6 +17,8 @@ Examples for common tasks. `malia` and `jse` are the same binary, and the
 10. [Workers and clustering](#10-workers-and-clustering)
 11. [WebAssembly](#11-webassembly)
 12. [Container deployment](#12-container-deployment)
+13. [Debugging](#13-debugging)
+14. [UDP sockets](#14-udp-sockets)
 
 ---
 
@@ -595,3 +597,106 @@ services:
 volumes:
   mongo_data:
 ```
+
+---
+
+## 13. Debugging
+
+### Chrome DevTools
+
+```sh
+jse --inspect run app.js
+```
+
+Open `chrome://inspect` in Chrome, click "Configure", add `127.0.0.1:9229`,
+and your target appears under "Remote Target". Click "inspect" to open
+DevTools. Breakpoints, stepping, console, heap snapshots, and CPU profiling
+work.
+
+### VS Code
+
+Add a launch configuration to `.vscode/launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug with malia",
+      "runtimeExecutable": "malia",
+      "runtimeArgs": ["--inspect-brk", "run", "--allow-all"],
+      "program": "${workspaceFolder}/src/index.ts",
+      "console": "integratedTerminal"
+    }
+  ]
+}
+```
+
+`--inspect-brk` pauses before the first line, giving VS Code time to attach
+and hit your breakpoints.
+
+### Custom host/port
+
+```sh
+jse --inspect=0.0.0.0:9230 run app.js
+```
+
+Bind to all interfaces (useful inside containers) on a non-default port.
+
+### Programmatic access
+
+```js
+import { Session } from "node:inspector";
+
+const session = new Session();
+session.connect();
+session.post("Profiler.enable", () => {
+  session.post("Profiler.start", () => {
+    // ... do work ...
+    session.post("Profiler.stop", (err, { profile }) => {
+      // profile contains CPU profiling data
+      session.disconnect();
+    });
+  });
+});
+```
+
+---
+
+## 14. UDP sockets
+
+```js
+import dgram from "node:dgram";
+
+const server = dgram.createSocket("udp4");
+
+server.on("message", (msg, rinfo) => {
+  console.log(`${rinfo.address}:${rinfo.port} -> ${msg}`);
+  server.send(`echo: ${msg}`, rinfo.port, rinfo.address);
+});
+
+server.bind(41234, () => {
+  console.log("UDP server listening on", server.address());
+});
+```
+
+Client:
+
+```js
+import dgram from "node:dgram";
+
+const client = dgram.createSocket("udp4");
+client.send("hello", 41234, "127.0.0.1", (err) => {
+  if (err) console.error(err);
+});
+client.on("message", (msg) => {
+  console.log("reply:", msg.toString());
+  client.close();
+});
+```
+
+`send()` auto-binds if the socket is not yet bound. The `message` event
+delivers a `Buffer` and an `rinfo` object with `address`, `port`, `family`,
+and `size`.

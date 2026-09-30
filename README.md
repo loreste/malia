@@ -91,8 +91,22 @@ malia run app.wasm
 
 `-r/--require`, `--import`, `-e/--eval`, `-p/--print`, `-c/--check`,
 `-i/--interactive`, `-v/--version`, `--no-warnings`, `--max-old-space-size`,
+`--inspect[=host:port]`, `--inspect-brk[=host:port]`,
 and `--enable-source-maps` are accepted. Flags in `NODE_OPTIONS` are read as
 well. When invoked through a `node` symlink, `--version` prints `v20.18.0`.
+
+### Debugging
+
+```sh
+malia --inspect run app.js              # start inspector on 127.0.0.1:9229
+malia --inspect-brk run app.js          # pause before first line
+malia --inspect=0.0.0.0:9230 run app.js # custom host/port
+```
+
+Open `chrome://inspect` in Chrome or attach VS Code's debugger
+(`"type": "node"` launch config). The runtime prints the WebSocket URL
+on stderr. Breakpoints, stepping, console, heap snapshots, and CPU
+profiling all work through V8's built-in inspector.
 
 ## Permissions
 
@@ -288,22 +302,24 @@ ECDSA, Ed25519), `encrypt`/`decrypt` (AES-GCM, AES-CBC, AES-CTR, RSA-OAEP),
 | `buffer` | `Buffer` backed by `Uint8Array`, allocations of 4 KB or less come from a shared 8 KB pool (as in Node). Encodings: utf8, base64, hex, latin1, utf16le, ascii |
 | `child_process` | `spawn`, `exec`, `execFile`, their `*Sync` forms, `fork` with IPC |
 | `cluster` | `isPrimary`, `isWorker`, `fork`, lifecycle events, IPC. Workers bind the same port with `SO_REUSEPORT` |
-| `console` | `log`, `info`, `warn`, `error`, `debug`, `trace`, `assert`, `time`, `timeEnd`, `dir` |
+| `console` | `log`, `info`, `warn`, `error`, `debug`, `trace`, `assert`, `time`, `timeEnd`, `timeLog`, `count`, `countReset`, `table`, `dir`, `group`, `groupEnd`, `groupCollapsed`, `clear` |
 | `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`, `scrypt`; ciphers `aes-{128,192,256}-{cbc,ctr}`, `aes-{128,256}-gcm`, `chacha20-poly1305`; `KeyObject`, `createPrivateKey`/`createPublicKey`/`createSecretKey` (PEM, DER, JWK; PKCS#1, PKCS#8, SEC1, SPKI), `generateKeyPair(Sync)` for RSA, EC (P-256/384/521), Ed25519; `sign`/`verify`, `createSign`/`createVerify` (RSA PKCS#1 v1.5 and PSS, ECDSA DER or IEEE P1363, Ed25519); `publicEncrypt`/`privateDecrypt` (OAEP, PKCS#1 v1.5); `webcrypto` |
 | `diagnostics_channel` | `channel`, `subscribe`, `unsubscribe`, `hasSubscribers`, `tracingChannel` |
+| `dgram` | UDP sockets: `createSocket`, `bind`, `send`, `close`, message events, auto-bind on send |
 | `dns`, `dns/promises` | `lookup`, `lookupService`, `resolve4`, `resolve6`, `resolveTxt`, `resolveSrv`, `resolveMx`, `resolveNs`, `resolveCname`, `resolvePtr`, `reverse` |
 | `domain` | `create`, `Domain` |
 | `events` | `EventEmitter`, `once`, `on` (async iterator), `getEventListeners`, `defaultMaxListeners` |
-| `fs`, `fs/promises` | Sync, callback, and promise APIs with Node's error shape (`code`, `errno`, `syscall`, `path`): read/write with `flag`, `mode`, and encodings, `stat` (`throwIfNoEntry`), `readdir` (`recursive`, `withFileTypes`), `mkdir`, `rm`, `cp`, `copyFile` (`COPYFILE_EXCL`), `rename`, `link`, `symlink`, `utimes`, `opendir`, file descriptors, `FileHandle`, streams, `watch`, `watchFile` |
+| `fs`, `fs/promises` | Sync, callback, and promise APIs with Node's error shape (`code`, `errno`, `syscall`, `path`): read/write with `flag`, `mode`, and encodings, `stat` (`throwIfNoEntry`), `readdir` (`recursive`, `withFileTypes`), `mkdir`, `rm`, `cp`, `copyFile` (`COPYFILE_EXCL`), `rename`, `link`, `symlink`, `utimes`, `opendir`, file descriptors, `FileHandle`, streams, `watch` (native inotify/kqueue/FSEvents via notify, falls back to polling), `watchFile` |
 | `http`, `https` | `createServer`, `request`, `get`, `IncomingMessage`, `ServerResponse`. Shares the hyper engine with `jse.serve` |
 | `http2` | Server and client; ALPN `h2` and cleartext `h2c` with prior knowledge |
-| `inspector` | `Session`, `open`, `close`, `url` |
+| `inspector` | `Session` (connects to the running V8 inspector over WebSocket), `open`, `close`, `url`. See [Debugging](#debugging) |
 | `module` | `createRequire`, `builtinModules`, `isBuiltin`, `Module` |
 | `net`, `tls` | TCP, Unix domain sockets, and Windows named pipes; `Socket`, `Server`, `isIP`, `SocketAddress`, `BlockList` |
-| `os` | Platform, CPU, memory, network, and user info. Reports cgroup limits inside containers |
+| `os` | `cpus` (real brand/frequency/times), `loadavg`, `uptime`, `totalmem`, `freemem`, `networkInterfaces` (MAC addresses), `userInfo`, `hostname`, `platform`, `arch`, `type`, `release`, `version`, `machine`, `availableParallelism`, `tmpdir`, `homedir`, `endianness`. Reports cgroup limits inside containers |
 | `path` | Port of Node's implementation; `posix` and `win32`, with the platform's variant as the default |
-| `process` | `argv`, `env`, `cwd`, `chdir`, `nextTick`, `hrtime`, `memoryUsage`, `exit` and error events, signals. `process.version` is `v20.18.0` |
-| `punycode`, `querystring`, `readline`, `string_decoder`, `timers`, `tty`, `perf_hooks`, `constants` | Available |
+| `perf_hooks` | `performance.mark`, `performance.measure`, `performance.getEntries`, `PerformanceObserver` (fires callbacks on entries), `monitorEventLoopDelay` |
+| `process` | `argv`, `env` (mutations propagate to child processes), `cwd`, `chdir`, `nextTick`, `hrtime`, `hrtime.bigint`, `memoryUsage`, `cpuUsage`, `exit`, `stdin` (readable stream), `stdout`/`stderr` (writable streams), `uncaughtException`/`unhandledRejection`/`SIGTERM`/`SIGINT` events, `emitWarning`, `umask` |
+| `punycode`, `querystring`, `readline`, `string_decoder`, `timers`, `tty`, `constants` | Available |
 | `sqlite` | `DatabaseSync`, `StatementSync` (Node 22 API) |
 | `stream`, `stream/promises`, `stream/consumers`, `stream/web` | Node's stream implementation (readable-stream 4): `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline`, `finished`, `compose`, backpressure, `toWeb`/`fromWeb`; consumers; WHATWG streams |
 | `test` | `test`, `describe`, `it`, `before`/`after`/`beforeEach`/`afterEach`, TAP output |
@@ -410,6 +426,7 @@ src/config.rs     project config loading
 src/ops.rs        ops: timers, fs, process, channels, workers, text, crypto, url, fetch, HTTP
 src/ops_extra.rs  net, TLS client, zlib, dns, os, hmac, child stdio (included from ops.rs)
 src/serve.rs      hyper server for jse.serve and node:http
+src/inspector_server.rs  V8 inspector WebSocket server (--inspect / --inspect-brk)
 src/logger.rs     structured logger and HTTP access log
 src/panic.rs      panic hook and per-connection panic isolation
 src/snapshot.rs   include_bytes! of the startup snapshot
