@@ -23,7 +23,7 @@ use deno_error::JsErrorBox;
 
 /// Bare specifiers that map to builtin shims.
 const BUILTINS: &[&str] = &[
-  "assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto",
+  "assert", "assert/strict", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto",
   "dgram", "diagnostics_channel", "dns", "dns/promises", "domain", "events", "fs", "fs/promises", "http",
   "http2", "https", "inspector", "module", "net", "os", "path", "path/posix", "path/win32",
   "perf_hooks", "process", "punycode", "querystring", "readline", "readline/promises", "repl", "stream",
@@ -36,6 +36,7 @@ fn builtin_source(spec: &str) -> Option<&'static str> {
     "jse:internal/cjs" => Some(include_str!("js/internal/cjs.js")),
     "jse:internal/cjs-missing" => Some(include_str!("js/internal/cjs-missing.js")),
     "node:assert" => Some(include_str!("js/node/assert.js")),
+    "node:assert/strict" => Some(include_str!("js/node/assert_strict.js")),
     "node:async_hooks" => Some(include_str!("js/node/async_hooks.js")),
     "node:buffer" => Some(include_str!("js/node/buffer.js")),
     "node:child_process" => Some(include_str!("js/node/child_process.js")),

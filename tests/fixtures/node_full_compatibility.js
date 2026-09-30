@@ -26,7 +26,7 @@ assert.strictEqual(typeof WritableStream, "function", "WritableStream should be 
 // 2. path/posix & path/win32
 assert.strictEqual(posixPath.join("foo", "bar", "baz"), "foo/bar/baz");
 assert.strictEqual(posixPath.basename("/a/b/file.txt"), "file.txt");
-assert.strictEqual(win32Path.join("foo", "bar"), "foo/bar");
+assert.strictEqual(win32Path.join("foo", "bar"), "foo\\bar");
 
 // 3. util & util/types
 assert(utilTypes.isPromise(Promise.resolve()), "isPromise");

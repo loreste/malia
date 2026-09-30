@@ -1,7 +1,7 @@
-// node:path/posix shim
-import path from "node:path";
+// node:path/posix
+import { posix } from "node:path";
 
-const {
+export const {
   sep,
   delimiter,
   isAbsolute,
@@ -14,25 +14,9 @@ const {
   relative,
   parse,
   format,
-  posix,
+  toNamespacedPath,
+  matchesGlob,
   win32,
-} = path;
-
-export {
-  sep,
-  delimiter,
-  isAbsolute,
-  normalize,
-  join,
-  resolve,
-  dirname,
-  basename,
-  extname,
-  relative,
-  parse,
-  format,
-  posix,
-  win32,
-};
-
+} = posix;
+export { posix };
 export default posix;

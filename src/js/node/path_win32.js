@@ -1,7 +1,7 @@
-// node:path/win32 shim
-import path from "node:path";
+// node:path/win32
+import { win32 } from "node:path";
 
-const {
+export const {
   sep,
   delimiter,
   isAbsolute,
@@ -14,25 +14,9 @@ const {
   relative,
   parse,
   format,
+  toNamespacedPath,
+  matchesGlob,
   posix,
-  win32,
-} = path;
-
-export {
-  sep,
-  delimiter,
-  isAbsolute,
-  normalize,
-  join,
-  resolve,
-  dirname,
-  basename,
-  extname,
-  relative,
-  parse,
-  format,
-  posix,
-  win32,
-};
-
+} = win32;
+export { win32 };
 export default win32;

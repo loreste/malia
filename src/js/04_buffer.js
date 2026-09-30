@@ -131,7 +131,8 @@
   }
 
   const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const B64_LOOKUP = new Map([...B64_CHARS].map((c, i) => [c, i]));
+  // Decoding accepts both the standard and URL-safe alphabets, as Node does.
+  const B64_LOOKUP = new Map([...B64_CHARS].map((c, i) => [c, i]).concat([["-", 62], ["_", 63]]));
 
   function base64Encode(bytes) {
     let out = "";
@@ -171,13 +172,25 @@
     return out;
   }
 
+  function hexValue(code) {
+    if (code >= 48 && code <= 57) return code - 48; // 0-9
+    code |= 0x20; // lowercase
+    return code >= 97 && code <= 102 ? code - 87 : -1; // a-f
+  }
+
+  // Like Node: decode pairs up to the first invalid one, drop an odd tail.
   function hexDecode(str) {
-    const clean = String(str).replace(/[^0-9a-fA-F]/g, "");
-    const bytes = new Uint8Array(Math.floor(clean.length / 2));
-    for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+    str = String(str);
+    const n = str.length >>> 1;
+    const bytes = new Uint8Array(n);
+    let i = 0;
+    for (; i < n; i++) {
+      const hi = hexValue(str.charCodeAt(i * 2));
+      const lo = hexValue(str.charCodeAt(i * 2 + 1));
+      if (hi < 0 || lo < 0) break;
+      bytes[i] = hi * 16 + lo;
     }
-    return bytes;
+    return i === n ? bytes : bytes.slice(0, i);
   }
 
   function normEnc(encoding) {
@@ -188,9 +201,15 @@
     return enc;
   }
 
+  const ENCODINGS = new Set(["utf8", "base64", "base64url", "hex", "latin1", "ascii", "utf16le"]);
+
+  function base64UrlEncode(bytes) {
+    return base64Encode(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
   function encodeString(str, encoding) {
     const enc = normEnc(encoding);
-    if (enc === "base64") return base64Decode(str);
+    if (enc === "base64" || enc === "base64url") return base64Decode(str);
     if (enc === "hex") return hexDecode(str);
     if (enc === "latin1") {
       const bytes = new Uint8Array(str.length);
@@ -217,6 +236,7 @@
   function decodeBytes(bytes, encoding) {
     const enc = normEnc(encoding);
     if (enc === "base64") return base64Encode(bytes);
+    if (enc === "base64url") return base64UrlEncode(bytes);
     if (enc === "hex") return hexEncode(bytes);
     if (enc === "latin1") return Array.from(bytes, (b) => String.fromCharCode(b)).join("");
     if (enc === "ascii") return Array.from(bytes, (b) => String.fromCharCode(b & 0x7f)).join("");
@@ -231,6 +251,87 @@
 
   function dataView(buf) {
     return new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+
+  // ---- Bounds/range errors (Node's messages and codes) ----------------------
+
+  function rangeError(code, message) {
+    const err = new RangeError(message);
+    err.code = code;
+    return err;
+  }
+
+  // 1234567890 -> "1_234_567_890", as Node prints large received values.
+  function addNumericalSeparator(val) {
+    let res = "";
+    let i = val.length;
+    const start = val[0] === "-" ? 1 : 0;
+    for (; i >= start + 4; i -= 3) res = `_${val.slice(i - 3, i)}${res}`;
+    return `${val.slice(0, i)}${res}`;
+  }
+
+  function outOfRange(name, range, value) {
+    let received;
+    if (typeof value === "bigint") {
+      received = String(value);
+      if (value > 2n ** 32n || value < -(2n ** 32n)) received = addNumericalSeparator(received);
+      received += "n";
+    } else if (Number.isInteger(value) && Math.abs(value) > 2 ** 32) {
+      received = addNumericalSeparator(String(value));
+    } else {
+      received = __jse.inspect(value);
+    }
+    return rangeError("ERR_OUT_OF_RANGE", `The value of "${name}" is out of range. It must be ${range}. Received ${received}`);
+  }
+
+  function checkOffset(buf, offset, size) {
+    if (typeof offset !== "number") throw __jse.invalidArgType("offset", "number", offset);
+    const last = buf.length - size;
+    if (offset >= 0 && offset <= last && Math.floor(offset) === offset) return;
+    if (Math.floor(offset) !== offset) throw outOfRange("offset", "an integer", offset);
+    if (last < 0) throw rangeError("ERR_BUFFER_OUT_OF_BOUNDS", "Attempt to access memory outside buffer bounds");
+    throw outOfRange("offset", `>= 0 and <= ${last}`, offset);
+  }
+
+  function checkInt(value, min, max, buf, offset, size) {
+    if (value > max || value < min) {
+      const range = size > 4
+        ? `>= ${min === 0 ? "0" : `-(2 ** ${size * 8 - 1})`} and < 2 ** ${min === 0 ? size * 8 : size * 8 - 1}`
+        : `>= ${min} and <= ${max}`;
+      throw outOfRange("value", range, value);
+    }
+    checkOffset(buf, offset, size);
+  }
+
+  function checkByteLength(byteLength) {
+    if (!(byteLength >= 1 && byteLength <= 6) || Math.floor(byteLength) !== byteLength) {
+      throw outOfRange("byteLength", ">= 1 and <= 6", byteLength);
+    }
+  }
+
+  // Scratch space for float conversions; bytes are copied in host order and
+  // reversed for the other endianness.
+  const f32 = new Float32Array(1);
+  const f32u8 = new Uint8Array(f32.buffer);
+  const f64 = new Float64Array(1);
+  const f64u8 = new Uint8Array(f64.buffer);
+  const hostLE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+  function readFloat(buf, offset, scratchU8, scratch, littleEndian) {
+    const n = scratchU8.length;
+    checkOffset(buf, offset, n);
+    const same = littleEndian === hostLE;
+    for (let i = 0; i < n; i++) scratchU8[same ? i : n - 1 - i] = buf[offset + i];
+    return scratch[0];
+  }
+
+  function writeFloat(buf, value, offset, scratchU8, scratch, littleEndian) {
+    const n = scratchU8.length;
+    checkOffset(buf, offset, n);
+    scratch[0] = +value;
+    const same = littleEndian === hostLE;
+    for (let i = 0; i < n; i++) buf[offset + i] = scratchU8[same ? i : n - 1 - i];
+    return offset + n;
   }
 
   function needleOf(value, encoding) {
@@ -437,51 +538,264 @@
       return this;
     }
 
-    readUInt8(offset = 0) { return dataView(this).getUint8(offset); }
-    readUInt16LE(offset = 0) { return dataView(this).getUint16(offset, true); }
-    readUInt16BE(offset = 0) { return dataView(this).getUint16(offset, false); }
-    readUInt32LE(offset = 0) { return dataView(this).getUint32(offset, true); }
-    readUInt32BE(offset = 0) { return dataView(this).getUint32(offset, false); }
-    readInt8(offset = 0) { return dataView(this).getInt8(offset); }
-    readInt16LE(offset = 0) { return dataView(this).getInt16(offset, true); }
-    readInt16BE(offset = 0) { return dataView(this).getInt16(offset, false); }
-    readInt32LE(offset = 0) { return dataView(this).getInt32(offset, true); }
-    readInt32BE(offset = 0) { return dataView(this).getInt32(offset, false); }
-    readFloatLE(offset = 0) { return dataView(this).getFloat32(offset, true); }
-    readFloatBE(offset = 0) { return dataView(this).getFloat32(offset, false); }
-    readDoubleLE(offset = 0) { return dataView(this).getFloat64(offset, true); }
-    readDoubleBE(offset = 0) { return dataView(this).getFloat64(offset, false); }
+    fill(value, offset = 0, end = this.length, encoding) {
+      if (typeof offset === "string") {
+        encoding = offset;
+        offset = 0;
+        end = this.length;
+      } else if (typeof end === "string") {
+        encoding = end;
+        end = this.length;
+      }
+      if (offset < 0 || offset > this.length) throw outOfRange("offset", `>= 0 && <= ${this.length}`, offset);
+      if (end < 0 || end > this.length) throw outOfRange("end", `>= 0 && <= ${this.length}`, end);
+      if (end <= offset) return this;
+      let pattern;
+      if (typeof value === "string") {
+        if (encoding !== undefined && !ENCODINGS.has(normEnc(encoding))) {
+          const err = new TypeError(`Unknown encoding: ${encoding}`);
+          err.code = "ERR_UNKNOWN_ENCODING";
+          throw err;
+        }
+        pattern = encodeString(value, encoding);
+        if (pattern.length === 0) {
+          if (value !== "") {
+            const err = new TypeError(`The argument 'value' is invalid. Received '${value}'`);
+            err.code = "ERR_INVALID_ARG_VALUE";
+            throw err;
+          }
+          return super.fill(0, offset, end);
+        }
+      } else if (ArrayBuffer.isView(value)) {
+        pattern = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      } else {
+        return super.fill(Number(value) & 255, offset, end);
+      }
+      if (pattern.length === 1) return super.fill(pattern[0], offset, end);
+      for (let pos = offset; pos < end; pos += pattern.length) {
+        this.set(end - pos < pattern.length ? pattern.subarray(0, end - pos) : pattern, pos);
+      }
+      return this;
+    }
 
-    writeUInt8(value, offset = 0) { dataView(this).setUint8(offset, value); return offset + 1; }
-    writeUInt16LE(value, offset = 0) { dataView(this).setUint16(offset, value, true); return offset + 2; }
-    writeUInt16BE(value, offset = 0) { dataView(this).setUint16(offset, value, false); return offset + 2; }
-    writeUInt32LE(value, offset = 0) { dataView(this).setUint32(offset, value, true); return offset + 4; }
-    writeUInt32BE(value, offset = 0) { dataView(this).setUint32(offset, value, false); return offset + 4; }
-    writeInt8(value, offset = 0) { dataView(this).setInt8(offset, value); return offset + 1; }
-    writeInt16LE(value, offset = 0) { dataView(this).setInt16(offset, value, true); return offset + 2; }
-    writeInt16BE(value, offset = 0) { dataView(this).setInt16(offset, value, false); return offset + 2; }
-    writeInt32LE(value, offset = 0) { dataView(this).setInt32(offset, value, true); return offset + 4; }
-    writeInt32BE(value, offset = 0) { dataView(this).setInt32(offset, value, false); return offset + 4; }
-    writeFloatLE(value, offset = 0) { dataView(this).setFloat32(offset, value, true); return offset + 4; }
-    writeFloatBE(value, offset = 0) { dataView(this).setFloat32(offset, value, false); return offset + 4; }
-    writeDoubleLE(value, offset = 0) { dataView(this).setFloat64(offset, value, true); return offset + 8; }
-    writeDoubleBE(value, offset = 0) { dataView(this).setFloat64(offset, value, false); return offset + 8; }
+    [Symbol.for("nodejs.util.inspect.custom")]() {
+      const max = 50;
+      let str = "";
+      for (let i = 0; i < Math.min(max, this.length); i++) str += (i ? " " : "") + this[i].toString(16).padStart(2, "0");
+      if (this.length > max) str += ` ... ${this.length - max} more byte${this.length - max > 1 ? "s" : ""}`;
+      return `<${this.constructor.name} ${str}>`;
+    }
 
-    readBigInt64LE(offset = 0) { return dataView(this).getBigInt64(offset, true); }
-    readBigInt64BE(offset = 0) { return dataView(this).getBigInt64(offset, false); }
-    readBigUInt64LE(offset = 0) { return dataView(this).getBigUint64(offset, true); }
-    readBigUInt64BE(offset = 0) { return dataView(this).getBigUint64(offset, false); }
+    // Integer reads/writes use byte arithmetic (as Node does) instead of a
+    // DataView per call.
+    readUInt8(offset = 0) {
+      checkOffset(this, offset, 1);
+      return this[offset];
+    }
+    readUInt16LE(offset = 0) {
+      checkOffset(this, offset, 2);
+      return this[offset] + this[offset + 1] * 2 ** 8;
+    }
+    readUInt16BE(offset = 0) {
+      checkOffset(this, offset, 2);
+      return this[offset] * 2 ** 8 + this[offset + 1];
+    }
+    readUInt32LE(offset = 0) {
+      checkOffset(this, offset, 4);
+      return this[offset] + this[offset + 1] * 2 ** 8 + this[offset + 2] * 2 ** 16 + this[offset + 3] * 2 ** 24;
+    }
+    readUInt32BE(offset = 0) {
+      checkOffset(this, offset, 4);
+      return this[offset] * 2 ** 24 + this[offset + 1] * 2 ** 16 + this[offset + 2] * 2 ** 8 + this[offset + 3];
+    }
+    readInt8(offset = 0) {
+      checkOffset(this, offset, 1);
+      const v = this[offset];
+      return v | ((v & 2 ** 7) * 0x1fffffe);
+    }
+    readInt16LE(offset = 0) {
+      checkOffset(this, offset, 2);
+      const v = this[offset] + this[offset + 1] * 2 ** 8;
+      return v | ((v & 2 ** 15) * 0x1fffe);
+    }
+    readInt16BE(offset = 0) {
+      checkOffset(this, offset, 2);
+      const v = this[offset] * 2 ** 8 + this[offset + 1];
+      return v | ((v & 2 ** 15) * 0x1fffe);
+    }
+    readInt32LE(offset = 0) {
+      checkOffset(this, offset, 4);
+      return this[offset] + this[offset + 1] * 2 ** 8 + this[offset + 2] * 2 ** 16 + (this[offset + 3] << 24);
+    }
+    readInt32BE(offset = 0) {
+      checkOffset(this, offset, 4);
+      return (this[offset] << 24) + this[offset + 1] * 2 ** 16 + this[offset + 2] * 2 ** 8 + this[offset + 3];
+    }
+    readUIntLE(offset, byteLength) {
+      checkByteLength(byteLength);
+      checkOffset(this, offset, byteLength);
+      let val = 0;
+      for (let i = byteLength - 1; i >= 0; i--) val = val * 2 ** 8 + this[offset + i];
+      return val;
+    }
+    readUIntBE(offset, byteLength) {
+      checkByteLength(byteLength);
+      checkOffset(this, offset, byteLength);
+      let val = 0;
+      for (let i = 0; i < byteLength; i++) val = val * 2 ** 8 + this[offset + i];
+      return val;
+    }
+    readIntLE(offset, byteLength) {
+      const val = this.readUIntLE(offset, byteLength);
+      return val >= 2 ** (byteLength * 8 - 1) ? val - 2 ** (byteLength * 8) : val;
+    }
+    readIntBE(offset, byteLength) {
+      const val = this.readUIntBE(offset, byteLength);
+      return val >= 2 ** (byteLength * 8 - 1) ? val - 2 ** (byteLength * 8) : val;
+    }
+    readFloatLE(offset = 0) { return readFloat(this, offset, f32u8, f32, true); }
+    readFloatBE(offset = 0) { return readFloat(this, offset, f32u8, f32, false); }
+    readDoubleLE(offset = 0) { return readFloat(this, offset, f64u8, f64, true); }
+    readDoubleBE(offset = 0) { return readFloat(this, offset, f64u8, f64, false); }
 
-    writeBigInt64LE(value, offset = 0) { dataView(this).setBigInt64(offset, BigInt(value), true); return offset + 8; }
-    writeBigInt64BE(value, offset = 0) { dataView(this).setBigInt64(offset, BigInt(value), false); return offset + 8; }
-    writeBigUInt64LE(value, offset = 0) { dataView(this).setBigUint64(offset, BigInt(value), true); return offset + 8; }
-    writeBigUInt64BE(value, offset = 0) { dataView(this).setBigUint64(offset, BigInt(value), false); return offset + 8; }
+    writeUInt8(value, offset = 0) {
+      checkInt((value = +value), 0, 0xff, this, offset, 1);
+      this[offset] = value;
+      return offset + 1;
+    }
+    writeUInt16LE(value, offset = 0) {
+      checkInt((value = +value), 0, 0xffff, this, offset, 2);
+      this[offset] = value;
+      this[offset + 1] = value >>> 8;
+      return offset + 2;
+    }
+    writeUInt16BE(value, offset = 0) {
+      checkInt((value = +value), 0, 0xffff, this, offset, 2);
+      this[offset] = value >>> 8;
+      this[offset + 1] = value;
+      return offset + 2;
+    }
+    writeUInt32LE(value, offset = 0) {
+      checkInt((value = +value), 0, 0xffffffff, this, offset, 4);
+      this[offset] = value;
+      this[offset + 1] = value >>> 8;
+      this[offset + 2] = value >>> 16;
+      this[offset + 3] = value >>> 24;
+      return offset + 4;
+    }
+    writeUInt32BE(value, offset = 0) {
+      checkInt((value = +value), 0, 0xffffffff, this, offset, 4);
+      this[offset] = value >>> 24;
+      this[offset + 1] = value >>> 16;
+      this[offset + 2] = value >>> 8;
+      this[offset + 3] = value;
+      return offset + 4;
+    }
+    writeInt8(value, offset = 0) {
+      checkInt((value = +value), -0x80, 0x7f, this, offset, 1);
+      this[offset] = value;
+      return offset + 1;
+    }
+    writeInt16LE(value, offset = 0) {
+      checkInt((value = +value), -0x8000, 0x7fff, this, offset, 2);
+      this[offset] = value;
+      this[offset + 1] = value >>> 8;
+      return offset + 2;
+    }
+    writeInt16BE(value, offset = 0) {
+      checkInt((value = +value), -0x8000, 0x7fff, this, offset, 2);
+      this[offset] = value >>> 8;
+      this[offset + 1] = value;
+      return offset + 2;
+    }
+    writeInt32LE(value, offset = 0) {
+      checkInt((value = +value), -0x80000000, 0x7fffffff, this, offset, 4);
+      this[offset] = value;
+      this[offset + 1] = value >>> 8;
+      this[offset + 2] = value >>> 16;
+      this[offset + 3] = value >>> 24;
+      return offset + 4;
+    }
+    writeInt32BE(value, offset = 0) {
+      checkInt((value = +value), -0x80000000, 0x7fffffff, this, offset, 4);
+      this[offset] = value >>> 24;
+      this[offset + 1] = value >>> 16;
+      this[offset + 2] = value >>> 8;
+      this[offset + 3] = value;
+      return offset + 4;
+    }
+    writeUIntLE(value, offset, byteLength) {
+      checkByteLength(byteLength);
+      checkInt((value = +value), 0, 2 ** (byteLength * 8) - 1, this, offset, byteLength);
+      for (let i = 0; i < byteLength; i++) {
+        this[offset + i] = value % 256;
+        value = Math.floor(value / 256);
+      }
+      return offset + byteLength;
+    }
+    writeUIntBE(value, offset, byteLength) {
+      checkByteLength(byteLength);
+      checkInt((value = +value), 0, 2 ** (byteLength * 8) - 1, this, offset, byteLength);
+      for (let i = byteLength - 1; i >= 0; i--) {
+        this[offset + i] = value % 256;
+        value = Math.floor(value / 256);
+      }
+      return offset + byteLength;
+    }
+    writeIntLE(value, offset, byteLength) {
+      checkByteLength(byteLength);
+      const bits = byteLength * 8 - 1;
+      checkInt((value = +value), -(2 ** bits), 2 ** bits - 1, this, offset, byteLength);
+      return this.writeUIntLE(value < 0 ? value + 2 ** (bits + 1) : value, offset, byteLength);
+    }
+    writeIntBE(value, offset, byteLength) {
+      checkByteLength(byteLength);
+      const bits = byteLength * 8 - 1;
+      checkInt((value = +value), -(2 ** bits), 2 ** bits - 1, this, offset, byteLength);
+      return this.writeUIntBE(value < 0 ? value + 2 ** (bits + 1) : value, offset, byteLength);
+    }
+    writeFloatLE(value, offset = 0) { return writeFloat(this, value, offset, f32u8, f32, true); }
+    writeFloatBE(value, offset = 0) { return writeFloat(this, value, offset, f32u8, f32, false); }
+    writeDoubleLE(value, offset = 0) { return writeFloat(this, value, offset, f64u8, f64, true); }
+    writeDoubleBE(value, offset = 0) { return writeFloat(this, value, offset, f64u8, f64, false); }
+
+    readBigInt64LE(offset = 0) { checkOffset(this, offset, 8); return dataView(this).getBigInt64(offset, true); }
+    readBigInt64BE(offset = 0) { checkOffset(this, offset, 8); return dataView(this).getBigInt64(offset, false); }
+    readBigUInt64LE(offset = 0) { checkOffset(this, offset, 8); return dataView(this).getBigUint64(offset, true); }
+    readBigUInt64BE(offset = 0) { checkOffset(this, offset, 8); return dataView(this).getBigUint64(offset, false); }
+
+    writeBigInt64LE(value, offset = 0) {
+      if (value < -(2n ** 63n) || value > 2n ** 63n - 1n) throw outOfRange("value", ">= -(2n ** 63n) and < 2n ** 63n", value);
+      checkOffset(this, offset, 8);
+      dataView(this).setBigInt64(offset, BigInt(value), true);
+      return offset + 8;
+    }
+    writeBigInt64BE(value, offset = 0) {
+      if (value < -(2n ** 63n) || value > 2n ** 63n - 1n) throw outOfRange("value", ">= -(2n ** 63n) and < 2n ** 63n", value);
+      checkOffset(this, offset, 8);
+      dataView(this).setBigInt64(offset, BigInt(value), false);
+      return offset + 8;
+    }
+    writeBigUInt64LE(value, offset = 0) {
+      if (value < 0n || value > 2n ** 64n - 1n) throw outOfRange("value", ">= 0n and < 2n ** 64n", value);
+      checkOffset(this, offset, 8);
+      dataView(this).setBigUint64(offset, BigInt(value), true);
+      return offset + 8;
+    }
+    writeBigUInt64BE(value, offset = 0) {
+      if (value < 0n || value > 2n ** 64n - 1n) throw outOfRange("value", ">= 0n and < 2n ** 64n", value);
+      checkOffset(this, offset, 8);
+      dataView(this).setBigUint64(offset, BigInt(value), false);
+      return offset + 8;
+    }
 
     utf8Slice(start, end) { return this.toString("utf8", start, end); }
     latin1Slice(start, end) { return this.toString("latin1", start, end); }
     asciiSlice(start, end) { return this.toString("ascii", start, end); }
     hexSlice(start, end) { return this.toString("hex", start, end); }
     base64Slice(start, end) { return this.toString("base64", start, end); }
+    base64urlSlice(start, end) { return this.toString("base64url", start, end); }
+    ucs2Slice(start, end) { return this.toString("utf16le", start, end); }
 
     utf8Write(string, offset = 0, length = this.length - offset) {
       return this.write(string, offset, length, "utf8");
@@ -535,11 +849,13 @@ Buffer.from = function (value, offsetOrEncoding, length) {
 
 
   Buffer.isEncoding = function (encoding) {
-      return [
-        "utf8", "utf-8", "base64", "hex", "latin1", "binary",
-        "ascii", "utf16le", "ucs2", "ucs-2", "utf-16le",
-      ].includes(String(encoding).toLowerCase());
+      return typeof encoding === "string" && encoding !== "" && ENCODINGS.has(normEnc(encoding));
     }
+
+  // Node's lowercase "Uint" aliases (readUint8, writeUint32LE, ...).
+  for (const name of Object.getOwnPropertyNames(Buffer.prototype)) {
+    if (name.includes("UInt")) Buffer.prototype[name.replace("UInt", "Uint")] = Buffer.prototype[name];
+  }
 
   Buffer.compare = function (a, b) {
       const n = Math.min(a.length, b.length);
@@ -551,9 +867,11 @@ Buffer.from = function (value, offsetOrEncoding, length) {
     }
 
 
-  Buffer.alloc = function (size, fill = 0) {
+  Buffer.alloc = function (size, fill, encoding) {
+      if (typeof size !== "number") throw __jse.invalidArgType("size", "number", size);
+      if (!(size >= 0 && size <= 2 ** 53 - 1)) throw outOfRange("size", ">= 0 && <= 9007199254740991", size);
       const buf = allocOf(size);
-      if (fill) buf.fill(fill);
+      if (fill !== undefined && fill !== 0 && size > 0) buf.fill(fill, encoding);
       return buf;
     }
 
@@ -600,10 +918,26 @@ Buffer.from = function (value, offsetOrEncoding, length) {
     }
 
   globalThis.Buffer = Buffer;
-  globalThis.atob = (s) => Buffer.from(s, "base64").toString("binary");
-  globalThis.btoa = (s) => {
-    const bytes = new Uint8Array(s.length);
-    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+  // DOMException is defined later in the bootstrap (12_websocket.js); these
+  // only run after startup.
+  const invalidCharacter = (message) => new DOMException(message, "InvalidCharacterError");
+
+  globalThis.atob = (data) => {
+    data = String(data).replace(/[\t\n\f\r ]/g, "");
+    if (data.length % 4 === 0) data = data.replace(/==?$/, "");
+    if (data.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(data)) {
+      throw invalidCharacter("The string to be decoded is not correctly encoded.");
+    }
+    return decodeBytes(base64Decode(data), "latin1");
+  };
+  globalThis.btoa = (data) => {
+    data = String(data);
+    const bytes = new Uint8Array(data.length);
+    for (let i = 0; i < data.length; i++) {
+      const c = data.charCodeAt(i);
+      if (c > 0xff) throw invalidCharacter("Invalid character");
+      bytes[i] = c;
+    }
     return base64Encode(bytes);
   };
 })(globalThis);

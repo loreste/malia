@@ -2,6 +2,7 @@
 import { fileURLToPath } from "node:url";
 
 import * as assert from "node:assert";
+import * as assertStrict from "node:assert/strict";
 import * as async_hooks from "node:async_hooks";
 import * as buffer from "node:buffer";
 import * as child_process from "node:child_process";
@@ -56,6 +57,7 @@ import * as vm from "node:vm";
 
 const builtins = [
   "assert",
+  "assert/strict",
   "async_hooks",
   "buffer",
   "child_process",
@@ -112,6 +114,7 @@ const builtins = [
 
 const BUILTIN_MAP = {
   assert,
+  "assert/strict": assertStrict,
   async_hooks,
   buffer,
   child_process,

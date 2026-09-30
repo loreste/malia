@@ -22,17 +22,6 @@
       );
   }
 
-  // DOMException
-  if (typeof globalThis.DOMException !== "function") {
-    class DOMException extends Error {
-      constructor(message = "", name = "Error") {
-        super(message);
-        this.name = name;
-      }
-    }
-    globalThis.DOMException = DOMException;
-  }
-
   // navigator for framework SSR (Vue, Angular, React, Vite)
   if (!globalThis.navigator) {
     globalThis.navigator = {

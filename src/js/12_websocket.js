@@ -9,10 +9,40 @@
 
   // ---- Standard DOM / Web Events -------------------------------------------
 
+  // Legacy numeric codes for the DOMException names that have one.
+  const DOM_EXCEPTION_CODES = {
+    IndexSizeError: 1,
+    HierarchyRequestError: 3,
+    WrongDocumentError: 4,
+    InvalidCharacterError: 5,
+    NoModificationAllowedError: 7,
+    NotFoundError: 8,
+    NotSupportedError: 9,
+    InvalidStateError: 11,
+    SyntaxError: 12,
+    InvalidModificationError: 13,
+    NamespaceError: 14,
+    InvalidAccessError: 15,
+    TypeMismatchError: 17,
+    SecurityError: 18,
+    NetworkError: 19,
+    AbortError: 20,
+    URLMismatchError: 21,
+    QuotaExceededError: 22,
+    TimeoutError: 23,
+    InvalidNodeTypeError: 24,
+    DataCloneError: 25,
+  };
+
   class DOMException extends Error {
-    constructor(message = "", name = "Error") {
-      super(message);
+    constructor(message = "", options = "Error") {
+      const name = typeof options === "object" && options !== null ? String(options.name ?? "Error") : String(options);
+      super(message, typeof options === "object" && options !== null && "cause" in options ? { cause: options.cause } : undefined);
       this.name = name;
+    }
+
+    get code() {
+      return DOM_EXCEPTION_CODES[this.name] ?? 0;
     }
   }
   if (!globalThis.DOMException) {

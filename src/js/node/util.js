@@ -1,10 +1,8 @@
 // node:util shim
 import types from "node:util/types";
-import assert from "node:assert";
+import { __isDeepEqual } from "node:assert";
 
-const format = (...args) => __jse.format(...args);
-const formatWithOptions = (_opts, ...args) => __jse.format(...args);
-const inspect = (value, options) => __jse.inspect(value);
+const { format, formatWithOptions, inspect } = __jse;
 
 function promisify(fn) {
   return function (...args) {
@@ -41,12 +39,7 @@ function deprecate(fn, msg) {
 }
 
 function isDeepStrictEqual(a, b) {
-  try {
-    assert.deepStrictEqual(a, b);
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return __isDeepEqual(a, b, true);
 }
 
 function debuglog(set) {

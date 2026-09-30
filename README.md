@@ -272,7 +272,7 @@ Browser globals used by SSR code are defined: `self`, `window`, `global`,
 
 | Module | Implemented |
 |---|---|
-| `assert` | `ok`, `equal`, `strictEqual`, `deepEqual`, `deepStrictEqual`, `match`, `doesNotMatch`, `ifError`, `rejects`, `doesNotReject`, `throws` |
+| `assert`, `assert/strict` | `ok`, `equal`, `strictEqual`, `deepEqual`, `deepStrictEqual` (Map/Set/Date/RegExp/typed array aware), `match`, `doesNotMatch`, `ifError`, `throws`/`rejects` with class, RegExp, object, or function validation, `strict` |
 | `async_hooks` | `AsyncLocalStorage` (context is kept across `await`) |
 | `buffer` | `Buffer` backed by `Uint8Array`, allocations of 4 KB or less come from a shared 8 KB pool (as in Node). Encodings: utf8, base64, hex, latin1, utf16le, ascii |
 | `child_process` | `spawn`, `exec`, `execFile`, their `*Sync` forms, `fork` with IPC |
@@ -290,7 +290,7 @@ Browser globals used by SSR code are defined: `self`, `window`, `global`,
 | `module` | `createRequire`, `builtinModules`, `isBuiltin`, `Module` |
 | `net`, `tls` | TCP and Unix domain sockets, `Socket`, `Server`, `isIP`, `SocketAddress`, `BlockList` |
 | `os` | Platform, CPU, memory, network, and user info. Reports cgroup limits inside containers |
-| `path` | `posix` and `win32` |
+| `path` | Port of Node's implementation; `posix` and `win32`, with the platform's variant as the default |
 | `process` | `argv`, `env`, `cwd`, `chdir`, `nextTick`, `hrtime`, `memoryUsage`, `exit` and error events, signals. `process.version` is `v20.18.0` |
 | `punycode`, `querystring`, `readline`, `string_decoder`, `timers`, `tty`, `perf_hooks`, `constants` | Available |
 | `sqlite` | `DatabaseSync`, `StatementSync` (Node 22 API) |

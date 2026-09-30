@@ -62,8 +62,8 @@
         print(label + ": " + (ops.op_now() - start).toFixed(3) + "ms", false);
       }
     },
-    dir(value) {
-      print(__jse.inspect(value), false);
+    dir(value, options) {
+      print(__jse.inspect(value, { customInspect: false, ...options }), false);
     },
     group() {},
     groupEnd() {},
