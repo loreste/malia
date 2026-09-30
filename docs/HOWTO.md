@@ -1,45 +1,31 @@
-# Malia How-To & Operational Guide
+# Malia How-To Guide
 
-Practical guides and operational patterns for building, running, and deploying applications with **Malia** (and the `jse` CLI alias).
+Examples for common tasks. `malia` and `jse` are the same binary, and the
+`malia.*` and `jse.*` globals are the same object; this guide uses `jse`.
 
-> **Note on Command Aliases & Compatibility**: `malia` and `jse` are dual entry points to the same engine. Whether you run `malia run app.ts` or `jse run app.ts`, behavior is identical. In JavaScript/TypeScript code, both `malia.*` and `jse.*` global namespaces are available.
+## Contents
 
----
-
-## Table of Contents
-
-1. [Quick Start & Project Configuration](#1-quick-start--project-configuration)
-2. [TypeScript Without Build Steps](#2-typescript-without-build-steps)
-3. [Migrating Existing Node.js Applications](#3-migrating-existing-nodejs-applications)
-4. [Compiling Standalone Single-Binary Executables](#4-compiling-standalone-single-binary-executables)
-5. [Database Connectivity & Drivers](#5-database-connectivity--drivers)
-6. [High-Performance Networking & IPC](#6-high-performance-networking--ipc)
-7. [Production Observability & Tracing](#7-production-observability--tracing)
-8. [Durable Background Task Queuing](#8-durable-background-task-queuing)
-9. [Cryptography, Signatures & Security](#9-cryptography-signatures--security)
-10. [Multi-Core Concurrency & Worker Pools](#10-multi-core-concurrency--worker-pools)
-11. [WebAssembly & Runtime Optimization](#11-webassembly--runtime-optimization)
-12. [Container & Kubernetes Deployment](#12-container--kubernetes-deployment)
+1. [Project configuration](#1-project-configuration)
+2. [TypeScript](#2-typescript)
+3. [Running existing Node.js applications](#3-running-existing-nodejs-applications)
+4. [Standalone executables](#4-standalone-executables)
+5. [Databases](#5-databases)
+6. [HTTP, WebSockets, and IPC](#6-http-websockets-and-ipc)
+7. [Tracing and logging](#7-tracing-and-logging)
+8. [Task queue](#8-task-queue)
+9. [Cryptography and permissions](#9-cryptography-and-permissions)
+10. [Workers and clustering](#10-workers-and-clustering)
+11. [WebAssembly](#11-webassembly)
+12. [Container deployment](#12-container-deployment)
 
 ---
 
-## 1. Quick Start & Project Configuration
+## 1. Project configuration
 
-Malia projects can be configured with a `malia.json`, `malia.toml`, `jse.json`, or `jse.toml` file, or by using an existing `package.json`.
-
-### Initializing a Project
-
-```bash
-# Generate a clean, annotated malia.json (supports JSONC comments & trailing commas)
-malia init
-# Or using the jse command alias:
-jse init
-
-# Generate clean TOML format if preferred
-malia init --toml
-```
-
-### Example `malia.json` (or `jse.json`)
+`jse init` writes a `jse.json` (`jse init --toml` writes `jse.toml`). Config
+files are searched in this order: `malia.json`, `malia.toml`,
+`malia.config.json`, `jse.json`, `jse.toml`, `jse.config.json`, then
+`package.json`.
 
 ```jsonc
 {
@@ -56,64 +42,54 @@ malia init --toml
     "net": ["0.0.0.0", "api.stripe.com", "postgres.internal"]
   },
   "scripts": {
-    "dev": "malia run --watch src/server.ts",
-    "start": "malia run src/server.ts",
-    "test": "malia test",
-    "compile": "malia compile src/server.ts -o dist/payment-service"
+    "dev": "jse run --watch src/server.ts",
+    "start": "jse run src/server.ts",
+    "test": "jse test",
+    "compile": "jse compile src/server.ts -o dist/payment-service"
   }
 }
 ```
 
-### Everyday CLI Commands
-
-All commands can be invoked using either `malia` or `jse`:
-
 | Command | Action |
 |---|---|
-| `malia` / `jse` | Auto-detects `malia.json` / `jse.json`, loads environment, checks permissions, and executes `main` |
-| `malia run <file>` | Runs any `.js`, `.ts`, `.mjs`, `.cjs`, or `.wasm` file immediately |
-| `malia dev` | Starts the application and reloads automatically on file changes |
-| `malia test` | Executes built-in test suite (supports `node:test` and TAP output) |
-| `malia install` | Installs npm dependencies (auto-detects npm, pnpm, or yarn lockfiles) |
-| `malia add <pkg>` | Adds and installs an npm package (e.g. `malia add lodash`) |
-| `malia x <bin>` | Executes a package binary without global install (npx equivalent) |
-| `malia compile <file>` | Compiles an application ahead-of-time into a self-contained native executable |
-| `malia config` | Prints resolved configuration, permissions, and environment variables |
+| `jse` | Run the configured entry point, or open the REPL if there is none |
+| `jse run <file>` | Run a `.js`, `.ts`, `.mjs`, `.cjs`, or `.wasm` file |
+| `jse dev` | Run the entry point and restart on file changes |
+| `jse test` | Run tests (`node:test`, TAP output) |
+| `jse install` | Install npm dependencies (detects npm, pnpm, or yarn lockfiles) |
+| `jse add <pkg>` | Add an npm package |
+| `jse x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
+| `jse compile <file>` | Compile to a standalone executable |
+| `jse config show` | Print the resolved configuration |
+| `jse <script>` | Run a script from the config file or `package.json` |
 
 ---
 
-## 2. TypeScript Without Build Steps
+## 2. TypeScript
 
-`jse` transpiles TypeScript via SWC (`deno_ast`) at runtime and caches the output to disk. No separate compiler step (`tsc` or `tsx`) is required.
-
-### Running TypeScript Directly
-
-Create `src/app.ts`:
+TypeScript is transpiled with SWC at load time and cached on disk. Types are
+not checked; run `tsc --noEmit` (for example `jse x tsc --noEmit`) for that.
 
 ```typescript
+// src/app.ts
 interface Customer {
   id: string;
   name: string;
   balance: number;
 }
 
-function summarize(customer: Customer): string {
-  return `Customer ${customer.name} (${customer.id}): $${customer.balance.toFixed(2)}`;
+function summarize(c: Customer): string {
+  return `${c.name} (${c.id}): $${c.balance.toFixed(2)}`;
 }
 
-const alice: Customer = { id: "C-109", name: "Alice Smith", balance: 450.5 };
-console.log(summarize(alice));
+console.log(summarize({ id: "C-109", name: "Alice Smith", balance: 450.5 }));
 ```
-
-Run directly:
 
 ```bash
 jse run src/app.ts
 ```
 
-### TypeScript Path Aliases (`tsconfig.json`)
-
-`jse` resolves path aliases defined in `tsconfig.json`:
+Path aliases from `tsconfig.json` (`baseUrl`, `paths`) are resolved:
 
 ```json
 {
@@ -127,8 +103,6 @@ jse run src/app.ts
 }
 ```
 
-In your code, path aliases resolve accordingly:
-
 ```typescript
 import { User } from "@models/user.ts";
 import { formatCurrency } from "@utils/format.ts";
@@ -136,13 +110,10 @@ import { formatCurrency } from "@utils/format.ts";
 
 ---
 
-## 3. Migrating Existing Node.js Applications
+## 3. Running existing Node.js applications
 
-`jse` supports Node.js core APIs and npm packages, allowing existing Node.js applications to run without modification.
-
-### Running Existing Express & Fastify Apps
-
-Existing `node_modules` and `package.json` dependencies work as expected:
+Applications that use `node_modules` and Node core APIs can be run directly.
+Native addons (`.node` files) are not supported.
 
 ```javascript
 // server.js
@@ -150,81 +121,55 @@ const express = require("express");
 const app = express();
 
 app.use(express.json());
+app.get("/health", (req, res) => res.json({ status: "ok" }));
+app.post("/users", (req, res) => res.status(201).json({ id: 1, ...req.body }));
 
-app.get("/health", (req, res) => {
-  res.json({ status: "healthy", timestamp: Date.now() });
-});
-
-app.post("/users", (req, res) => {
-  res.status(201).json({ id: 1, ...req.body });
-});
-
-app.listen(8080, () => {
-  console.log("Express server running on http://localhost:8080");
-});
+app.listen(8080, () => console.log("listening on 8080"));
 ```
-
-Run with `jse`:
 
 ```bash
-jse run server.js
+jse run --allow-net --allow-read --allow-env server.js
 ```
 
-### Full-Stack SSR & Frameworks (React, Vue, Svelte, Nuxt, Next)
-
-`jse` includes the browser and runtime globals expected by modern SSR engines:
-- Standard DOM/Browser globals: `window`, `self`, `global`, `navigator`, `DOMException`, `btoa`, `atob`.
-- `AsyncLocalStorage` (`node:async_hooks`): Retains request contexts across asynchronous execution trees.
-- `MessageChannel` & `MessagePort`: Required for React Scheduler's concurrent rendering loop.
-- `createRequire`: Seamlessly intermixes ESM `import` and legacy CommonJS `require()`.
+For SSR frameworks, the runtime defines `window`, `self`, `global`,
+`navigator`, `DOMException`, `btoa`, `atob`, `MessageChannel`, and
+`AsyncLocalStorage`. `AsyncLocalStorage` keeps its store across `await`:
 
 ```javascript
 import { AsyncLocalStorage } from "node:async_hooks";
 
-const asyncLocalStorage = new AsyncLocalStorage();
+const als = new AsyncLocalStorage();
 
-function logWithTrace(msg) {
-  const store = asyncLocalStorage.getStore();
-  console.log(`[${store?.requestId || "anonymous"}] ${msg}`);
-}
-
-asyncLocalStorage.run({ requestId: "req-998" }, async () => {
-  logWithTrace("Database lookup started");
+als.run({ requestId: "req-998" }, async () => {
+  console.log(als.getStore().requestId); // req-998
   await new Promise((r) => setTimeout(r, 20));
-  logWithTrace("Database lookup complete");
+  console.log(als.getStore().requestId); // req-998
 });
 ```
 
 ---
 
-## 4. Compiling Standalone Single-Binary Executables
+## 4. Standalone executables
 
-Turn any JavaScript or TypeScript service into a self-contained, statically linked executable with zero runtime dependencies.
-
-### Compiling a Service
+`jse compile` transpiles the application and writes an executable that
+contains the runtime, the startup snapshot, and the application code. The
+target machine does not need Node.js or `jse` installed.
 
 ```bash
-# Compiles TypeScript ahead-of-time and produces a standalone binary
 jse compile src/server.ts -o dist/my-service
-
-# Make executable and run anywhere (Linux / macOS)
-chmod +x dist/my-service
 ./dist/my-service
 ```
 
-### Standalone Executable Properties:
-1. **Self-Contained**: The target host does not need Node.js, `npm`, or `jse` installed.
-2. **Pre-Bundled**: Includes the pre-warmed snapshot and compiled bytecode.
-3. **Container-Friendly**: Can run in minimal base images without a system runtime.
+`jse build` does the same using the entry point from the config file.
 
 ---
 
-## 5. Database Connectivity & Drivers
+## 5. Databases
 
-`jse` supports standard database drivers and client libraries.
+Database drivers are regular npm packages. The examples below assume the
+package is installed and the program is run with `--allow-net`.
 
-### MongoDB & Mongoose
-Supports SCRAM-SHA-256 and SCRAM-SHA-1 authentication via PBKDF2, SRV connection strings via DNS lookups, and BSON 64-bit integers.
+### MongoDB
 
 ```javascript
 import { MongoClient } from "mongodb";
@@ -232,58 +177,51 @@ import { MongoClient } from "mongodb";
 const client = new MongoClient("mongodb://root:example@localhost:27017");
 await client.connect();
 
-const db = client.db("production");
-const collection = db.collection("orders");
-
-await collection.insertOne({ orderId: "ORD-1", amount: 199.95, date: new Date() });
-const doc = await collection.findOne({ orderId: "ORD-1" });
-console.log("Retrieved MongoDB Document:", doc);
+const orders = client.db("app").collection("orders");
+await orders.insertOne({ orderId: "ORD-1", amount: 199.95, date: new Date() });
+console.log(await orders.findOne({ orderId: "ORD-1" }));
 
 await client.close();
 ```
 
-### Redis & Valkey
-Binary RESP wire protocol parsing over TCP sockets.
+### Redis
 
 ```javascript
 import Redis from "ioredis";
 
 const redis = new Redis("redis://localhost:6379");
-await redis.set("session:user:42", JSON.stringify({ name: "Bob", role: "admin" }), "EX", 3600);
-
-const session = await redis.get("session:user:42");
-console.log("Cached Redis Session:", JSON.parse(session));
-
+await redis.set("session:42", JSON.stringify({ name: "Bob" }), "EX", 3600);
+console.log(JSON.parse(await redis.get("session:42")));
 await redis.quit();
 ```
 
-### PostgreSQL (`pg` & Drizzle ORM)
-Full-duplex TCP streaming with SCRAM-SHA-256 and MD5 password authentication.
+### PostgreSQL
 
 ```javascript
 import pg from "pg";
-const { Pool } = pg;
 
-const pool = new Pool({ connectionString: "postgres://postgres:secret@localhost:5432/app" });
-const { rows } = await pool.query("SELECT NOW() AS current_time, 1 + 1 AS two;");
-console.log("PostgreSQL query result:", rows[0]);
+const pool = new pg.Pool({ connectionString: "postgres://postgres:secret@localhost:5432/app" });
+const { rows } = await pool.query("SELECT NOW() AS now, 1 + 1 AS two");
+console.log(rows[0]);
 await pool.end();
 ```
 
-### Embedded SQLite (`jse.sql` and `node:sqlite`)
-SQLite is embedded directly in the `jse` binary, requiring no external compilation or `node-gyp`.
+### SQLite
 
-#### Using Tagged Template Literals (`jse.sql`):
+SQLite is compiled into the binary. `jse.sql` runs statements against a
+default in-memory database; `jse.sql.open(path)` opens a file. Interpolated
+values are passed as bound parameters. `SELECT`, `PRAGMA`, and `EXPLAIN`
+return rows; other statements return the exec result.
+
 ```javascript
-// Parameterized query via tagged template literal
-const db = jse.sql.open("production.db");
+const db = jse.sql.open("app.db");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL
-  );
+  )
 `);
 
 const name = "Alice";
@@ -291,387 +229,328 @@ const email = "alice@example.com";
 db.sql`INSERT OR REPLACE INTO users (name, email) VALUES (${name}, ${email})`;
 
 const users = db.sql`SELECT * FROM users WHERE email = ${email}`;
-console.log("Found user:", users[0]);
+console.log(users[0]);
 ```
 
-#### Using Node 22+ Standard `node:sqlite`:
+The Node 22 `node:sqlite` API is also available:
+
 ```javascript
 import { DatabaseSync } from "node:sqlite";
 
-const database = new DatabaseSync(":memory:");
-database.exec("CREATE TABLE metrics (id INTEGER PRIMARY KEY, key TEXT, val REAL)");
-const insert = database.prepare("INSERT INTO metrics (key, val) VALUES (?, ?)");
-insert.run("cpu_usage", 42.5);
-
-const select = database.prepare("SELECT * FROM metrics WHERE key = ?");
-console.log("Metric:", select.get("cpu_usage"));
+const db = new DatabaseSync(":memory:");
+db.exec("CREATE TABLE metrics (id INTEGER PRIMARY KEY, key TEXT, val REAL)");
+db.prepare("INSERT INTO metrics (key, val) VALUES (?, ?)").run("cpu", 42.5);
+console.log(db.prepare("SELECT * FROM metrics WHERE key = ?").get("cpu"));
 ```
 
 ---
 
-## 6. Networking & IPC
+## 6. HTTP, WebSockets, and IPC
 
-### Web Server (`jse.serve`)
-Built on Hyper 1.x with synchronous handler dispatch on the request path:
+### HTTP server
+
+The handler receives a `Request` and returns a `Response` or a promise of one.
+`req.url` is the request target as sent by the client (usually a path), so
+pass a base when constructing a `URL`.
 
 ```javascript
-jse.serve({ port: 8000, host: "0.0.0.0" }, (req) => {
+jse.serve({ port: 8000, hostname: "0.0.0.0" }, (req) => {
   const url = new URL(req.url, "http://localhost");
   if (url.pathname === "/api/ping") {
     return new Response(JSON.stringify({ pong: true }), {
-      headers: { "Content-Type": "application/json" },
+      headers: { "content-type": "application/json" },
     });
   }
   return new Response("Not Found", { status: 404 });
 });
-console.log("jse.serve listening on port 8000");
 ```
 
-### WebSockets (`jse.upgradeWebSocket`)
-WebSocket server upgrades:
+### Router
+
+```javascript
+const router = new jse.Router();
+
+router.get("/healthz", jse.healthCheck());
+router.get("/metrics", () => new Response(jse.metrics.prometheus()));
+router.get("/api/users/:id", (req) => ({ id: req.params.id }));
+router.static("/public", "./public", { spa: true });
+
+jse.serve(router.handler(), { port: 3000 });
+```
+
+### WebSocket server
 
 ```javascript
 jse.serve({ port: 8080 }, (req) => {
   const upgrade = jse.upgradeWebSocket(req);
   if (upgrade) {
     const { socket, response } = upgrade;
-    socket.onopen = () => socket.send("Welcome to real-time streams!");
-    socket.onmessage = (event) => socket.send(`Echo: ${event.data}`);
+    socket.onmessage = (event) => socket.send(`echo: ${event.data}`);
     return response;
   }
-  return new Response("HTTP endpoint");
+  return new Response("not a websocket request", { status: 400 });
 });
 ```
 
-### Unix Domain Sockets (`node:net` IPC)
-For inter-process communication on the same machine (such as sidecar proxies or reverse proxy upstreams):
+### Unix domain sockets
 
-#### Server:
+Server:
+
 ```javascript
 import net from "node:net";
 import fs from "node:fs";
 
-const socketPath = "/tmp/service-ipc.sock";
-if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+const path = "/tmp/service.sock";
+if (fs.existsSync(path)) fs.unlinkSync(path);
 
-const server = net.createServer((sock) => {
-  sock.on("data", (chunk) => {
-    sock.write(`IPC ACK: ${chunk.toString()}`);
-  });
-});
-
-server.listen(socketPath, () => {
-  console.log(`IPC server listening on ${socketPath}`);
-});
+net.createServer((sock) => {
+  sock.on("data", (chunk) => sock.write(`ack: ${chunk}`));
+}).listen(path);
 ```
 
-#### Client:
+Client:
+
 ```javascript
 import net from "node:net";
 
-const client = net.connect({ path: "/tmp/service-ipc.sock" }, () => {
-  client.write("PAYLOAD_FROM_CLIENT");
-});
-
-client.on("data", (response) => {
-  console.log("Received from server:", response.toString());
+const client = net.connect({ path: "/tmp/service.sock" }, () => client.write("hello"));
+client.on("data", (data) => {
+  console.log(data.toString());
   client.end();
 });
 ```
 
 ---
 
-## 7. Production Observability & Tracing
+## 7. Tracing and logging
 
-### Distributed Tracing with OpenTelemetry (`jse.trace`)
-Built-in W3C trace context generation, propagation, and OTLP JSON export:
+### Spans
+
+`jse.trace.startSpan(name, fn)` runs `fn` inside a span, ends the span when
+`fn` returns or its promise settles, and records any thrown error. Spans
+started inside `fn` become children. Without `fn`, it returns an open span
+that must be ended with `span.end()`.
 
 ```javascript
-// 1. Start a root span for an incoming HTTP request
-const result = jse.trace.startSpan("handle_checkout", (rootSpan) => {
-  rootSpan.setAttribute("http.route", "/checkout");
-  rootSpan.setAttribute("user.id", "usr_102");
+jse.trace.startSpan("handle_checkout", (root) => {
+  root.setAttribute("http.route", "/checkout");
 
-  // Get W3C traceparent header: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
-  const traceparent = rootSpan.toTraceparent();
-
-  // 2. Start a nested child span
-  jse.trace.startSpan("charge_credit_card", (childSpan) => {
-    childSpan.setAttribute("gateway", "stripe");
-    childSpan.addEvent("gateway_authorized", { authCode: "AUTH_883" });
-    return "SUCCESS";
+  jse.trace.startSpan("charge_card", (child) => {
+    child.addEvent("authorized", { code: "AUTH_883" });
   });
 
-  return { success: true, traceparent };
+  return root.toTraceparent(); // "00-<32 hex>-<16 hex>-01"
 });
 
-// 3. Export spans to OTLP JSON for Jaeger, Datadog, or OpenTelemetry Collector
-const otlpReport = jse.trace.export("otlp");
-console.log("OTLP JSON Payload:", JSON.stringify(otlpReport, null, 2));
+const otlp = jse.trace.export("otlp"); // OTLP JSON object
 ```
 
-### Propagating Context Across Microservices
-```javascript
-// Outgoing client request: inject traceparent header
-const headers = {};
-const span = jse.trace.startSpan("remote_rpc_call");
-jse.trace.inject(span, headers);
+### Propagating context
 
-// Headers now contains { traceparent: "00-..." }
-await fetch("http://downstream-service/api", { headers });
+```javascript
+// Outgoing request
+const span = jse.trace.startSpan("call_downstream");
+const headers = jse.trace.inject(span, {}); // { traceparent: "00-..." }
+await fetch("http://downstream/api", { headers });
 span.end();
 
-// Downstream server: extract trace context
-const incomingHeaders = req.headers;
-const context = jse.trace.extract(incomingHeaders);
-jse.trace.startSpan("downstream_operation", (span) => {
-  // Automatically attaches to upstream traceId!
+// Receiving service
+const parent = jse.trace.extract(Object.fromEntries(req.headers)); // { traceId, parentSpanId, flags } or null
+jse.trace.startSpan("downstream_operation", parent ?? {}, (span) => {
+  // span.traceId matches the caller's trace
 });
 ```
 
-### Structured Logging (`jse.log`)
-Structured logger supporting human-readable text with ANSI color badges or single-line JSON formatting:
+### Logging
 
 ```bash
-# Configure via environment variables
-export JSE_LOG=debug
-export JSE_LOG_FORMAT=json
+export JSE_LOG=debug        # debug | info | warn | error
+export JSE_LOG_FORMAT=json  # text | json
 ```
 
-In your application code:
 ```javascript
-jse.log.info("Order processed successfully", { orderId: 8810, amount: 49.99 });
-jse.log.warn("Rate limit approaching", { currentRate: 480, limit: 500 });
-jse.log.error("Payment authorization failed", new Error("Card declined"));
+jse.log.info("order processed", { orderId: 8810, amount: 49.99 });
+jse.log.warn("rate limit approaching", { current: 480, limit: 500 });
+jse.log.error("payment failed", new Error("card declined"));
 ```
 
-Outputs machine-readable JSON:
-```json
-{"timestamp":"2026-09-30T01:30:00.123Z","level":"info","target":"app","message":"Order processed successfully","meta":{"orderId":8810,"amount":49.99}}
-```
+With `JSE_LOG_FORMAT=json`, each entry is written as one JSON object per line.
 
 ---
 
-## 8. Durable Background Task Queuing
+## 8. Task queue
 
-`globalThis.jse.queue` provides an embedded task queue backed by SQLite for background jobs:
+`jse.queue.open(path)` opens a queue stored in a SQLite database
+(`:memory:` if no path is given).
 
-### Producing Tasks
 ```javascript
 const q = jse.queue.open("./tasks.db");
 
-// Push background jobs
-const jobId = q.push("notifications", {
-  userId: "user_456",
-  email: "user@example.com",
-  template: "monthly_receipt"
-}, {
-  maxRetries: 3,
-  delayMs: 5000 // Deliver after 5 seconds
+const id = q.push("emails", { to: "user@example.com" }, {
+  maxRetries: 3, // default 5
+  delayMs: 5000, // not deliverable for 5 s
 });
-
-console.log("Enqueued job:", jobId);
 ```
 
-### Consuming Tasks with Leases
-```javascript
-// Pop next job with a 30-second visibility lease
-const job = q.pop("notifications", 30000);
+`pop(topic, leaseMs)` claims the next pending job for `leaseMs`
+milliseconds (default 30000). If the job is not acknowledged before the
+lease expires, it becomes available again.
 
+```javascript
+const job = q.pop("emails", 30000);
 if (job) {
   try {
-    console.log(`Processing job ${job.id}, payload:`, job.payload);
-    // Send email...
-    
-    // Acknowledge successful completion
+    await sendEmail(job.payload);
     q.ack(job.id);
-  } catch (err) {
-    // Negative acknowledge: releases job after backoff
-    // Automatically routes to Dead-Letter Queue (DLQ) if maxRetries exceeded
-    q.nack(job.id, 5000);
+  } catch {
+    q.nack(job.id, 5000); // retry after 5 s; moved to dead-letter after maxRetries
   }
 }
-```
 
-### Inspecting Dead-Letter Queues (DLQ)
-```javascript
-const deadJobs = q.dead("notifications");
-console.log(`Found ${deadJobs.length} failed jobs in dead letter queue:`, deadJobs);
+console.log(q.dead("emails")); // jobs that exceeded maxRetries
 ```
 
 ---
 
-## 9. Cryptography, Signatures & Security
+## 9. Cryptography and permissions
 
-### AEAD Encryption
-Authenticated Encryption with Associated Data (AEAD) provides confidentiality and authentication.
+### AES-GCM
+
+Supported AEAD ciphers: `aes-128-gcm`, `aes-256-gcm`, `chacha20-poly1305`.
+`decipher.final()` throws if the ciphertext, tag, or AAD was modified.
 
 ```javascript
 import crypto from "node:crypto";
 
-const key = crypto.randomBytes(32); // 256-bit key
-const iv = crypto.randomBytes(12);  // 96-bit standard nonce
+const key = crypto.randomBytes(32);
+const iv = crypto.randomBytes(12);
+const aad = Buffer.from("tenant-100");
 
-// 1. Encrypt with AES-256-GCM
 const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-cipher.setAAD(Buffer.from("user-tenant-100")); // Authenticated Additional Data
+cipher.setAAD(aad);
+const encrypted = Buffer.concat([cipher.update("secret", "utf8"), cipher.final()]);
+const tag = cipher.getAuthTag();
 
-let encrypted = cipher.update("CONFIDENTIAL_PATIENT_RECORD", "utf8");
-encrypted = Buffer.concat([encrypted, cipher.final()]);
-const tag = cipher.getAuthTag(); // 128-bit authentication tag
-
-// 2. Decrypt & Verify Integrity
 const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-decipher.setAAD(Buffer.from("user-tenant-100"));
+decipher.setAAD(aad);
 decipher.setAuthTag(tag);
-
-let decrypted = decipher.update(encrypted);
-decrypted = Buffer.concat([decrypted, decipher.final()]);
-console.log("Decrypted plaintext:", decrypted.toString("utf8"));
+const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+console.log(decrypted.toString("utf8")); // secret
 ```
 
-### Ed25519 Asymmetric Signatures
-Digital signatures for APIs, authentication tokens, and audit logs:
+### Ed25519
 
 ```javascript
 import crypto from "node:crypto";
 
-// Generate Ed25519 keypair
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
-
-const message = Buffer.from("ACTION: TRANSFER $1,000,000 to ACCT-990");
-
-// Sign message with private key
+const message = Buffer.from("payload");
 const signature = crypto.sign(null, message, privateKey);
-
-// Verify signature with public key
-const isAuthentic = crypto.verify(null, message, publicKey, signature);
-console.log("Signature is authentic:", isAuthentic); // true
+console.log(crypto.verify(null, message, publicKey, signature)); // true
 ```
 
-### Permission Controls
-Restrict runtime capabilities per application:
+### Permissions
+
+`jse run` denies file, network, subprocess, and environment access unless a
+flag grants it:
 
 ```bash
-# Allow read-only access to assets, network access only to specific APIs
 jse run --allow-read=./assets --allow-net=api.stripe.com src/server.ts
-
-# Allow full access for trusted production containers
 jse run --allow-all src/server.ts
 ```
 
 ---
 
-## 10. Concurrency & Worker Pools
+## 10. Workers and clustering
 
-`jse` supports worker threads, worker pools, and process clustering via `node:cluster`:
+### WorkerPool
 
-### HTTP Clustering (`node:cluster`)
-`node:cluster` uses OS-level `SO_REUSEPORT` socket sharing so worker processes bind directly to the same port and the operating system distributes incoming connections.
+`new WorkerPool(path, { size })` starts `size` workers (default: number of
+CPUs). `pool.run(arg)` sends `arg` to an idle worker and resolves with that
+worker's reply. Each worker must post exactly one reply per message.
 
 ```javascript
-// cluster.js
+// worker.js
+onmessage = (e) => {
+  postMessage(e.data.n * 2);
+};
+```
+
+```javascript
+// main.js
+const pool = new WorkerPool("./worker.js", { size: 4 });
+
+const results = await pool.map([{ n: 1 }, { n: 2 }, { n: 3 }]);
+console.log(results); // [2, 4, 6]
+
+pool.close();
+```
+
+### node:cluster
+
+Workers bind the same port with `SO_REUSEPORT`, and the OS distributes
+incoming connections among them.
+
+```javascript
 import cluster from "node:cluster";
 import http from "node:http";
 import os from "node:os";
 
 if (cluster.isPrimary) {
-  const numCPUs = os.availableParallelism();
-  console.log(`Primary ${process.pid} is starting ${numCPUs} workers...`);
-
-  for (let i = 0; i < numCPUs; i++) {
-    cluster.fork();
-  }
-
-  cluster.on("exit", (worker) => {
-    console.log(`Worker ${worker.process.pid} died. Replacing...`);
-    cluster.fork();
-  });
+  for (let i = 0; i < os.availableParallelism(); i++) cluster.fork();
+  cluster.on("exit", () => cluster.fork());
 } else {
   http.createServer((req, res) => {
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end(`Handled by worker PID ${process.pid}\n`);
+    res.end(`worker ${process.pid}\n`);
   }).listen(8080);
 }
 ```
 
-### Worker Pool (`WorkerPool`)
-For CPU-intensive workloads (image compression, cryptography, data processing):
-
-```javascript
-const pool = new WorkerPool({
-  workerScript: "./worker.js",
-  minWorkers: 4,
-  maxWorkers: 16
-});
-
-// Distribute tasks across worker threads
-const results = await Promise.all([
-  pool.runTask({ file: "image1.png" }),
-  pool.runTask({ file: "image2.png" }),
-  pool.runTask({ file: "image3.png" })
-]);
-console.log("Processing complete:", results);
-```
-
 ---
 
-## 11. WebAssembly & Memory Management
+## 11. WebAssembly
 
-### Direct WebAssembly Imports
-Import `.wasm` files directly in ES modules or CommonJS without glue code:
+`.wasm` files can be imported directly. Exports are available on the
+default import.
 
 ```javascript
-// Import WebAssembly module directly
 import math from "./math.wasm";
-
-console.log("Wasm execution:", math.add(40, 2)); // 42
+console.log(math.add(40, 2));
 ```
 
-### WebAssembly Execution & Compilation
 ```bash
-# Run an application via WebAssembly
-jse run --wasm app.ts
-
-# Compile app into portable .wasm binary
-jse compile --wasm app.ts -o app.wasm
+jse run --wasm app.ts                 # run the program through WebAssembly
+jse compile --wasm app.ts -o app.wasm # compile to a .wasm file
+jse run app.wasm
 ```
 
-### Memory Compaction (`jse.optimizer`)
-`jse.optimizer` performs periodic memory management during runtime execution:
-- **Memory Compaction**: Reclaims unreferenced V8 pages and returns memory to the OS during idle event loop turns.
-- **Periodic Compaction**: Trims heap fragmentation periodically during request processing to maintain a compact memory footprint.
+`jse.optimizer` triggers V8 memory compaction during idle event-loop turns
+and between HTTP request batches.
 
 ---
 
-## 12. Container & Kubernetes Deployment
+## 12. Container deployment
 
-### Linux cgroup v1 & v2 Memory & CPU Auto-Detection
-When running in Docker or Kubernetes with limits (e.g. `resources.limits.memory: 512Mi`), `jse` automatically detects container cgroup limits and configures V8's heap and worker pool limits accordingly.
-
-### PID 1 Signal Forwarding & Graceful Shutdown
-When executed as PID 1 in a container, `jse` catches `SIGTERM` and `SIGINT`, triggers registered shutdown hooks, drains in-flight HTTP connections, and exits cleanly:
+- `os.totalmem()`, `os.freemem()`, and the default worker pool size use the
+  container's cgroup limits.
+- As PID 1, SIGTERM and SIGINT run `process.on("SIGTERM"/"SIGINT")`
+  handlers and `jse.onShutdown` hooks before exiting.
+- `jse.serve` and `node:http` bind to `0.0.0.0` by default.
 
 ```javascript
 jse.onShutdown(async () => {
-  console.log("Draining database connections...");
   await dbPool.end();
-  console.log("Shutdown complete.");
 });
 ```
 
-### Hardened Production Dockerfile
+### Dockerfile
 
 ```dockerfile
-# ---------------------------------------------------------------------------
-# Multi-stage build for minimal production container
-# ---------------------------------------------------------------------------
 FROM rust:1.85-bookworm AS builder
 WORKDIR /usr/src/jse
 COPY . .
 RUN cargo build --release --bin jse && strip target/release/jse
 
-# Distroless / minimal runtime stage
 FROM debian:bookworm-slim
 RUN groupadd -g 10001 jse && useradd -u 10001 -g jse -m -s /bin/false jse
 COPY --from=builder /usr/src/jse/target/release/jse /usr/local/bin/jse
@@ -682,7 +561,6 @@ COPY src/ ./src/
 
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8080
 USER jse:jse
-
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s CMD jse -e "fetch('http://127.0.0.1:8080/health').then(r => process.exit(r.ok ? 0 : 1))"
 
@@ -690,11 +568,9 @@ ENTRYPOINT ["/usr/local/bin/jse"]
 CMD ["start"]
 ```
 
-### Docker Compose Full Stack Example
+### Docker Compose
 
 ```yaml
-version: '3.8'
-
 services:
   app:
     build: .
@@ -702,7 +578,7 @@ services:
       - "8080:8080"
     environment:
       - NODE_ENV=production
-      - MONGO_URL=mongodb://mongo:27017/prod
+      - MONGO_URL=mongodb://mongo:27017/app
       - REDIS_URL=redis://redis:6379
     depends_on:
       - mongo
@@ -710,13 +586,11 @@ services:
 
   mongo:
     image: mongo:7.0
-    restart: always
     volumes:
       - mongo_data:/data/db
 
   redis:
     image: redis:7.2-alpine
-    restart: always
 
 volumes:
   mongo_data:
