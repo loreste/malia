@@ -1012,3 +1012,73 @@ fn malia_dual_binary_and_global_namespace() {
     String::from_utf8_lossy(&jse_eval.stderr)
   );
 }
+
+fn run_framework_test(script_name: &str) {
+  let malia = env!("CARGO_BIN_EXE_malia");
+  let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let frameworks_dir = manifest_dir.join("tests/fixtures/frameworks");
+
+  // If node_modules does not exist in tests/fixtures/frameworks, run npm install
+  if !frameworks_dir.join("node_modules").exists() {
+    let npm_status = std::process::Command::new("npm")
+      .args(["install", "--no-audit", "--no-fund"])
+      .current_dir(&frameworks_dir)
+      .status();
+    match npm_status {
+      Ok(st) if !st.success() => {
+        eprintln!("npm install in tests/fixtures/frameworks failed, skipping framework test {script_name}");
+        return;
+      }
+      Err(e) => {
+        eprintln!("npm command not available ({e}), skipping framework test {script_name}");
+        return;
+      }
+      _ => {}
+    }
+  }
+
+  let script_path = frameworks_dir.join(script_name);
+  let output = std::process::Command::new(malia)
+    .args(["run", "--allow-all", script_path.to_str().unwrap()])
+    .current_dir(&frameworks_dir)
+    .output()
+    .unwrap_or_else(|e| panic!("failed to execute {script_name} via malia: {e}"));
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    output.status.success(),
+    "framework test {script_name} failed with exit code {:?}:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}",
+    output.status.code()
+  );
+}
+
+#[test]
+fn framework_react_ssr() {
+  run_framework_test("test_react.js");
+}
+
+#[test]
+fn framework_preact_ssr() {
+  run_framework_test("test_preact.js");
+}
+
+#[test]
+fn framework_vue_ssr() {
+  run_framework_test("test_vue.js");
+}
+
+#[test]
+fn framework_angular_signals_di() {
+  run_framework_test("test_angular.js");
+}
+
+#[test]
+fn framework_svelte_ssr() {
+  run_framework_test("test_svelte.js");
+}
+
+#[test]
+fn framework_fastify_routes() {
+  run_framework_test("test_fastify.js");
+}

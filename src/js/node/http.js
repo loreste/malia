@@ -30,54 +30,92 @@ function makeSocket() {
   return socket;
 }
 
-class IncomingMessage extends EventEmitter {
-  constructor(raw) {
-    super();
+function IncomingMessage(rawOrSocket) {
+  EventEmitter.call(this);
+  if (rawOrSocket && (rawOrSocket.method !== undefined || rawOrSocket.url !== undefined)) {
+    const raw = rawOrSocket;
     this.method = raw.method;
     this.url = raw.url;
     this.httpVersion = "1.1";
-    // Stream lifecycle flags (body-parser checks onFinished.isFinished(req)
-    // === complete && !readable to decide the body was already consumed).
     this.complete = false;
     this.readable = true;
     this.socket = makeSocket();
+    this.connection = this.socket;
     this.headers = {};
-    for (const [name, value] of raw.headers) {
-      this.headers[name.toLowerCase()] = value;
+    if (raw.headers) {
+      for (const [name, value] of (Array.isArray(raw.headers) ? raw.headers : Object.entries(raw.headers))) {
+        this.headers[name.toLowerCase()] = value;
+      }
     }
     const body = raw.body instanceof Uint8Array ? raw.body : new Uint8Array(raw.body ?? 0);
     this._rawBody = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
-    this._bodyEmitted = false;
-    this._emitScheduled = false;
+  } else {
+    this.socket = rawOrSocket || makeSocket();
+    this.connection = this.socket;
+    this.method = "GET";
+    this.url = "/";
+    this.httpVersion = "1.1";
+    this.complete = false;
+    this.readable = true;
+    this.headers = {};
+    this._rawBody = Buffer.alloc(0);
   }
+  this._encoding = null;
+  this.destroyed = false;
+  this._bodyEmitted = false;
+  this._emitScheduled = false;
+}
+Object.setPrototypeOf(IncomingMessage.prototype, EventEmitter.prototype);
+Object.assign(IncomingMessage.prototype, {
+  setEncoding(enc) {
+    this._encoding = enc;
+    return this;
+  },
 
-  // Pull semantics (like real streams): the buffered body is delivered only
-  // once a 'data' listener exists. Routers that defer middleware (express
-  // uses setImmediate for next()) attach listeners in later turns and must
-  // still receive the body.
+  pause() {
+    return this;
+  },
+
+  pipe(dest, options) {
+    this.on("data", (chunk) => dest.write(chunk));
+    this.on("end", () => dest.end());
+    return dest;
+  },
+
+  unpipe() {
+    return this;
+  },
+
+  destroy(err) {
+    this.destroyed = true;
+    if (err) this.emit("error", err);
+    this.emit("close");
+    return this;
+  },
+
   on(type, listener) {
-    super.on(type, listener);
+    EventEmitter.prototype.on.call(this, type, listener);
     if (type === "data") this._maybeEmitBody();
     return this;
-  }
+  },
 
   resume() {
     this._maybeEmitBody();
     return this;
-  }
+  },
 
   read() {
     if (this._bodyEmitted) return null;
     this._bodyEmitted = true;
     queueMicrotask(() => this._emitEnd());
-    return this._rawBody;
-  }
+    return this._encoding ? this._rawBody.toString(this._encoding) : this._rawBody;
+  },
 
   _emitEnd() {
     this.complete = true;
     this.readable = false;
     this.emit("end");
-  }
+  },
 
   _maybeEmitBody() {
     if (this._bodyEmitted || this._emitScheduled) return;
@@ -86,113 +124,174 @@ class IncomingMessage extends EventEmitter {
     queueMicrotask(() => {
       if (this._bodyEmitted) return;
       this._bodyEmitted = true;
-      if (this._rawBody.length > 0) this.emit("data", this._rawBody);
+      if (this._rawBody.length > 0) {
+        const chunk = this._encoding ? this._rawBody.toString(this._encoding) : this._rawBody;
+        this.emit("data", chunk);
+      }
       this._emitEnd();
     });
   }
-}
+});
 
 function toChunkBytes(chunk, encoding) {
   if (typeof chunk === "string") return Buffer.from(chunk, encoding ?? "utf8");
   return chunk;
 }
 
-class ServerResponse extends EventEmitter {
-  #listenerId;
-  #reqId;
-  #started = false;
-  #ended = false;
-  #headers = {};
-
-  constructor(listenerId, reqId) {
-    super();
-    this.#listenerId = listenerId;
-    this.#reqId = reqId;
-    this.statusCode = 200;
-    this.statusMessage = "OK";
-    this.socket = makeSocket();
+function ServerResponse(reqOrListenerId, reqId) {
+  EventEmitter.call(this);
+  if (typeof reqOrListenerId === "number" || typeof reqOrListenerId === "bigint" || typeof reqOrListenerId === "string") {
+    this._listenerId = reqOrListenerId;
+    this._reqId = reqId;
+  } else {
+    this.req = reqOrListenerId;
+    this._listenerId = null;
+    this._reqId = null;
   }
-
-  get headersSent() {
-    return this.#started;
+  this._started = false;
+  this._ended = false;
+  this._headers = {};
+  this.statusCode = 200;
+  this.statusMessage = "OK";
+  this.socket = makeSocket();
+  this.connection = this.socket;
+}
+Object.setPrototypeOf(ServerResponse.prototype, EventEmitter.prototype);
+Object.defineProperties(ServerResponse.prototype, {
+  headersSent: {
+    get() {
+      return this._started;
+    },
+    configurable: true,
+  },
+  finished: {
+    get() {
+      return this._ended;
+    },
+    configurable: true,
   }
-
-  get finished() {
-    return this.#ended;
-  }
-
+});
+Object.assign(ServerResponse.prototype, {
   setHeader(name, value) {
-    this.#headers[String(name).toLowerCase()] = String(value);
+    this._headers[String(name).toLowerCase()] = String(value);
     return this;
-  }
+  },
 
   getHeader(name) {
-    return this.#headers[String(name).toLowerCase()];
-  }
+    return this._headers[String(name).toLowerCase()];
+  },
+
+  getHeaders() {
+    return { ...this._headers };
+  },
+
+  getHeaderNames() {
+    return Object.keys(this._headers);
+  },
+
+  hasHeader(name) {
+    return Object.prototype.hasOwnProperty.call(this._headers, String(name).toLowerCase());
+  },
 
   removeHeader(name) {
-    delete this.#headers[String(name).toLowerCase()];
+    delete this._headers[String(name).toLowerCase()];
     return this;
-  }
+  },
 
-  writeHead(statusCode, headers) {
+  writeHead(statusCode, reasonOrHeaders, maybeHeaders) {
     this.statusCode = statusCode;
+    let headers = maybeHeaders;
+    if (typeof reasonOrHeaders === "string") {
+      this.statusMessage = reasonOrHeaders;
+    } else if (reasonOrHeaders && typeof reasonOrHeaders === "object") {
+      headers = reasonOrHeaders;
+    }
     if (headers) {
-      for (const name of Object.keys(headers)) this.setHeader(name, headers[name]);
+      if (Array.isArray(headers)) {
+        for (let i = 0; i < headers.length; i += 2) {
+          this.setHeader(headers[i], headers[i + 1]);
+        }
+      } else {
+        for (const name of Object.keys(headers)) this.setHeader(name, headers[name]);
+      }
     }
     return this;
-  }
+  },
 
-  #headerPairs() {
-    return Object.entries(this.#headers)
+  assignSocket(socket) {
+    this.socket = socket;
+    this.connection = socket;
+    this.emit("socket", socket);
+  },
+
+  detachSocket() {},
+
+  flushHeaders() {},
+
+  _headerPairs() {
+    return Object.entries(this._headers)
       .map(([name, value]) => name + ": " + value)
       .join("\r\n");
-  }
+  },
 
   write(chunk, encoding, cb) {
-    if (this.#ended) {
+    if (typeof encoding === "function") {
+      cb = encoding;
+      encoding = "utf8";
+    }
+    if (this._ended) {
       const err = new Error("write after end");
       if (cb) queueMicrotask(() => cb(err));
       else this.emit("error", err);
       return false;
     }
-    if (!this.#started) {
-      this.#started = true;
-      ops.op_serve_respond_start(this.#listenerId, this.#reqId, this.statusCode, this.#headerPairs());
+    if (!this._started) {
+      this._started = true;
+      if (this._listenerId !== null && this._reqId !== null) {
+        ops.op_serve_respond_start(this._listenerId, this._reqId, this.statusCode, this._headerPairs());
+      }
     }
-    ops.op_serve_respond_chunk(this.#reqId, toChunkBytes(chunk, encoding));
+    if (this._reqId !== null) {
+      ops.op_serve_respond_chunk(this._reqId, toChunkBytes(chunk, encoding));
+    }
     if (cb) cb();
     return true;
-  }
+  },
 
   end(chunk, encoding, cb) {
     if (typeof chunk === "function") {
       cb = chunk;
       chunk = undefined;
+    } else if (typeof encoding === "function") {
+      cb = encoding;
+      encoding = "utf8";
     }
-    if (this.#ended) {
+    if (this._ended) {
       if (cb) queueMicrotask(cb);
       return this;
     }
-    if (!this.#started) {
-      // Whole-body path (single content-length response).
+    if (!this._started) {
       const body = chunk === undefined || chunk === null
         ? new Uint8Array(0)
         : toChunkBytes(chunk, encoding);
-      this.#started = true;
-      ops.op_serve_respond(this.#listenerId, this.#reqId, this.statusCode, this.#headerPairs(), body);
-    } else {
-      if (chunk !== undefined && chunk !== null) {
-        ops.op_serve_respond_chunk(this.#reqId, toChunkBytes(chunk, encoding));
+      this._started = true;
+      if (this._listenerId !== null && this._reqId !== null) {
+        ops.op_serve_respond(this._listenerId, this._reqId, this.statusCode, this._headerPairs(), body);
       }
-      ops.op_serve_respond_end(this.#reqId);
+    } else {
+      if (chunk !== undefined && chunk !== null && this._reqId !== null) {
+        ops.op_serve_respond_chunk(this._reqId, toChunkBytes(chunk, encoding));
+      }
+      if (this._reqId !== null) {
+        ops.op_serve_respond_end(this._reqId);
+      }
     }
-    this.#ended = true;
+    this._ended = true;
     if (cb) cb();
     this.emit("finish");
     return this;
-  }
-}
+  },
+});
 
 class Server extends EventEmitter {
   #listenerId = null;
@@ -262,6 +361,35 @@ class Server extends EventEmitter {
     }
   }
 
+
+  timeout = 0;
+  keepAliveTimeout = 5000;
+  headersTimeout = 60000;
+  requestTimeout = 300000;
+  maxHeadersCount = null;
+  maxRequestsPerSocket = 0;
+
+  setTimeout(msecs, cb) {
+    this.timeout = msecs;
+    if (cb) this.on("timeout", cb);
+    return this;
+  }
+
+  ref() {
+    return this;
+  }
+
+  unref() {
+    return this;
+  }
+
+  closeAllConnections() {
+    return this;
+  }
+
+  closeIdleConnections() {
+    return this;
+  }
 
   address() {
     return { address: "0.0.0.0", family: "IPv4", port: this.#port };

@@ -392,24 +392,43 @@ fn subpath_of(rest: &str) -> String {
 
 /// Resolve a target value inside an "exports" tree using Node-style
 /// condition resolution.
-fn resolve_exports_target(value: &serde_json::Value) -> Option<String> {
+fn resolve_exports_target(value: &serde_json::Value, is_require: bool) -> Option<String> {
+  if let Some(target) = resolve_exports_target_inner(value, is_require, false) {
+    return Some(target);
+  }
+  resolve_exports_target_inner(value, !is_require, true)
+}
+
+fn resolve_exports_target_inner(
+  value: &serde_json::Value,
+  is_require: bool,
+  fallback: bool,
+) -> Option<String> {
   match value {
     serde_json::Value::String(s) => Some(s.clone()),
     // Array form: first entry that resolves wins (Node semantics).
     serde_json::Value::Array(items) => {
       for item in items {
-        if let Some(target) = resolve_exports_target(item) {
+        if let Some(target) = resolve_exports_target_inner(item, is_require, fallback) {
           return Some(target);
         }
       }
       None
     }
     serde_json::Value::Object(map) => {
-      for condition in ["import", "require", "node", "default"] {
-        if let Some(inner) = map.get(condition)
-          && let Some(target) = resolve_exports_target(inner) {
-            return Some(target);
-          }
+      let is_prod = std::env::var("NODE_ENV").as_deref() == Ok("production");
+      for (condition, inner) in map {
+        let is_match = match condition.as_str() {
+          "node" | "default" => true,
+          "import" => !is_require || fallback,
+          "require" => is_require || fallback,
+          "production" => is_prod,
+          "development" => !is_prod,
+          _ => false,
+        };
+        if is_match && let Some(target) = resolve_exports_target_inner(inner, is_require, fallback) {
+          return Some(target);
+        }
       }
       None
     }
@@ -418,11 +437,11 @@ fn resolve_exports_target(value: &serde_json::Value) -> Option<String> {
 }
 
 /// Resolve `subpath` (".", "./x", ...) against a package "exports" value.
-fn resolve_exports(exports: &serde_json::Value, subpath: &str) -> Option<String> {
+fn resolve_exports(exports: &serde_json::Value, subpath: &str, is_require: bool) -> Option<String> {
   match exports {
     serde_json::Value::String(_) => {
       if subpath == "." {
-        resolve_exports_target(exports)
+        resolve_exports_target(exports, is_require)
       } else {
         None
       }
@@ -432,14 +451,14 @@ fn resolve_exports(exports: &serde_json::Value, subpath: &str) -> Option<String>
       if !is_subpath_map {
         // Conditions object applying to ".".
         return if subpath == "." {
-          resolve_exports_target(exports)
+          resolve_exports_target(exports, is_require)
         } else {
           None
         };
       }
       // Exact subpath match.
       if let Some(value) = map.get(subpath)
-        && let Some(target) = resolve_exports_target(value) {
+        && let Some(target) = resolve_exports_target(value, is_require) {
           return Some(target);
         }
       // Pattern match ("./prefix*" or "./*").
@@ -448,7 +467,7 @@ fn resolve_exports(exports: &serde_json::Value, subpath: &str) -> Option<String>
           let (prefix, suffix) = (&key[..star], &key[star + 1..]);
           if subpath.starts_with(prefix) && subpath.ends_with(suffix) {
             let matched = &subpath[prefix.len()..subpath.len() - suffix.len()];
-            if let Some(target) = resolve_exports_target(value) {
+            if let Some(target) = resolve_exports_target(value, is_require) {
               return Some(target.replacen('*', matched, 1));
             }
           }
@@ -466,6 +485,50 @@ impl ModuleLoader for JseModuleLoader {
     specifier: &str,
     referrer: &str,
     _kind: ResolutionKind,
+  ) -> Result<ModuleSpecifier, ModuleLoaderError> {
+    self.resolve_internal(specifier, referrer, false)
+  }
+
+  fn load(
+    &self,
+    module_specifier: &ModuleSpecifier,
+    _maybe_referrer: Option<&ModuleLoadReferrer>,
+    options: ModuleLoadOptions,
+  ) -> ModuleLoadResponse {
+    ModuleLoadResponse::Sync(self.load_inner(module_specifier, &options))
+  }
+
+  fn get_source_map(&self, specifier: &str) -> Option<Cow<'_, [u8]>> {
+    self
+      .source_maps
+      .borrow()
+      .get(specifier)
+      .map(|v| v.clone().into())
+  }
+
+  /// V8 produced a fresh code cache for a module: persist it so the next
+  /// run of the same source can skip compilation.
+  fn code_cache_ready(
+    &self,
+    _module_specifier: ModuleSpecifier,
+    hash: u64,
+    code_cache: &[u8],
+  ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+    let bytes = code_cache.to_vec();
+    Box::pin(async move {
+      if let Some(dir) = crate::cache::cache_dir("v8") {
+        crate::cache::write(&dir, &format!("{hash:016x}.bin"), &bytes);
+      }
+    })
+  }
+}
+
+impl JseModuleLoader {
+  pub fn resolve_internal(
+    &self,
+    specifier: &str,
+    referrer: &str,
+    is_require: bool,
   ) -> Result<ModuleSpecifier, ModuleLoaderError> {
     // Absolute URLs (including node:, jse:, file:) pass through.
     if let Ok(url) = ModuleSpecifier::parse(specifier) {
@@ -519,7 +582,7 @@ impl ModuleLoader for JseModuleLoader {
       while let Some(d) = dir {
         if let Some(pkg) = self.read_package_json(d)
           && let Some(imports) = &pkg.imports {
-            if let Some(target) = resolve_exports(imports, specifier) {
+            if let Some(target) = resolve_exports(imports, specifier, is_require) {
               let target_path = d.join(target);
               let resolved = resolve_file_only(&target_path)?;
               return ModuleSpecifier::from_file_path(&resolved)
@@ -551,7 +614,7 @@ impl ModuleLoader for JseModuleLoader {
         // "exports" field takes precedence when present.
         if let Some(pkg) = &pkg
           && let Some(exports) = &pkg.exports {
-            if let Some(target) = resolve_exports(exports, &subpath) {
+            if let Some(target) = resolve_exports(exports, &subpath, is_require) {
               let target_path = pkg_dir.join(target);
               if let Ok(resolved) = resolve_file_only(&target_path) {
                 return ModuleSpecifier::from_file_path(&resolved)
@@ -605,7 +668,7 @@ impl ModuleLoader for JseModuleLoader {
             if let Some(pkg) = &pkg
               && let Some(exports) = &pkg.exports
             {
-              if let Some(target) = resolve_exports(exports, &subpath) {
+              if let Some(target) = resolve_exports(exports, &subpath, is_require) {
                 let target_path = pkg_dir.join(target);
                 if let Ok(resolved) = resolve_file_only(&target_path) {
                   return ModuleSpecifier::from_file_path(&resolved)
@@ -638,41 +701,6 @@ impl ModuleLoader for JseModuleLoader {
     Err(err(format!("Cannot find package '{specifier}'")))
   }
 
-  fn load(
-    &self,
-    module_specifier: &ModuleSpecifier,
-    _maybe_referrer: Option<&ModuleLoadReferrer>,
-    options: ModuleLoadOptions,
-  ) -> ModuleLoadResponse {
-    ModuleLoadResponse::Sync(self.load_inner(module_specifier, &options))
-  }
-
-  fn get_source_map(&self, specifier: &str) -> Option<Cow<'_, [u8]>> {
-    self
-      .source_maps
-      .borrow()
-      .get(specifier)
-      .map(|v| v.clone().into())
-  }
-
-  /// V8 produced a fresh code cache for a module: persist it so the next
-  /// run of the same source can skip compilation.
-  fn code_cache_ready(
-    &self,
-    _module_specifier: ModuleSpecifier,
-    hash: u64,
-    code_cache: &[u8],
-  ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
-    let bytes = code_cache.to_vec();
-    Box::pin(async move {
-      if let Some(dir) = crate::cache::cache_dir("v8") {
-        crate::cache::write(&dir, &format!("{hash:016x}.bin"), &bytes);
-      }
-    })
-  }
-}
-
-impl JseModuleLoader {
   fn load_inner(
     &self,
     specifier: &ModuleSpecifier,
@@ -762,16 +790,20 @@ impl JseModuleLoader {
       ));
     }
 
-    let is_cjs = match media_type {
-      MediaType::Cjs => true,
+    let (is_cjs, explicit_cjs) = match media_type {
+      MediaType::Cjs => (true, true),
       MediaType::JavaScript => {
         let dir = path.parent().unwrap_or(Path::new("/"));
         match self.nearest_package_json(dir) {
-          Some(pkg) => pkg.type_.as_deref() != Some("module"),
-          None => true, // Node semantics: no package.json => CommonJS
+          Some(pkg) => {
+            let is_mod = pkg.type_.as_deref() == Some("module");
+            let is_explicit_cjs = pkg.type_.as_deref() == Some("commonjs");
+            (!is_mod, is_explicit_cjs)
+          }
+          None => (true, false), // Node semantics: no package.json => CommonJS
         }
       }
-      _ => false,
+      _ => (false, false),
     };
 
     let code = std::fs::read_to_string(&path).map_err(err)?;
@@ -787,6 +819,12 @@ impl JseModuleLoader {
       code
     };
 
+    let is_cjs = if is_cjs && (explicit_cjs || !has_esm_syntax(&code)) {
+      true
+    } else {
+      false
+    };
+
     let code = if is_cjs {
       self.wrap_cjs(specifier, &code)?
     } else {
@@ -799,6 +837,51 @@ impl JseModuleLoader {
     let code_cache = code_cache_for(&code);
 
     Ok(module_source(ModuleType::JavaScript, code, specifier, code_cache))
+  }
+
+  fn collect_reexported_named_exports(
+    &self,
+    specifier: &ModuleSpecifier,
+    code: &str,
+    depth: usize,
+    visited: &mut std::collections::HashSet<String>,
+  ) -> Vec<String> {
+    if depth > 4 {
+      return Vec::new();
+    }
+    let mut exports = scan_cjs_exports(code);
+    let is_passthrough = exports.is_empty()
+      || code.contains("Object.keys(")
+      || code.contains("__export")
+      || code.contains("Object.assign(exports")
+      || code.contains("Object.assign(module.exports");
+
+    if is_passthrough {
+      let specs = scan_requires(code);
+      for spec in specs {
+        if let Ok(resolved) = self.resolve_internal(&spec, specifier.as_str(), true) {
+          let resolved_str = resolved.to_string();
+          if visited.insert(resolved_str) {
+            if let Ok(file_path) = resolved.to_file_path() {
+              if let Ok(dep_code) = std::fs::read_to_string(&file_path) {
+                let dep_exports = self.collect_reexported_named_exports(
+                  &resolved,
+                  &dep_code,
+                  depth + 1,
+                  visited,
+                );
+                for exp in dep_exports {
+                  if !exports.contains(&exp) {
+                    exports.push(exp);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    exports
   }
 
   /// Wrap CommonJS source in an ESM module. Static `require("...")` calls
@@ -818,14 +901,14 @@ impl JseModuleLoader {
     let specs = scan_requires(code);
     let mut out = String::with_capacity(code.len() + 1024);
     out.push_str(
-      "import { __makeRequire as __jse_mr, __filenameOf as __jse_fo, __dirnameOf as __jse_do } from \"jse:internal/cjs\";\n",
+      "import { __makeRequire as __jse_mr, __filenameOf as __jse_fo, __dirnameOf as __jse_do, __initCjs as __jse_ic } from \"jse:internal/cjs\";\n",
     );
     let mut map_entries = String::new();
     let mut url_entries = String::new();
     for (i, spec) in specs.iter().enumerate() {
       // Resolve through the normal pipeline; unresolvable specifiers get a
       // throwing stub so try/catch optional requires keep working.
-      let url = match self.resolve(spec, specifier.as_str(), ResolutionKind::Import) {
+      let url = match self.resolve_internal(spec, specifier.as_str(), true) {
         Ok(u) => {
           // Requires of unknown builtins (often dead code or comments
           // picked up by the scanner) get the throwing stub too.
@@ -848,24 +931,15 @@ impl JseModuleLoader {
       map_entries.push_str(&format!("{key}: __jse_m{i},"));
       url_entries.push_str(&format!("{key}: \"{url}\","));
     }
-    // `module`/`exports` are reassignable (like Node's wrapper parameters);
-    // the export is taken from the original module object either way.
-    out.push_str("const __jse_module = { exports: {} };\n");
-    out.push_str("let module = __jse_module;\n");
-    out.push_str("let exports = module.exports;\n");
-    out.push_str(&format!(
-      "const require = __jse_mr(import.meta.url, {{{map_entries}}}, {{{url_entries}}});\n"
-    ));
-    out.push_str("const __filename = __jse_fo(import.meta.url);\n");
-    out.push_str("const __dirname = __jse_do(import.meta.url);\n");
-    // User code runs inside a function scope (like Node's CJS wrapper):
-    // `var module`/`var exports`/top-level `return` in sources are legal
-    // there but would collide with the module-level consts above.
-    let named_exports = scan_cjs_exports(code);
-    out.push_str("\n;(function () {\n");
+    out.push_str(&format!("export function __jse_modules() {{ return {{{map_entries}}}; }}\n"));
+    out.push_str(&format!("export function __jse_urls() {{ return {{{url_entries}}}; }}\n"));
+    out.push_str("export function __jse_body(module, exports, require, __filename, __dirname) {\n");
     out.push_str(code);
-    out.push_str("\n}).call(__jse_module.exports);\n");
-    out.push_str("const __jse_exp = __jse_module.exports;\n");
+    out.push_str("\n}\n");
+    out.push_str("const __jse_exp = __jse_ic(import.meta.url, __jse_body, __jse_modules(), __jse_urls());\n");
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(specifier.to_string());
+    let named_exports = self.collect_reexported_named_exports(specifier, code, 0, &mut visited);
     for (i, name) in named_exports.iter().enumerate() {
       let key = serde_json::to_string(name).unwrap_or_else(|_| format!("\"{name}\""));
       out.push_str(&format!(
@@ -952,8 +1026,141 @@ fn is_ident_char(b: u8) -> bool {
   b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
+fn is_ident_start(b: u8) -> bool {
+  b.is_ascii_alphabetic() || b == b'_' || b == b'$'
+}
+
+fn is_statement_start(bytes: &[u8], idx: usize) -> bool {
+  let mut k = idx;
+  while k > 0 {
+    k -= 1;
+    let b = bytes[k];
+    if b == b'\n' || b == b'\r' || b == b';' || b == b'{' || b == b'}' {
+      return true;
+    }
+    if !b.is_ascii_whitespace() {
+      return false;
+    }
+  }
+  true
+}
+
+fn is_regex_start(bytes: &[u8], idx: usize) -> bool {
+  let mut k = idx;
+  while k > 0 {
+    k -= 1;
+    let b = bytes[k];
+    if b.is_ascii_whitespace() {
+      continue;
+    }
+    return matches!(
+      b,
+      b'(' | b'[' | b'=' | b':' | b',' | b'!' | b'&' | b'|' | b'?' | b'~' | b'^' | b'+' | b'-'
+        | b'*' | b'%' | b'<' | b'>' | b';' | b'{' | b'}'
+    );
+  }
+  true
+}
+
+/// Check if JavaScript source code has static top-level ESM syntax (`import ...`, `export ...`).
+/// If present, the file must be loaded as an ES module rather than wrapped in CommonJS.
+pub fn has_esm_syntax(code: &str) -> bool {
+  let bytes = code.as_bytes();
+  let len = bytes.len();
+  let mut i = 0;
+  while i < len {
+    let b = bytes[i];
+    if b == b'/' {
+      if i + 1 < len && bytes[i + 1] == b'/' {
+        i += 2;
+        while i < len && bytes[i] != b'\n' {
+          i += 1;
+        }
+        continue;
+      }
+      if i + 1 < len && bytes[i + 1] == b'*' {
+        i += 2;
+        while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+          i += 1;
+        }
+        i += 2;
+        continue;
+      }
+      if is_regex_start(bytes, i) {
+        i += 1;
+        let mut in_bracket = false;
+        while i < len {
+          if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+          }
+          if bytes[i] == b'[' {
+            in_bracket = true;
+          } else if bytes[i] == b']' {
+            in_bracket = false;
+          } else if bytes[i] == b'/' && !in_bracket {
+            i += 1;
+            while i < len && bytes[i].is_ascii_alphabetic() {
+              i += 1;
+            }
+            break;
+          } else if bytes[i] == b'\n' {
+            break;
+          }
+          i += 1;
+        }
+        continue;
+      }
+    }
+    if b == b'\'' || b == b'"' || b == b'`' {
+      let quote = b;
+      i += 1;
+      while i < len && bytes[i] != quote {
+        if bytes[i] == b'\\' {
+          i += 1;
+        }
+        i += 1;
+      }
+      i += 1;
+      continue;
+    }
+    if is_statement_start(bytes, i) && matches_word(bytes, i, b"import") {
+      let mut j = i + 6;
+      skip_whitespace(bytes, &mut j);
+      if j < len {
+        let next = bytes[j];
+        if next == b'\'' || next == b'"' || next == b'{' || next == b'*' || is_ident_start(next) {
+          return true;
+        }
+      }
+      i = j;
+      continue;
+    }
+    if is_statement_start(bytes, i) && matches_word(bytes, i, b"export") {
+      let mut j = i + 6;
+      skip_whitespace(bytes, &mut j);
+      if j < len {
+        let next = bytes[j];
+        if next == b'{' || next == b'*' || next == b'=' || is_ident_start(next) {
+          return true;
+        }
+      }
+      i = j;
+      continue;
+    }
+    i += 1;
+  }
+  false
+}
+
 fn is_valid_ident(s: &str) -> bool {
-  if s.is_empty() || s == "default" {
+  if s.is_empty()
+    || s == "default"
+    || s == "__jse_module"
+    || s == "__jse_body"
+    || s == "__jse_modules"
+    || s == "__jse_urls"
+  {
     return false;
   }
   let mut chars = s.chars();

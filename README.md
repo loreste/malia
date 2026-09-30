@@ -313,6 +313,18 @@ sockets, TLS, crypto, and DNS they depend on:
 
 `docker compose up --build` starts the example app with MongoDB and Redis.
 
+## Frameworks
+
+Tested with modern framework packages (npm packages executed end-to-end):
+
+- **Angular**: `@angular/core` (Signals, `signal()`, `computed()`, Dependency Injection, `Injector`, `InjectionToken`) and `rxjs` (`Observable`, `map`, `filter`)
+- **Vue 3**: `vue` + `@vue/server-renderer` (Server-Side Rendering via `createSSRApp` and `renderToString`)
+- **React 19**: `react` + `react-dom/server` (`renderToString` component tree rendering)
+- **Preact**: `preact` + `preact-render-to-string` (SSR component rendering)
+- **Svelte 5**: `svelte/compiler` (compiling Svelte 5 components) + `svelte/server` (`render`)
+- **Fastify 5**: `fastify` (route registration and request dispatch via `inject`)
+- **Express 5**: `express` (routing, query parsing, middleware, static files)
+
 ## Containers
 
 - `os.totalmem()`/`os.freemem()` and the default worker pool size read cgroup

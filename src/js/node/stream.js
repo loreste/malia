@@ -43,6 +43,22 @@ Object.defineProperty(Readable.prototype, "readableEnded", {
   },
 });
 
+Object.defineProperty(Readable.prototype, "readableEncoding", {
+  get() {
+    return this._encoding || null;
+  },
+});
+
+Readable.prototype.setEncoding = function (enc) {
+  this._encoding = enc;
+  try {
+    this._decoder = new TextDecoder(enc);
+  } catch (_) {
+    this._decoder = new TextDecoder("utf-8");
+  }
+  return this;
+};
+
 Readable.prototype.push = function (chunk) {
   const st = this._rState;
   // push ends the in-flight _read. Async _read implementations rely on this
@@ -70,7 +86,11 @@ Readable.prototype.read = function () {
     }
     return null;
   }
-  return st.buffer.shift();
+  let chunk = st.buffer.shift();
+  if (this._decoder && chunk) {
+    chunk = typeof chunk === "string" ? chunk : this._decoder.decode(chunk, { stream: true });
+  }
+  return chunk;
 };
 
 Readable.prototype._callRead = function () {
@@ -103,6 +123,12 @@ Readable.prototype._callRead = function () {
 
 Readable.prototype._emitEnd = function () {
   const st = this._rState;
+  if (this._decoder) {
+    const rest = this._decoder.decode();
+    if (rest.length > 0) {
+      this.emit("data", rest);
+    }
+  }
   st.endEmitted = true;
   st.pumping = false;
   this.emit("end");
@@ -115,7 +141,10 @@ Readable.prototype._pump = function () {
     return;
   }
   if (st.buffer.length > 0) {
-    const chunk = st.buffer.shift();
+    let chunk = st.buffer.shift();
+    if (this._decoder && chunk) {
+      chunk = typeof chunk === "string" ? chunk : this._decoder.decode(chunk, { stream: true });
+    }
     this.emit("data", chunk);
     queueMicrotask(() => this._pump());
     return;
