@@ -1274,10 +1274,10 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 fn parse_inspect_addr(addr: &str) -> (String, u16) {
-  if let Some((host, port_str)) = addr.rsplit_once(':') {
-    if let Ok(port) = port_str.parse::<u16>() {
-      return (host.to_string(), port);
-    }
+  if let Some((host, port_str)) = addr.rsplit_once(':')
+    && let Ok(port) = port_str.parse::<u16>()
+  {
+    return (host.to_string(), port);
   }
   if let Ok(port) = addr.parse::<u16>() {
     return ("127.0.0.1".to_string(), port);

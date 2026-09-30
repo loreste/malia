@@ -105,7 +105,7 @@ async fn handle_connection(
   // session_to_client: V8 sends InspectorMsg, we read and forward to WS
   // client_to_session: we send String commands, V8 reads them
   let (s2c_tx, mut s2c_rx) = futures_mpsc::unbounded::<InspectorMsg>();
-  let (mut c2s_tx, c2s_rx) = futures_mpsc::unbounded::<String>();
+  let (c2s_tx, c2s_rx) = futures_mpsc::unbounded::<String>();
 
   let proxy = InspectorSessionProxy {
     channels: InspectorSessionChannels::Regular {

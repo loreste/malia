@@ -1402,7 +1402,7 @@ pub async fn op_net_shutdown(state: Rc<RefCell<OpState>>, id: u32) -> Result<(),
 pub fn op_net_close(state: &mut OpState, id: u32) {
   let inner = net_inner(state);
   let mut guard = inner.lock().unwrap();
-  if let Some(mut conn) = guard.conns.remove(&id) {
+  if let Some(conn) = guard.conns.remove(&id) {
     #[cfg(windows)]
     {
       let wake = |io: &PipeIo| {
@@ -2873,7 +2873,7 @@ pub fn op_network_interfaces() -> Vec<NicAddr> {
   };
   // Build a name -> MAC map from sysinfo::Networks.
   let mut mac_map = std::collections::HashMap::new();
-  let mut networks = sysinfo::Networks::new_with_refreshed_list();
+  let networks = sysinfo::Networks::new_with_refreshed_list();
   for (name, data) in &networks {
     let mac = data.mac_address();
     let bytes = mac.0;
