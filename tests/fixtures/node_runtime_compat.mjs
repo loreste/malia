@@ -123,4 +123,62 @@ assert.equal(os.tmpdir().endsWith(path.sep) && os.tmpdir().length > 3, false);
   b.close();
   assert.throws(() => a.postMessage(1), { name: "InvalidStateError" });
 }
+// ---- crypto: ciphers, keys, signatures, WebCrypto ------------------------------------
+{
+  const key = Buffer.alloc(32, 7);
+  const iv = Buffer.alloc(16, 9);
+  const encrypt = (alg, k) => {
+    const c = crypto.createCipheriv(alg, k, iv);
+    return Buffer.concat([c.update("vector"), c.final()]).toString("hex");
+  };
+  assert.equal(encrypt("aes-256-cbc", key), "ae68bb3b787fbd064c098f82cc50b40a");
+  assert.equal(encrypt("aes-128-ctr", key.subarray(0, 16)), "e72a71f4c6d7");
+  const d = crypto.createDecipheriv("aes-256-cbc", Buffer.alloc(32, 1), iv);
+  d.update(Buffer.from("ae68bb3b787fbd064c098f82cc50b40a", "hex"));
+  assert.throws(() => d.final(), /bad decrypt/);
+  assert.equal(
+    crypto.createHmac("sha384", "key").update("data").digest("hex"),
+    "c5f97ad9fd1020c174d7dc02cf83c4c1bf15ee20ec555b690ad58e62da8a00ee44ccdb65cb8c80acfd127ebee568958a",
+  );
+
+  const msg = Buffer.from("signed");
+  for (const [type, opts, hash] of [["rsa", { modulusLength: 2048 }, "sha256"], ["ec", { namedCurve: "P-256" }, "sha256"], ["ed25519", {}, null]]) {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync(type, opts);
+    const sig = crypto.sign(hash, msg, privateKey);
+    assert.equal(crypto.verify(hash, msg, publicKey, sig), true, `${type} verify`);
+    assert.equal(crypto.verify(hash, Buffer.from("other"), publicKey, sig), false, `${type} rejects`);
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" });
+    assert.ok(crypto.createPublicKey(pem).equals(publicKey), `${type} public from private PEM`);
+    const jwk = privateKey.export({ format: "jwk" });
+    assert.ok(crypto.createPrivateKey({ key: jwk, format: "jwk" }).equals(privateKey), `${type} JWK round trip`);
+  }
+  const rsa = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const ct = crypto.publicEncrypt(rsa.publicKey, Buffer.from("secret"));
+  assert.equal(crypto.privateDecrypt(rsa.privateKey, ct).toString(), "secret");
+  assert.equal(crypto.createSign("RSA-SHA256").update(msg).sign(rsa.privateKey).length, 256);
+
+  const { subtle } = globalThis.crypto;
+  const enc = new TextEncoder();
+  const hex = (ab) => Buffer.from(ab).toString("hex");
+  const pb = await subtle.importKey("raw", enc.encode("pw"), "PBKDF2", false, ["deriveBits"]);
+  assert.equal(hex(await subtle.deriveBits({ name: "PBKDF2", salt: enc.encode("salt"), iterations: 100, hash: "SHA-256" }, pb, 128)), "2abfac6a729e5abcc10c42850d51f912");
+  const hk = await subtle.importKey("raw", key, "HKDF", false, ["deriveBits"]);
+  assert.equal(
+    hex(await subtle.deriveBits({ name: "HKDF", salt: enc.encode("s"), info: enc.encode("i"), hash: "SHA-256" }, hk, 256)),
+    "9be5c6aa8575d667ecf65d4a35bf03b95bd6c620238c368511fa5c286a9c73aa",
+  );
+  const gcm = await subtle.importKey("raw", key, "AES-GCM", false, ["encrypt", "decrypt"]);
+  const sealed = await subtle.encrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, gcm, enc.encode("vector"));
+  assert.equal(hex(sealed), "17bdc7c694e00437dd87c75c35b58d2d07f3e8cce144");
+  await assert.rejects(subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, gcm, new Uint8Array(sealed.byteLength)), { name: "OperationError" });
+  const ec = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
+  const ecSig = await subtle.sign({ name: "ECDSA", hash: "SHA-384" }, ec.privateKey, msg);
+  assert.equal(ecSig.byteLength, 96, "ECDSA signatures are raw r||s");
+  const jwkPub = await subtle.exportKey("jwk", ec.publicKey);
+  const reimported = await subtle.importKey("jwk", jwkPub, { name: "ECDSA", namedCurve: "P-384" }, true, ["verify"]);
+  assert.equal(await subtle.verify({ name: "ECDSA", hash: "SHA-384" }, reimported, ecSig, msg), true);
+  const hmacKey = await subtle.generateKey({ name: "HMAC", hash: "SHA-512" }, true, ["sign"]);
+  assert.deepEqual(Object.keys(await subtle.exportKey("jwk", hmacKey)), ["key_ops", "ext", "alg", "kty", "k"]);
+}
+
 console.log("node_runtime_compat: ok");

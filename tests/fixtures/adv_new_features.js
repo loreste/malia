@@ -9,6 +9,7 @@ import assert from "node:assert";
 import crypto from "node:crypto";
 import net from "node:net";
 import fs from "node:fs";
+import os from "node:os";
 
 console.log("=== RUNNING ADVANCED FEATURES ADVERSARIAL TEST ===");
 
@@ -73,8 +74,8 @@ console.log("   AEAD Ciphers & Tamper Rejection: PASS");
 // ---------------------------------------------------------------------------
 console.log("2. Testing Ed25519 Signatures...");
 const keypair = crypto.generateKeyPairSync("ed25519");
-assert(Buffer.isBuffer(keypair.publicKey), "publicKey is Buffer");
-assert(Buffer.isBuffer(keypair.privateKey), "privateKey is Buffer");
+assert(keypair.publicKey instanceof crypto.KeyObject && keypair.publicKey.type === "public", "publicKey is a KeyObject");
+assert(keypair.privateKey.asymmetricKeyType === "ed25519", "privateKey is an ed25519 KeyObject");
 
 const msg = Buffer.from("Authorize multi-billion wire transfer: TX-90021");
 const signature = crypto.sign(null, msg, keypair.privateKey);
@@ -185,7 +186,7 @@ console.log("   jse.trace Distributed Tracing: PASS");
 console.log("5. Testing jse.queue Embedded Task Queue...");
 assert(globalThis.jse?.queue, "jse.queue must exist globally");
 
-const queuePath = `/tmp/jse-queue-test-${Date.now()}.db`;
+const queuePath = `${os.tmpdir()}/jse-queue-test-${Date.now()}.db`;
 const q = jse.queue.open(queuePath);
 
 try {

@@ -1,13 +1,13 @@
 // Node builtin shims fixture.
 import fs from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, sep } from "node:path";
 import { EventEmitter } from "node:events";
 import { Buffer as B } from "node:buffer";
 import os from "node:os";
 import util from "node:util";
 import assert from "node:assert";
 
-if (join("a", "b", "..", "c") !== "a/c") throw new Error("path.join");
+if (join("a", "b", "..", "c") !== `a${sep}c`) throw new Error("path.join");
 if (dirname("/x/y/z.txt") !== "/x/y") throw new Error("path.dirname");
 if (basename("/x/y/z.txt", ".txt") !== "z") throw new Error("path.basename");
 

@@ -387,12 +387,17 @@ const secure = await new Promise((resolve, reject) => {
 assert(secure === "secure", `https ${secure}`);
 httpsServer.close();
 
-// child_process stdio
-const quiet = spawn("/bin/echo", ["nope"], { stdio: "ignore" });
+// child_process stdio (Windows: cmd's echo, and findstr to copy stdin)
+const win = process.platform === "win32";
+const quiet = win
+  ? spawn("cmd.exe", ["/d", "/c", "echo nope"], { stdio: "ignore" })
+  : spawn("/bin/echo", ["nope"], { stdio: "ignore" });
 assert(quiet.stdout === null && quiet.stderr === null && quiet.stdin === null, "stdio ignore");
 await new Promise((resolve) => quiet.on("close", resolve));
 
-const child = spawn("/bin/sh", ["-c", "cat"], { stdio: ["pipe", "pipe", "ignore"] });
+const child = win
+  ? spawn("findstr", ["^"], { stdio: ["pipe", "pipe", "ignore"] })
+  : spawn("/bin/sh", ["-c", "cat"], { stdio: ["pipe", "pipe", "ignore"] });
 assert(child.stderr === null, "stderr ignore");
 let closed = false;
 const childText = await new Promise((resolve, reject) => {
@@ -406,7 +411,7 @@ const childText = await new Promise((resolve, reject) => {
   child.on("error", reject);
   child.stdin.end("hello-child");
 });
-assert(childText === "hello-child", `child stdout ${JSON.stringify(childText)}`);
+assert(childText.trim() === "hello-child", `child stdout ${JSON.stringify(childText)}`);
 
 // worker_threads
 assert(isMainThread && threadId === 0, "main thread");

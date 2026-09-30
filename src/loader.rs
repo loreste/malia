@@ -548,6 +548,14 @@ impl JseModuleLoader {
     referrer: &str,
     is_require: bool,
   ) -> Result<ModuleSpecifier, ModuleLoaderError> {
+    // Windows absolute paths (C:\x, \\server\share) would otherwise parse
+    // as URLs with a one-letter scheme.
+    if cfg!(windows) && std::path::Path::new(specifier).is_absolute() {
+      let resolved = resolve_file_or_dir(self, &normalize_lexically(std::path::Path::new(specifier)))?;
+      return ModuleSpecifier::from_file_path(&resolved)
+        .map_err(|_| err(format!("Invalid path '{}'", resolved.display())));
+    }
+
     // Absolute URLs (including node:, jse:, file:) pass through.
     if let Ok(url) = ModuleSpecifier::parse(specifier) {
       match url.scheme() {
@@ -579,10 +587,9 @@ impl JseModuleLoader {
       .parent()
       .ok_or_else(|| err(format!("Invalid file referrer '{referrer}'")))?;
 
-    // OS paths the URL form below cannot express: Windows absolute paths
-    // (C:\x, \\server\share) and backslash-relative ones (.\x, ..\x).
-    let windows_relative = cfg!(windows) && (specifier.starts_with(".\\") || specifier.starts_with("..\\"));
-    if windows_relative || (cfg!(windows) && std::path::Path::new(specifier).is_absolute()) {
+    // Backslash-relative paths (.\x, ..\x), which the URL join below
+    // cannot express.
+    if cfg!(windows) && (specifier.starts_with(".\\") || specifier.starts_with("..\\")) {
       let joined = normalize_lexically(&referrer_dir.join(specifier));
       let resolved = resolve_file_or_dir(self, &joined)?;
       return ModuleSpecifier::from_file_path(&resolved)

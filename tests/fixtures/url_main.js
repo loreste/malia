@@ -74,7 +74,8 @@ assertEq(sync.search, "?a=1&b=2", "searchParams -> url sync");
 assertEq(u.searchParams.get("y"), "2", "url.searchParams read");
 
 // file URL helpers.
-assertEq(fileURLToPath("file:///tmp/a%20b.txt"), "/tmp/a b.txt", "fileURLToPath");
-assertEq(pathToFileURL("/tmp/a b.txt").href, "file:///tmp/a%20b.txt", "pathToFileURL");
+// POSIX paths explicitly, so this also holds on Windows.
+assertEq(fileURLToPath("file:///tmp/a%20b.txt", { windows: false }), "/tmp/a b.txt", "fileURLToPath");
+assertEq(pathToFileURL("/tmp/a b.txt", { windows: false }).href, "file:///tmp/a%20b.txt", "pathToFileURL");
 
 console.log("URL: PASS");

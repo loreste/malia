@@ -469,7 +469,7 @@ fn file_times(atime_secs: f64, mtime_secs: f64) -> std::fs::FileTimes {
 
 fn utimes_at(path: &str, atime_secs: f64, mtime_secs: f64) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(path)?;
-  let file = std::fs::File::open(path).map_err(|e| io_box("utime", path, e))?;
+  let file = crate::platform::open_for_set_times(path).map_err(|e| io_box("utime", path, e))?;
   file
     .set_times(file_times(atime_secs, mtime_secs))
     .map_err(|e| io_box("utime", path, e))
@@ -1442,19 +1442,23 @@ pub fn op_zlib_close(state: &mut OpState, id: u32) {
 }
 
 // ---------------------------------------------------------------------------
-// HMAC (sha1/sha256/sha512/md5) without an extra crate.
+// HMAC (md5, sha1, sha224, sha256, sha384, sha512) and PBKDF2 on it.
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
 enum MacAlgo {
+  Sha224,
   Sha256,
+  Sha384,
   Sha512,
   Sha1,
   Md5,
 }
 
 enum HmacInner {
+  Sha224(sha2::Sha224),
   Sha256(sha2::Sha256),
+  Sha384(sha2::Sha384),
   Sha512(sha2::Sha512),
   Sha1(sha1::Sha1),
   Md5(md5::Context),
@@ -1482,7 +1486,9 @@ fn hmac_table(state: &mut OpState) -> &mut HmacTable {
 fn parse_mac(algo: &str) -> Result<MacAlgo, JsErrorBox> {
   let name = algo.to_ascii_lowercase();
   match name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "").as_str() {
+    "sha224" => Ok(MacAlgo::Sha224),
     "sha256" => Ok(MacAlgo::Sha256),
+    "sha384" => Ok(MacAlgo::Sha384),
     "sha512" => Ok(MacAlgo::Sha512),
     "sha1" => Ok(MacAlgo::Sha1),
     "md5" => Ok(MacAlgo::Md5),
@@ -1493,7 +1499,9 @@ fn parse_mac(algo: &str) -> Result<MacAlgo, JsErrorBox> {
 fn hash_key(algo: MacAlgo, key: &[u8]) -> Vec<u8> {
   use sha2::Digest;
   match algo {
+    MacAlgo::Sha224 => sha2::Sha224::digest(key).to_vec(),
     MacAlgo::Sha256 => sha2::Sha256::digest(key).to_vec(),
+    MacAlgo::Sha384 => sha2::Sha384::digest(key).to_vec(),
     MacAlgo::Sha512 => sha2::Sha512::digest(key).to_vec(),
     MacAlgo::Sha1 => sha1::Sha1::digest(key).to_vec(),
     MacAlgo::Md5 => md5::compute(key).0.to_vec(),
@@ -1503,6 +1511,16 @@ fn hash_key(algo: MacAlgo, key: &[u8]) -> Vec<u8> {
 fn prime_inner(algo: MacAlgo, ipad: &[u8]) -> HmacInner {
   use sha2::Digest;
   match algo {
+    MacAlgo::Sha224 => {
+      let mut hasher = sha2::Sha224::new();
+      hasher.update(ipad);
+      HmacInner::Sha224(hasher)
+    }
+    MacAlgo::Sha384 => {
+      let mut hasher = sha2::Sha384::new();
+      hasher.update(ipad);
+      HmacInner::Sha384(hasher)
+    }
     MacAlgo::Sha256 => {
       let mut hasher = sha2::Sha256::new();
       hasher.update(ipad);
@@ -1529,7 +1547,9 @@ fn prime_inner(algo: MacAlgo, ipad: &[u8]) -> HmacInner {
 fn hmac_update(inner: &mut HmacInner, data: &[u8]) {
   use sha2::Digest;
   match inner {
+    HmacInner::Sha224(hasher) => hasher.update(data),
     HmacInner::Sha256(hasher) => hasher.update(data),
+    HmacInner::Sha384(hasher) => hasher.update(data),
     HmacInner::Sha512(hasher) => hasher.update(data),
     HmacInner::Sha1(hasher) => hasher.update(data),
     HmacInner::Md5(ctx) => ctx.consume(data),
@@ -1539,6 +1559,18 @@ fn hmac_update(inner: &mut HmacInner, data: &[u8]) {
 fn outer_digest(algo: MacAlgo, opad: &[u8], inner: &[u8]) -> Vec<u8> {
   use sha2::Digest;
   match algo {
+    MacAlgo::Sha224 => {
+      let mut hasher = sha2::Sha224::new();
+      hasher.update(opad);
+      hasher.update(inner);
+      hasher.finalize().to_vec()
+    }
+    MacAlgo::Sha384 => {
+      let mut hasher = sha2::Sha384::new();
+      hasher.update(opad);
+      hasher.update(inner);
+      hasher.finalize().to_vec()
+    }
     MacAlgo::Sha256 => {
       let mut hasher = sha2::Sha256::new();
       hasher.update(opad);
@@ -1569,7 +1601,9 @@ fn outer_digest(algo: MacAlgo, opad: &[u8], inner: &[u8]) -> Vec<u8> {
 fn inner_digest(inner: HmacInner) -> Vec<u8> {
   use sha2::Digest;
   match inner {
+    HmacInner::Sha224(hasher) => hasher.finalize().to_vec(),
     HmacInner::Sha256(hasher) => hasher.finalize().to_vec(),
+    HmacInner::Sha384(hasher) => hasher.finalize().to_vec(),
     HmacInner::Sha512(hasher) => hasher.finalize().to_vec(),
     HmacInner::Sha1(hasher) => hasher.finalize().to_vec(),
     HmacInner::Md5(ctx) => ctx.compute().0.to_vec(),
@@ -1580,7 +1614,7 @@ fn inner_digest(inner: HmacInner) -> Vec<u8> {
 pub fn op_hmac_new(state: &mut OpState, #[string] algo: String, #[buffer] key: &[u8]) -> Result<u32, JsErrorBox> {
   let algo = parse_mac(&algo)?;
   let block = match algo {
-    MacAlgo::Sha512 => 128,
+    MacAlgo::Sha384 | MacAlgo::Sha512 => 128,
     _ => 64,
   };
   let mut key = if key.len() > block {
@@ -1633,7 +1667,7 @@ pub fn op_hmac_digest(state: &mut OpState, id: u32) -> Result<Vec<u8>, JsErrorBo
 
 fn pbkdf2_derive(algo: MacAlgo, pass: &[u8], salt: &[u8], iterations: u32, keylen: usize) -> Vec<u8> {
   let block = match algo {
-    MacAlgo::Sha512 => 128,
+    MacAlgo::Sha384 | MacAlgo::Sha512 => 128,
     _ => 64,
   };
   let mut padded_key = if pass.len() > block {
@@ -1655,7 +1689,9 @@ fn pbkdf2_derive(algo: MacAlgo, pass: &[u8], salt: &[u8], iterations: u32, keyle
   let hlen = match algo {
     MacAlgo::Md5 => 16,
     MacAlgo::Sha1 => 20,
+    MacAlgo::Sha224 => 28,
     MacAlgo::Sha256 => 32,
+    MacAlgo::Sha384 => 48,
     MacAlgo::Sha512 => 64,
   };
 
@@ -1834,51 +1870,6 @@ pub fn op_crypto_cipher_decrypt(
     .open_in_place(ring::aead::Aad::from(aad), &mut in_out)
     .map_err(|_| JsErrorBox::generic("authentication tag verification failed or ciphertext corrupted"))?;
   Ok(decrypted.to_vec())
-}
-
-#[derive(serde::Serialize)]
-pub struct Ed25519KeyPairResult {
-  #[serde(with = "serde_bytes")]
-  pub public_key: Vec<u8>,
-  #[serde(with = "serde_bytes")]
-  pub private_key: Vec<u8>,
-}
-
-#[op2]
-#[serde]
-pub fn op_crypto_keypair_ed25519() -> Result<Ed25519KeyPairResult, JsErrorBox> {
-  let rng = ring::rand::SystemRandom::new();
-  let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng)
-    .map_err(|_| JsErrorBox::generic("failed to generate ed25519 keypair"))?;
-  let keypair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
-    .map_err(|_| JsErrorBox::generic("failed to parse generated keypair"))?;
-  use ring::signature::KeyPair;
-  Ok(Ed25519KeyPairResult {
-    public_key: keypair.public_key().as_ref().to_vec(),
-    private_key: pkcs8.as_ref().to_vec(),
-  })
-}
-
-#[op2]
-#[buffer]
-pub fn op_crypto_sign_ed25519(
-  #[buffer] private_key: &[u8],
-  #[buffer] message: &[u8],
-) -> Result<Vec<u8>, JsErrorBox> {
-  let keypair = ring::signature::Ed25519KeyPair::from_pkcs8(private_key)
-    .map_err(|_| JsErrorBox::generic("invalid ed25519 pkcs8 private key"))?;
-  let sig = keypair.sign(message);
-  Ok(sig.as_ref().to_vec())
-}
-
-#[op2(fast)]
-pub fn op_crypto_verify_ed25519(
-  #[buffer] public_key: &[u8],
-  #[buffer] message: &[u8],
-  #[buffer] signature: &[u8],
-) -> bool {
-  let peer = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key);
-  peer.verify(message, signature).is_ok()
 }
 
 // ---------------------------------------------------------------------------

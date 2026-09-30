@@ -241,3 +241,19 @@ pub fn ppid() -> u32 {
     sys.process(pid).and_then(|p| p.parent()).map_or(0, |p| p.as_u32())
   }
 }
+
+/// A handle that may change timestamps: Unix only needs read access;
+/// Windows needs write access, and backup semantics to open directories.
+pub fn open_for_set_times(path: &str) -> io::Result<File> {
+  #[cfg(unix)]
+  return File::open(path);
+  #[cfg(windows)]
+  {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    std::fs::OpenOptions::new()
+      .write(true)
+      .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+      .open(path)
+  }
+}

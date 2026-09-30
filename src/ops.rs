@@ -2418,9 +2418,6 @@ deno_core::extension!(
     op_crypto_scrypt,
     op_crypto_cipher_encrypt,
     op_crypto_cipher_decrypt,
-    op_crypto_keypair_ed25519,
-    op_crypto_sign_ed25519,
-    op_crypto_verify_ed25519,
     op_dns_lookup,
     op_dns_resolve,
     op_dns_lookup_service,
@@ -2497,6 +2494,7 @@ deno_core::extension!(
     "21_web_streams.js",
     "22_blob.js",
     "23_broadcast_channel.js",
+    "24_webcrypto.js",
   ],
 
   options = {

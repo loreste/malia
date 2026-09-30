@@ -77,39 +77,10 @@
         const hex = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
         return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
       },
-      subtle: createSubtle(),
+      // subtle: defined in 24_webcrypto.js
     };
   }
 
-  // Only digest() is implemented; every other SubtleCrypto method rejects
-  // with NotSupportedError rather than being undefined.
-  function createSubtle() {
-    const DIGESTS = { "SHA-1": "sha1", "SHA-256": "sha256", "SHA-384": "sha384", "SHA-512": "sha512" };
-    const notSupported = (name) => () =>
-      Promise.reject(new DOMException(`crypto.subtle.${name} is not supported`, "NotSupportedError"));
-    const subtle = {
-      async digest(algorithm, data) {
-        const name = String(typeof algorithm === "string" ? algorithm : algorithm?.name).toUpperCase();
-        const algo = DIGESTS[name];
-        if (!algo) throw new DOMException("Unrecognized algorithm name", "NotSupportedError");
-        let bytes;
-        if (ArrayBuffer.isView(data)) bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-        else if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
-        else throw new TypeError("Failed to execute 'digest': data is not a BufferSource");
-        const id = ops.op_crypto_hash_new(algo);
-        ops.op_crypto_hash_update(id, bytes);
-        const out = new Uint8Array(ops.op_crypto_hash_digest(id));
-        return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
-      },
-    };
-    for (const name of [
-      "encrypt", "decrypt", "sign", "verify", "deriveBits", "deriveKey", "importKey",
-      "exportKey", "generateKey", "wrapKey", "unwrapKey",
-    ]) {
-      subtle[name] = notSupported(name);
-    }
-    return subtle;
-  }
 
   // MessageChannel and MessagePort for React Scheduler and UI frameworks
   if (typeof globalThis.MessageChannel !== "function") {

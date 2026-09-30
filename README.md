@@ -263,13 +263,18 @@ start = "jse start"
 
 Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 `btoa`, `atob`, `crypto.getRandomValues`, `crypto.randomUUID`,
-`crypto.subtle.digest`, `EventTarget`, `Event`, `CustomEvent`,
+`crypto.subtle` (see below), `CryptoKey`, `EventTarget`, `Event`, `CustomEvent`,
 `MessageEvent`, `CloseEvent`, `ErrorEvent`, `AbortController`,
 `AbortSignal` (`abort`, `timeout`, `any`), `Blob`, `File`, `FormData`,
 `MessageChannel`, `BroadcastChannel`, `TextEncoder`/`TextDecoder` (utf-8, utf-16le, latin1;
 `fatal`, `ignoreBOM`, `stream`), and the WHATWG streams (`ReadableStream`,
 `WritableStream`, `TransformStream`, `TextEncoderStream`, `TextDecoderStream`,
 `CompressionStream`, `DecompressionStream`).
+
+`crypto.subtle` supports `digest`, `generateKey`, `importKey`/`exportKey`
+(raw, pkcs8, spki, jwk), `sign`/`verify` (HMAC, RSASSA-PKCS1-v1_5, RSA-PSS,
+ECDSA, Ed25519), `encrypt`/`decrypt` (AES-GCM, AES-CBC, AES-CTR, RSA-OAEP),
+`deriveBits`/`deriveKey` (PBKDF2, HKDF), and `wrapKey`/`unwrapKey`.
 
 `setTimeout`/`setInterval` return `Timeout` objects (`ref`, `unref`,
 `hasRef`, `refresh`); `setImmediate` runs after I/O and before later timers.
@@ -284,7 +289,7 @@ Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 | `child_process` | `spawn`, `exec`, `execFile`, their `*Sync` forms, `fork` with IPC |
 | `cluster` | `isPrimary`, `isWorker`, `fork`, lifecycle events, IPC. Workers bind the same port with `SO_REUSEPORT` |
 | `console` | `log`, `info`, `warn`, `error`, `debug`, `trace`, `assert`, `time`, `timeEnd`, `dir` |
-| `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`/`pbkdf2Sync`, `scrypt`/`scryptSync`, `createCipheriv`/`createDecipheriv` for `aes-128-gcm`, `aes-256-gcm`, `chacha20-poly1305`, Ed25519 `generateKeyPairSync`/`sign`/`verify`, `webcrypto`/`subtle` (`digest` only) |
+| `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`, `scrypt`; ciphers `aes-{128,192,256}-{cbc,ctr}`, `aes-{128,256}-gcm`, `chacha20-poly1305`; `KeyObject`, `createPrivateKey`/`createPublicKey`/`createSecretKey` (PEM, DER, JWK; PKCS#1, PKCS#8, SEC1, SPKI), `generateKeyPair(Sync)` for RSA, EC (P-256/384/521), Ed25519; `sign`/`verify`, `createSign`/`createVerify` (RSA PKCS#1 v1.5 and PSS, ECDSA DER or IEEE P1363, Ed25519); `publicEncrypt`/`privateDecrypt` (OAEP, PKCS#1 v1.5); `webcrypto` |
 | `diagnostics_channel` | `channel`, `subscribe`, `unsubscribe`, `hasSubscribers`, `tracingChannel` |
 | `dns`, `dns/promises` | `lookup`, `lookupService`, `resolve4`, `resolve6`, `resolveTxt`, `resolveSrv`, `resolveMx`, `resolveNs`, `resolveCname`, `resolvePtr`, `reverse` |
 | `domain` | `create`, `Domain` |
@@ -358,9 +363,10 @@ See the [Dockerfile](Dockerfile) in the repository root and
 ## Limitations
 
 - `Blob` contents are held in memory.
-- `crypto.subtle` implements `digest` only; other WebCrypto methods reject
-  with `NotSupportedError`. Ciphers are limited to the AEAD modes listed
-  above and key pairs to Ed25519.
+- Crypto limits: no encrypted (passphrase-protected) PEM keys, no ECDH or
+  X25519, RSA key generation only for 2048/3072/4096/8192 bits with exponent
+  65537, RSA-PSS salt length must equal the digest length, and
+  `setAutoPadding(false)` is not supported.
 - Windows: `net` paths (Unix domain sockets) and Windows named pipes are not
   supported, and `node:cluster` workers cannot share a port (it relies on
   `SO_REUSEPORT`). `chmod` only toggles the read-only attribute.
