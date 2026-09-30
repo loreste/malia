@@ -1,0 +1,102 @@
+[package]
+name = "malia"
+version = "0.1.0"
+edition = "2024"
+description = "A JavaScript/TypeScript and WebAssembly runtime built in Rust"
+repository = "https://github.com/loreste/malia"
+homepage = "https://github.com/loreste/malia"
+license = "MIT"
+
+[lib]
+name = "js_engine"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+bytes = "1"
+clap = { version = "4.6.7", features = ["derive"] }
+deno_ast = { version = "0.53.3", features = ["transpiling"] }
+deno_core = "0.412.0"
+deno_error = "0.7.1"
+getrandom = "0.4"
+http-body-util = "0.1"
+brotli = "7"
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+md5 = "0.7"
+flate2 = "1.1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+if-addrs = "0.14"
+nix = { version = "0.31", default-features = false, features = ["signal", "user", "feature"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "brotli", "gzip", "deflate"] }
+rustyline = "18.0.1"
+sysinfo = "0.36"
+webpki-roots = "1"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "process", "signal"] }
+tokio-stream = "0.1"
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pki-types = { version = "1", features = ["alloc"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["handshake", "connect", "rustls-tls-webpki-roots"] }
+socket2 = "0.6.5"
+toml = "0.8"
+rusqlite = { version = "0.33", features = ["bundled"] }
+ring = "0.17"
+
+url = "2"
+
+[build-dependencies]
+# Keep in lockstep with [dependencies]: build.rs compiles src/ops.rs into the
+# startup snapshot, so every crate ops.rs touches must be mirrored here.
+bytes = "1"
+deno_core = "0.412.0"
+deno_error = "0.7.1"
+getrandom = "0.4"
+brotli = "7"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+flate2 = "1.1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+if-addrs = "0.14"
+md5 = "0.7"
+nix = { version = "0.31", default-features = false, features = ["signal", "user", "feature"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "brotli", "gzip", "deflate"] }
+serde = { version = "1", features = ["derive"] }
+sysinfo = "0.36"
+webpki-roots = "1"
+serde_bytes = "0.11"
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+socket2 = "0.6.5"
+tokio = { version = "1.53.1", features = ["rt", "sync", "time", "io-util", "net", "process"] }
+tokio-stream = "0.1"
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pki-types = { version = "1", features = ["alloc"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["handshake", "connect", "rustls-tls-webpki-roots"] }
+ring = "0.17"
+
+url = "2"
+
+[[bin]]
+name = "malia"
+path = "src/main.rs"
+
+[[bin]]
+name = "jse"
+path = "src/bin/jse.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# Keep unwind: deno_core/V8 relies on catch_unwind at the JS/Rust boundary.
+panic = "unwind"

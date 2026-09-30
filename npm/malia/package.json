@@ -1,0 +1,45 @@
+{
+  "name": "malia",
+  "version": "0.1.0",
+  "description": "A JavaScript/TypeScript and WebAssembly runtime built in Rust",
+  "main": "./bin/malia.js",
+  "bin": {
+    "malia": "./bin/malia.js",
+    "jse": "./bin/malia.js"
+  },
+  "files": [
+    "bin",
+    "install.js",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node ./install.js"
+  },
+  "keywords": [
+    "javascript",
+    "typescript",
+    "webassembly",
+    "runtime",
+    "v8",
+    "node",
+    "http2",
+    "websockets",
+    "sqlite"
+  ],
+  "author": "Malia Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/loreste/malia.git"
+  },
+  "homepage": "https://github.com/loreste/malia#readme",
+  "optionalDependencies": {
+    "@malia/darwin-arm64": "0.1.0",
+    "@malia/darwin-x64": "0.1.0",
+    "@malia/linux-x64-gnu": "0.1.0",
+    "@malia/linux-x64-musl": "0.1.0",
+    "@malia/linux-arm64-gnu": "0.1.0",
+    "@malia/linux-arm64-musl": "0.1.0",
+    "@malia/win32-x64": "0.1.0"
+  }
+}

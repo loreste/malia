@@ -1,0 +1,1 @@
+static file served by express.static

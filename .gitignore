@@ -1,0 +1,7 @@
+/target
+/dist
+/npm/jse/vendor
+/npm/malia/vendor
+node_modules/
+*.log
+.DS_Store

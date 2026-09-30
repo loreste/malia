@@ -1,0 +1,15 @@
+{
+  "name": "@malia/linux-arm64-gnu",
+  "version": "0.1.0",
+  "description": "Linux ARM64 (glibc) native binary for Malia runtime",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "license": "MIT"
+}

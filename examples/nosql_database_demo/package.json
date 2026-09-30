@@ -1,0 +1,12 @@
+{
+  "name": "nosql-database-demo",
+  "version": "1.0.0",
+  "description": "Production containerized microservice demonstrating MongoDB, Redis, and Cassandra wire protocols in JSE",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "jse run index.js",
+    "test": "jse run index.js --selftest"
+  },
+  "dependencies": {}
+}

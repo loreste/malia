@@ -1,0 +1,1384 @@
+// Module resolution & loading: ESM, TypeScript transpile hook, CommonJS
+// wrapping, and npm (node_modules) resolution.
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use deno_ast::MediaType;
+use deno_core::ModuleLoadOptions;
+use deno_core::ModuleLoadReferrer;
+use deno_core::ModuleLoadResponse;
+use deno_core::ModuleLoader;
+use deno_core::ModuleSource;
+use deno_core::ModuleSourceCode;
+use deno_core::ModuleSpecifier;
+use deno_core::ModuleType;
+use deno_core::RequestedModuleType;
+use deno_core::ResolutionKind;
+use deno_core::error::ModuleLoaderError;
+use deno_error::JsErrorBox;
+
+/// Bare specifiers that map to builtin shims.
+const BUILTINS: &[&str] = &[
+  "assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto",
+  "dgram", "diagnostics_channel", "dns", "dns/promises", "domain", "events", "fs", "fs/promises", "http",
+  "http2", "https", "inspector", "module", "net", "os", "path", "path/posix", "path/win32",
+  "perf_hooks", "process", "punycode", "querystring", "readline", "readline/promises", "repl", "stream",
+  "stream/consumers", "stream/promises", "stream/web", "string_decoder", "test", "timers", "timers/promises", "tls",
+  "tty", "url", "util", "util/types", "v8", "vm", "wasi", "worker_threads", "ws", "zlib", "sqlite",
+];
+
+fn builtin_source(spec: &str) -> Option<&'static str> {
+  match spec {
+    "jse:internal/cjs" => Some(include_str!("js/internal/cjs.js")),
+    "jse:internal/cjs-missing" => Some(include_str!("js/internal/cjs-missing.js")),
+    "node:assert" => Some(include_str!("js/node/assert.js")),
+    "node:async_hooks" => Some(include_str!("js/node/async_hooks.js")),
+    "node:buffer" => Some(include_str!("js/node/buffer.js")),
+    "node:child_process" => Some(include_str!("js/node/child_process.js")),
+    "node:cluster" => Some(include_str!("js/node/cluster.js")),
+    "node:console" => Some(include_str!("js/node/console.js")),
+    "node:constants" => Some(include_str!("js/node/constants.js")),
+    "node:crypto" => Some(include_str!("js/node/crypto.js")),
+    "node:dgram" => Some(include_str!("js/node/dgram.js")),
+    "node:diagnostics_channel" => Some(include_str!("js/node/diagnostics_channel.js")),
+    "node:dns" => Some(include_str!("js/node/dns.js")),
+    "node:dns/promises" => Some(include_str!("js/node/dns_promises.js")),
+    "node:domain" => Some(include_str!("js/node/domain.js")),
+    "node:events" => Some(include_str!("js/node/events.js")),
+    "node:fs" => Some(include_str!("js/node/fs.js")),
+    "node:fs/promises" => Some(include_str!("js/node/fs_promises.js")),
+    "node:http" => Some(include_str!("js/node/http.js")),
+    "node:http2" => Some(include_str!("js/node/http2.js")),
+    "node:https" => Some(include_str!("js/node/https.js")),
+    "node:inspector" => Some(include_str!("js/node/inspector.js")),
+    "node:module" => Some(include_str!("js/node/module.js")),
+    "node:net" => Some(include_str!("js/node/net.js")),
+    "node:os" => Some(include_str!("js/node/os.js")),
+    "node:path" => Some(include_str!("js/node/path.js")),
+    "node:path/posix" => Some(include_str!("js/node/path_posix.js")),
+    "node:path/win32" => Some(include_str!("js/node/path_win32.js")),
+    "node:perf_hooks" => Some(include_str!("js/node/perf_hooks.js")),
+    "node:process" => Some(include_str!("js/node/process.js")),
+    "node:punycode" => Some(include_str!("js/node/punycode.js")),
+    "node:querystring" => Some(include_str!("js/node/querystring.js")),
+    "node:readline" => Some(include_str!("js/node/readline.js")),
+    "node:readline/promises" => Some(include_str!("js/node/readline_promises.js")),
+    "node:repl" => Some(include_str!("js/node/repl.js")),
+    "node:sqlite" => Some(include_str!("js/node/sqlite.js")),
+    "node:stream" => Some(include_str!("js/node/stream.js")),
+    "node:stream/consumers" => Some(include_str!("js/node/stream_consumers.js")),
+    "node:stream/promises" => Some(include_str!("js/node/stream_promises.js")),
+    "node:stream/web" => Some(include_str!("js/node/stream_web.js")),
+    "node:string_decoder" => Some(include_str!("js/node/string_decoder.js")),
+    "node:test" => Some(include_str!("js/node/test.js")),
+    "node:timers" => Some(include_str!("js/node/timers.js")),
+    "node:timers/promises" => Some(include_str!("js/node/timers_promises.js")),
+    "node:tls" => Some(include_str!("js/node/tls.js")),
+    "node:tty" => Some(include_str!("js/node/tty.js")),
+    "node:url" => Some(include_str!("js/node/url.js")),
+    "node:util" => Some(include_str!("js/node/util.js")),
+    "node:util/types" => Some(include_str!("js/node/util_types.js")),
+    "node:v8" => Some(include_str!("js/node/v8.js")),
+    "node:vm" => Some(include_str!("js/node/vm.js")),
+    "node:wasi" => Some(include_str!("js/node/wasi.js")),
+    "node:worker_threads" => Some(include_str!("js/node/worker_threads.js")),
+    "node:ws" => Some(include_str!("js/node/ws.js")),
+    "node:zlib" => Some(include_str!("js/node/zlib.js")),
+    _ => None,
+  }
+}
+
+
+struct PackageJson {
+  type_: Option<String>,
+  main: Option<String>,
+  module: Option<String>,
+  exports: Option<serde_json::Value>,
+  imports: Option<serde_json::Value>,
+}
+
+type SourceMapStore = Rc<RefCell<HashMap<String, Vec<u8>>>>;
+type PkgCache = Rc<RefCell<HashMap<PathBuf, Option<Rc<PackageJson>>>>>;
+
+#[derive(Default)]
+pub struct JseModuleLoader {
+  source_maps: SourceMapStore,
+  pkg_cache: PkgCache,
+}
+
+impl JseModuleLoader {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  fn read_package_json(&self, dir: &Path) -> Option<Rc<PackageJson>> {
+    let mut cache = self.pkg_cache.borrow_mut();
+    if let Some(entry) = cache.get(dir) {
+      return entry.clone();
+    }
+    let parsed = std::fs::read_to_string(dir.join("package.json"))
+      .ok()
+      .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+      .map(|v| PackageJson {
+        type_: v.get("type").and_then(|t| t.as_str()).map(String::from),
+        main: v.get("main").and_then(|t| t.as_str()).map(String::from),
+        module: v.get("module").and_then(|t| t.as_str()).map(String::from),
+        exports: v.get("exports").cloned(),
+        imports: v.get("imports").cloned(),
+      })
+      .map(Rc::new);
+    cache.insert(dir.to_path_buf(), parsed.clone());
+    parsed
+  }
+
+  /// Nearest package.json walking up from `start` (a directory).
+  fn nearest_package_json(&self, start: &Path) -> Option<Rc<PackageJson>> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+      if let Some(pkg) = self.read_package_json(d) {
+        return Some(pkg);
+      }
+      dir = d.parent();
+    }
+    None
+  }
+}
+
+fn err(msg: impl std::fmt::Display) -> ModuleLoaderError {
+  JsErrorBox::generic(msg.to_string())
+}
+
+const EXTENSIONS: &[&str] = &["js", "ts", "tsx", "jsx", "mjs", "cjs", "mts", "cts", "json", "wasm"];
+
+/// Resolve a path that may be a file (possibly missing an extension), a
+/// TS/JSX file shadowing a `.js`/`.jsx` specifier, or a directory.
+fn resolve_file_or_dir(loader: &JseModuleLoader, path: &Path) -> Result<PathBuf, ModuleLoaderError> {
+  if path.is_file() {
+    return Ok(path.to_path_buf());
+  }
+  // TS / JSX shadowing: "./foo.js" -> "./foo.ts", "./foo.tsx", etc.
+  if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+    let candidates: &[&str] = match ext {
+      "js" => &["ts", "tsx", "jsx"],
+      "jsx" => &["tsx"],
+      "mjs" => &["mts"],
+      "cjs" => &["cts"],
+      _ => &[],
+    };
+    for ts_ext in candidates {
+      let ts_path = path.with_extension(ts_ext);
+      if ts_path.is_file() {
+        return Ok(ts_path);
+      }
+    }
+  }
+  // Extension search (Node appends: "./util.inspect" -> "./util.inspect.js").
+  for ext in EXTENSIONS {
+    let candidate = appended_extension(path, ext);
+    if candidate.is_file() {
+      return Ok(candidate);
+    }
+  }
+  // Directory: package.json "main", then index files.
+  if path.is_dir() {
+    if let Some(pkg) = loader.read_package_json(path)
+      && let Some(main) = &pkg.main {
+        let main_path = path.join(main);
+        if let Ok(resolved) = resolve_file_only(&main_path) {
+          return Ok(resolved);
+        }
+      }
+    for name in [
+      "index.js",
+      "index.ts",
+      "index.tsx",
+      "index.jsx",
+      "index.mjs",
+      "index.cjs",
+      "index.mts",
+      "index.cts",
+      "index.json",
+    ] {
+      let candidate = path.join(name);
+      if candidate.is_file() {
+        return Ok(candidate);
+      }
+    }
+  }
+  Err(err(format!("Cannot find module '{}'", path.display())))
+}
+
+/// Look up tsconfig.json / jsconfig.json compilerOptions (paths and baseUrl)
+/// to resolve project-level path aliases (e.g. `@/*` -> `./src/*`).
+fn resolve_tsconfig_paths(
+  loader: &JseModuleLoader,
+  referrer_dir: &Path,
+  specifier: &str,
+) -> Option<PathBuf> {
+  let mut dir = Some(referrer_dir);
+  while let Some(d) = dir {
+    // 1. Check jse.json, jse.toml, jse.config.json
+    for config_name in ["jse.json", "jse.toml", "jse.config.json"] {
+      let config_path = d.join(config_name);
+      if config_path.is_file()
+        && let Ok(content) = std::fs::read_to_string(&config_path)
+      {
+        let maybe_cfg = if config_name.ends_with(".toml") {
+          toml::from_str::<crate::config::JseConfig>(&content).ok()
+        } else {
+          crate::config::JseConfig::parse_json(&content).ok()
+        };
+
+        if let Some(cfg) = maybe_cfg {
+          if let Some(paths) = &cfg.paths {
+            for (pattern, targets) in paths {
+              let targets_vec: Vec<String> = match targets {
+                serde_json::Value::String(s) => vec![s.clone()],
+                serde_json::Value::Array(arr) => {
+                  arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
+                }
+                _ => Vec::new(),
+              };
+
+              if let Some(prefix) = pattern.strip_suffix('*') {
+                if let Some(rest) = specifier.strip_prefix(prefix) {
+                  for target_str in &targets_vec {
+                    let mapped = target_str.replace('*', rest);
+                    let candidate = d.join(mapped);
+                    if let Ok(resolved) = resolve_file_or_dir(loader, &candidate) {
+                      return Some(resolved);
+                    }
+                  }
+                }
+              } else if pattern == specifier {
+                for target_str in &targets_vec {
+                  let candidate = d.join(target_str);
+                  if let Ok(resolved) = resolve_file_or_dir(loader, &candidate) {
+                    return Some(resolved);
+                  }
+                }
+              }
+            }
+          }
+
+          if let Some(alias) = &cfg.alias {
+            for (alias_key, target_path) in alias {
+              if specifier == alias_key {
+                let candidate = d.join(target_path);
+                if let Ok(resolved) = resolve_file_or_dir(loader, &candidate) {
+                  return Some(resolved);
+                }
+              } else if let Some(rest) = specifier.strip_prefix(alias_key) {
+                let clean_rest = rest.strip_prefix('/').unwrap_or(rest);
+                let candidate = d.join(target_path).join(clean_rest);
+                if let Ok(resolved) = resolve_file_or_dir(loader, &candidate) {
+                  return Some(resolved);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 2. tsconfig.json / jsconfig.json
+    for config_name in ["tsconfig.json", "jsconfig.json"] {
+      let config_path = d.join(config_name);
+      if config_path.is_file()
+        && let Ok(content) = std::fs::read_to_string(&config_path)
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+      {
+        let opts = val.get("compilerOptions");
+        let base_url = opts
+          .and_then(|o| o.get("baseUrl"))
+          .and_then(|b| b.as_str());
+        let base_dir = match base_url {
+          Some(b) => d.join(b),
+          None => d.to_path_buf(),
+        };
+
+        if let Some(paths) = opts.and_then(|o| o.get("paths")).and_then(|p| p.as_object()) {
+          for (pattern, targets) in paths {
+            if let Some(targets_arr) = targets.as_array() {
+              if let Some(prefix) = pattern.strip_suffix('*') {
+                if let Some(rest) = specifier.strip_prefix(prefix) {
+                  for target in targets_arr {
+                    if let Some(target_str) = target.as_str() {
+                      let mapped = target_str.replace('*', rest);
+                      let candidate = base_dir.join(mapped);
+                      if let Ok(resolved) = resolve_file_or_dir(loader, &candidate) {
+                        return Some(resolved);
+                      }
+                    }
+                  }
+                }
+              } else if pattern == specifier {
+                for target in targets_arr {
+                  if let Some(target_str) = target.as_str() {
+                    let candidate = base_dir.join(target_str);
+                    if let Ok(resolved) = resolve_file_or_dir(loader, &candidate) {
+                      return Some(resolved);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if base_url.is_some() {
+          let candidate = base_dir.join(specifier);
+          if let Ok(resolved) = resolve_file_or_dir(loader, &candidate) {
+            return Some(resolved);
+          }
+        }
+      }
+    }
+    dir = d.parent();
+  }
+  None
+}
+
+/// Like resolve_file_or_dir but never treats `path` as a directory entry
+/// point of its own (used for package.json "main" targets).
+fn resolve_file_only(path: &Path) -> Result<PathBuf, ModuleLoaderError> {
+  if path.is_file() {
+    return Ok(path.to_path_buf());
+  }
+  for ext in EXTENSIONS {
+    let candidate = appended_extension(path, ext);
+    if candidate.is_file() {
+      return Ok(candidate);
+    }
+  }
+  Err(err(format!("Cannot find module '{}'", path.display())))
+}
+
+/// Node-style extension append: "foo" -> "foo.js", "foo.bar" -> "foo.bar.js"
+/// (never replaces an existing suffix).
+fn appended_extension(path: &Path, ext: &str) -> PathBuf {
+  let mut name = path.as_os_str().to_os_string();
+  name.push(".");
+  name.push(ext);
+  PathBuf::from(name)
+}
+
+/// Split a bare specifier into (package_name, subpath). The subpath is
+/// either "." or "./something".
+fn split_package_specifier(spec: &str) -> (String, String) {
+  let parts: Vec<&str> = spec.split('/').collect();
+  if spec.starts_with('@') && parts.len() >= 2 {
+    let name = format!("{}/{}", parts[0], parts[1]);
+    let rest = parts[2..].join("/");
+    (name, subpath_of(&rest))
+  } else {
+    let name = parts[0].to_string();
+    let rest = parts[1..].join("/");
+    (name, subpath_of(&rest))
+  }
+}
+
+fn subpath_of(rest: &str) -> String {
+  if rest.is_empty() {
+    ".".to_string()
+  } else {
+    format!("./{rest}")
+  }
+}
+
+/// Resolve a target value inside an "exports" tree using Node-style
+/// condition resolution.
+fn resolve_exports_target(value: &serde_json::Value) -> Option<String> {
+  match value {
+    serde_json::Value::String(s) => Some(s.clone()),
+    // Array form: first entry that resolves wins (Node semantics).
+    serde_json::Value::Array(items) => {
+      for item in items {
+        if let Some(target) = resolve_exports_target(item) {
+          return Some(target);
+        }
+      }
+      None
+    }
+    serde_json::Value::Object(map) => {
+      for condition in ["import", "require", "node", "default"] {
+        if let Some(inner) = map.get(condition)
+          && let Some(target) = resolve_exports_target(inner) {
+            return Some(target);
+          }
+      }
+      None
+    }
+    _ => None,
+  }
+}
+
+/// Resolve `subpath` (".", "./x", ...) against a package "exports" value.
+fn resolve_exports(exports: &serde_json::Value, subpath: &str) -> Option<String> {
+  match exports {
+    serde_json::Value::String(_) => {
+      if subpath == "." {
+        resolve_exports_target(exports)
+      } else {
+        None
+      }
+    }
+    serde_json::Value::Object(map) => {
+      let is_subpath_map = map.keys().any(|k| k.starts_with('.') || k.starts_with('#'));
+      if !is_subpath_map {
+        // Conditions object applying to ".".
+        return if subpath == "." {
+          resolve_exports_target(exports)
+        } else {
+          None
+        };
+      }
+      // Exact subpath match.
+      if let Some(value) = map.get(subpath)
+        && let Some(target) = resolve_exports_target(value) {
+          return Some(target);
+        }
+      // Pattern match ("./prefix*" or "./*").
+      for (key, value) in map {
+        if let Some(star) = key.find('*') {
+          let (prefix, suffix) = (&key[..star], &key[star + 1..]);
+          if subpath.starts_with(prefix) && subpath.ends_with(suffix) {
+            let matched = &subpath[prefix.len()..subpath.len() - suffix.len()];
+            if let Some(target) = resolve_exports_target(value) {
+              return Some(target.replacen('*', matched, 1));
+            }
+          }
+        }
+      }
+      None
+    }
+    _ => None,
+  }
+}
+
+impl ModuleLoader for JseModuleLoader {
+  fn resolve(
+    &self,
+    specifier: &str,
+    referrer: &str,
+    _kind: ResolutionKind,
+  ) -> Result<ModuleSpecifier, ModuleLoaderError> {
+    // Absolute URLs (including node:, jse:, file:) pass through.
+    if let Ok(url) = ModuleSpecifier::parse(specifier) {
+      match url.scheme() {
+        "file" | "node" | "jse" => return Ok(url),
+        scheme => {
+          return Err(err(format!(
+            "Unsupported URL scheme '{scheme}:' in specifier '{specifier}'"
+          )));
+        }
+      }
+    }
+
+    // Bare builtin names.
+    if BUILTINS.contains(&specifier) {
+      return ModuleSpecifier::parse(&format!("node:{specifier}")).map_err(err);
+    }
+
+    // Referrer must be a file URL from here on.
+    if !referrer.starts_with("file:") {
+      return Err(err(format!(
+        "Cannot resolve '{specifier}' from non-file referrer '{referrer}'"
+      )));
+    }
+    let referrer_url = ModuleSpecifier::parse(referrer).map_err(err)?;
+    let referrer_path = referrer_url
+      .to_file_path()
+      .map_err(|_| err(format!("Invalid file referrer '{referrer}'")))?;
+    let referrer_dir = referrer_path
+      .parent()
+      .ok_or_else(|| err(format!("Invalid file referrer '{referrer}'")))?;
+
+    // Relative or absolute paths.
+    if specifier.starts_with("./")
+      || specifier.starts_with("../")
+      || specifier.starts_with('/')
+    {
+      let joined = referrer_url.join(specifier).map_err(err)?;
+      let joined_path = joined
+        .to_file_path()
+        .map_err(|_| err(format!("Cannot resolve '{specifier}'")))?;
+      let resolved = resolve_file_or_dir(self, &joined_path)?;
+      return ModuleSpecifier::from_file_path(&resolved)
+        .map_err(|_| err(format!("Invalid path '{}'", resolved.display())));
+    }
+
+    // Package "imports" (#-prefixed specifiers), resolved against the
+    // nearest package.json scope that defines them.
+    if specifier.starts_with('#') {
+      let mut dir = Some(referrer_dir);
+      while let Some(d) = dir {
+        if let Some(pkg) = self.read_package_json(d)
+          && let Some(imports) = &pkg.imports {
+            if let Some(target) = resolve_exports(imports, specifier) {
+              let target_path = d.join(target);
+              let resolved = resolve_file_only(&target_path)?;
+              return ModuleSpecifier::from_file_path(&resolved)
+                .map_err(|_| err("Invalid path"));
+            }
+            return Err(err(format!(
+              "Package import '{specifier}' is not defined in '{}'",
+              d.display()
+            )));
+          }
+        dir = d.parent();
+      }
+      return Err(err(format!("Cannot resolve package import '{specifier}'")));
+    }
+
+    // TSConfig / jsconfig paths and baseUrl alias resolution.
+    if let Some(mapped) = resolve_tsconfig_paths(self, referrer_dir, specifier) {
+      return ModuleSpecifier::from_file_path(&mapped)
+        .map_err(|_| err(format!("Invalid path '{}'", mapped.display())));
+    }
+
+    // Bare specifier: node_modules walk-up.
+    let (pkg_name, subpath) = split_package_specifier(specifier);
+    let mut dir = Some(referrer_dir);
+    while let Some(d) = dir {
+      let pkg_dir = d.join("node_modules").join(&pkg_name);
+      if pkg_dir.is_dir() {
+        let pkg = self.read_package_json(&pkg_dir);
+        // "exports" field takes precedence when present.
+        if let Some(pkg) = &pkg
+          && let Some(exports) = &pkg.exports {
+            if let Some(target) = resolve_exports(exports, &subpath) {
+              let target_path = pkg_dir.join(target);
+              if let Ok(resolved) = resolve_file_only(&target_path) {
+                return ModuleSpecifier::from_file_path(&resolved)
+                  .map_err(|_| err("Invalid path"));
+              }
+            }
+            return Err(err(format!(
+              "Package subpath '{subpath}' is not defined by \"exports\" in '{specifier}'"
+            )));
+          }
+        let target = if subpath == "." {
+          match pkg.and_then(|p| p.module.clone().or_else(|| p.main.clone())) {
+            Some(main) => pkg_dir.join(main),
+            None => pkg_dir.clone(),
+          }
+        } else {
+          pkg_dir.join(&subpath[2..])
+        };
+        match resolve_file_or_dir(self, &target) {
+          Ok(resolved) => {
+            return ModuleSpecifier::from_file_path(&resolved)
+              .map_err(|_| err("Invalid path"));
+          }
+          Err(_) => {
+            return Err(err(format!(
+              "Cannot find module '{specifier}' (looked in '{}')",
+              pkg_dir.display()
+            )));
+          }
+        }
+      }
+      dir = d.parent();
+    }
+
+    // Fallback: check NODE_PATH for global or workspace packages
+    if let Ok(node_path) = std::env::var("NODE_PATH") {
+      let sep = if cfg!(windows) { ';' } else { ':' };
+      for part in node_path.split(sep) {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+          continue;
+        }
+        let base_path = Path::new(trimmed);
+        let candidate_dirs = [
+          base_path.join(&pkg_name),
+          base_path.join("node_modules").join(&pkg_name),
+        ];
+        for pkg_dir in candidate_dirs {
+          if pkg_dir.is_dir() {
+            let pkg = self.read_package_json(&pkg_dir);
+            if let Some(pkg) = &pkg
+              && let Some(exports) = &pkg.exports
+            {
+              if let Some(target) = resolve_exports(exports, &subpath) {
+                let target_path = pkg_dir.join(target);
+                if let Ok(resolved) = resolve_file_only(&target_path) {
+                  return ModuleSpecifier::from_file_path(&resolved)
+                    .map_err(|_| err("Invalid path"));
+                }
+              }
+              return Err(err(format!(
+                "Package subpath '{subpath}' is not defined by \"exports\" in '{specifier}'"
+              )));
+            }
+
+            let target = if subpath == "." {
+              match pkg.and_then(|p| p.module.clone().or_else(|| p.main.clone())) {
+                Some(main) => pkg_dir.join(main),
+                None => pkg_dir.clone(),
+              }
+            } else {
+              pkg_dir.join(&subpath[2..])
+            };
+
+            if let Ok(resolved) = resolve_file_or_dir(self, &target) {
+              return ModuleSpecifier::from_file_path(&resolved)
+                .map_err(|_| err("Invalid path"));
+            }
+          }
+        }
+      }
+    }
+
+    Err(err(format!("Cannot find package '{specifier}'")))
+  }
+
+  fn load(
+    &self,
+    module_specifier: &ModuleSpecifier,
+    _maybe_referrer: Option<&ModuleLoadReferrer>,
+    options: ModuleLoadOptions,
+  ) -> ModuleLoadResponse {
+    ModuleLoadResponse::Sync(self.load_inner(module_specifier, &options))
+  }
+
+  fn get_source_map(&self, specifier: &str) -> Option<Cow<'_, [u8]>> {
+    self
+      .source_maps
+      .borrow()
+      .get(specifier)
+      .map(|v| v.clone().into())
+  }
+
+  /// V8 produced a fresh code cache for a module: persist it so the next
+  /// run of the same source can skip compilation.
+  fn code_cache_ready(
+    &self,
+    _module_specifier: ModuleSpecifier,
+    hash: u64,
+    code_cache: &[u8],
+  ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+    let bytes = code_cache.to_vec();
+    Box::pin(async move {
+      if let Some(dir) = crate::cache::cache_dir("v8") {
+        crate::cache::write(&dir, &format!("{hash:016x}.bin"), &bytes);
+      }
+    })
+  }
+}
+
+impl JseModuleLoader {
+  fn load_inner(
+    &self,
+    specifier: &ModuleSpecifier,
+    options: &ModuleLoadOptions,
+  ) -> Result<ModuleSource, ModuleLoaderError> {
+    // Builtin / internal in-memory modules.
+    let spec_str = specifier.as_str();
+    if let Some(source) = builtin_source(spec_str) {
+      return Ok(module_source(
+        ModuleType::JavaScript,
+        source.to_string(),
+        specifier,
+        None,
+      ));
+    }
+
+    let path = specifier
+      .to_file_path()
+      .map_err(|_| err(format!("Only file:// URLs are supported, got {spec_str}")))?;
+
+    // JSON modules requested with `with { type: "json" }`.
+    if matches!(options.requested_module_type, RequestedModuleType::Json) {
+      let code = std::fs::read_to_string(&path).map_err(err)?;
+      // Validate so syntax errors surface here rather than in V8 internals.
+      serde_json::from_str::<serde_json::Value>(&code)
+        .map_err(|e| err(format!("Invalid JSON in '{}': {e}", path.display())))?;
+      return Ok(module_source(ModuleType::Json, code, specifier, None));
+    }
+    if !matches!(options.requested_module_type, RequestedModuleType::None) {
+      return Err(err(format!(
+        "Unsupported module type attribute for '{spec_str}'"
+      )));
+    }
+
+    let media_type = MediaType::from_path(&path);
+
+    if media_type == MediaType::Json {
+      let code = std::fs::read_to_string(&path).map_err(err)?;
+      serde_json::from_str::<serde_json::Value>(&code)
+        .map_err(|e| err(format!("Invalid JSON in '{}': {e}", path.display())))?;
+      // Plain (attribute-less) JSON imports get a JS wrapper so they work
+      // both as ESM default imports and via CJS require().
+      return Ok(module_source(
+        ModuleType::JavaScript,
+        format!("export default {code};\n"),
+        specifier,
+        None,
+      ));
+    }
+
+    if media_type == MediaType::Wasm || path.extension().and_then(|e| e.to_str()) == Some("wasm") {
+      let bytes = std::fs::read(&path).map_err(err)?;
+      if let Some(bundle) = crate::wasm_compiler::extract_wasm_bundle(&bytes) {
+        crate::optimizer::set_wasm_mode(true);
+        return Ok(module_source(
+          ModuleType::JavaScript,
+          bundle.source,
+          specifier,
+          None,
+        ));
+      }
+      let bytes_js = bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",");
+      let wrapper = format!(
+        concat!(
+          "const __bytes = new Uint8Array([{bytes_js}]);\n",
+          "const __mod = new WebAssembly.Module(__bytes);\n",
+          "let __inst = null;\n",
+          "try {{\n",
+          "  __inst = new WebAssembly.Instance(__mod);\n",
+          "}} catch (_) {{}}\n",
+          "export const bytes = __bytes;\n",
+          "export const module = __mod;\n",
+          "export const instance = __inst;\n",
+          "export const exports = __inst ? __inst.exports : {{}};\n",
+          "export function instantiate(importObject) {{\n",
+          "  return new WebAssembly.Instance(__mod, importObject);\n",
+          "}}\n",
+          "export default __inst ? __inst.exports : __mod;\n"
+        ),
+        bytes_js = bytes_js
+      );
+      return Ok(module_source(
+        ModuleType::JavaScript,
+        wrapper,
+        specifier,
+        None,
+      ));
+    }
+
+    let is_cjs = match media_type {
+      MediaType::Cjs => true,
+      MediaType::JavaScript => {
+        let dir = path.parent().unwrap_or(Path::new("/"));
+        match self.nearest_package_json(dir) {
+          Some(pkg) => pkg.type_.as_deref() != Some("module"),
+          None => true, // Node semantics: no package.json => CommonJS
+        }
+      }
+      _ => false,
+    };
+
+    let code = std::fs::read_to_string(&path).map_err(err)?;
+
+    let code = if crate::ts::should_transpile(&media_type) {
+      let (js, source_map) = crate::ts::transpile(specifier, media_type, code).map_err(err)?;
+      self
+        .source_maps
+        .borrow_mut()
+        .insert(specifier.to_string(), source_map);
+      js
+    } else {
+      code
+    };
+
+    let code = if is_cjs {
+      self.wrap_cjs(specifier, &code)?
+    } else {
+      code
+    };
+
+    // Attach a V8 code cache entry (if we have a persisted one from a
+    // previous run); V8 falls back to a full compile when it rejects the
+    // cached data, and code_cache_ready then stores a fresh cache.
+    let code_cache = code_cache_for(&code);
+
+    Ok(module_source(ModuleType::JavaScript, code, specifier, code_cache))
+  }
+
+  /// Wrap CommonJS source in an ESM module. Static `require("...")` calls
+  /// are hoisted to real ESM imports (resolved through this same loader, so
+  /// npm/relative/builtin specifiers all work); the `require` function
+  /// becomes a lookup into the hoisted namespace objects.
+  fn wrap_cjs(
+    &self,
+    specifier: &ModuleSpecifier,
+    code: &str,
+  ) -> Result<String, ModuleLoaderError> {
+    let code = code.strip_prefix("#!").map_or(code, |rest| {
+      // Strip shebang line.
+      rest.find('\n').map_or("", |i| &rest[i + 1..])
+    });
+
+    let specs = scan_requires(code);
+    let mut out = String::with_capacity(code.len() + 1024);
+    out.push_str(
+      "import { __makeRequire as __jse_mr, __filenameOf as __jse_fo, __dirnameOf as __jse_do } from \"jse:internal/cjs\";\n",
+    );
+    let mut map_entries = String::new();
+    let mut url_entries = String::new();
+    for (i, spec) in specs.iter().enumerate() {
+      // Resolve through the normal pipeline; unresolvable specifiers get a
+      // throwing stub so try/catch optional requires keep working.
+      let url = match self.resolve(spec, specifier.as_str(), ResolutionKind::Import) {
+        Ok(u) => {
+          // Requires of unknown builtins (often dead code or comments
+          // picked up by the scanner) get the throwing stub too.
+          let url = u.to_string();
+          if url.starts_with("node:") && builtin_source(&url).is_none() {
+            "jse:internal/cjs-missing".to_string()
+          } else {
+            url
+          }
+        }
+        Err(e) => {
+          if std::env::var_os("JSE_DEBUG_MISSING").is_some() {
+            eprintln!("[jse] stubbed require '{spec}' from {specifier}: {e}");
+          }
+          "jse:internal/cjs-missing".to_string()
+        }
+      };
+      out.push_str(&format!("import * as __jse_m{i} from \"{url}\";\n"));
+      let key = serde_json::to_string(spec).unwrap_or_else(|_| "\"?\"".into());
+      map_entries.push_str(&format!("{key}: __jse_m{i},"));
+      url_entries.push_str(&format!("{key}: \"{url}\","));
+    }
+    // `module`/`exports` are reassignable (like Node's wrapper parameters);
+    // the export is taken from the original module object either way.
+    out.push_str("const __jse_module = { exports: {} };\n");
+    out.push_str("let module = __jse_module;\n");
+    out.push_str("let exports = module.exports;\n");
+    out.push_str(&format!(
+      "const require = __jse_mr(import.meta.url, {{{map_entries}}}, {{{url_entries}}});\n"
+    ));
+    out.push_str("const __filename = __jse_fo(import.meta.url);\n");
+    out.push_str("const __dirname = __jse_do(import.meta.url);\n");
+    // User code runs inside a function scope (like Node's CJS wrapper):
+    // `var module`/`var exports`/top-level `return` in sources are legal
+    // there but would collide with the module-level consts above.
+    let named_exports = scan_cjs_exports(code);
+    out.push_str("\n;(function () {\n");
+    out.push_str(code);
+    out.push_str("\n}).call(__jse_module.exports);\n");
+    out.push_str("const __jse_exp = __jse_module.exports;\n");
+    for (i, name) in named_exports.iter().enumerate() {
+      let key = serde_json::to_string(name).unwrap_or_else(|_| format!("\"{name}\""));
+      out.push_str(&format!(
+        "const __jse_exp_{i} = (__jse_exp && (typeof __jse_exp === 'object' || typeof __jse_exp === 'function')) ? __jse_exp[{key}] : undefined;\nexport {{ __jse_exp_{i} as {name} }};\n"
+      ));
+    }
+    out.push_str("export default __jse_exp;\n");
+    Ok(out)
+  }
+}
+
+fn module_source(
+  module_type: ModuleType,
+  code: String,
+  specifier: &ModuleSpecifier,
+  code_cache: Option<deno_core::SourceCodeCacheInfo>,
+) -> ModuleSource {
+  ModuleSource::new(
+    module_type,
+    ModuleSourceCode::String(code.into()),
+    specifier,
+    code_cache,
+  )
+}
+
+/// Look up a persisted V8 code cache for this source. The hash keys our disk
+/// entry (content-addressed, so a hit is guaranteed to match the source);
+/// `data: None` still asks V8 to produce a fresh cache after compiling.
+fn code_cache_for(code: &str) -> Option<deno_core::SourceCodeCacheInfo> {
+  let hash = crate::cache::stable_hash(code);
+  let data = crate::cache::cache_dir("v8")
+    .and_then(|dir| crate::cache::read(&dir, format!("{hash:016x}.bin").as_str()));
+  Some(deno_core::SourceCodeCacheInfo {
+    hash,
+    data: data.map(std::borrow::Cow::Owned),
+  })
+}
+
+/// Scan source for static `require("literal")` calls. False positives
+/// (e.g. inside strings or comments) are harmless — they only add an extra
+/// hoisted import.
+fn scan_requires(code: &str) -> Vec<String> {
+  let bytes = code.as_bytes();
+  let mut out = Vec::new();
+  let mut i = 0;
+  while i + 7 < bytes.len() {
+    if &bytes[i..i + 7] == b"require"
+      && (i == 0 || !is_ident_char(bytes[i - 1]))
+      && !is_ident_char(bytes[i + 7])
+    {
+      let mut j = i + 7;
+      while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+        j += 1;
+      }
+      if j < bytes.len() && bytes[j] == b'(' {
+        j += 1;
+        while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+          j += 1;
+        }
+        if j < bytes.len() && (bytes[j] == b'"' || bytes[j] == b'\'') {
+          let quote = bytes[j];
+          let start = j + 1;
+          let mut k = start;
+          while k < bytes.len() && bytes[k] != quote {
+            if bytes[k] == b'\\' {
+              k += 1; // skip escaped char
+            }
+            k += 1;
+          }
+          if k < bytes.len()
+            && let Ok(s) = std::str::from_utf8(&bytes[start..k])
+              && !s.is_empty() && !out.iter().any(|e| e == s) {
+                out.push(s.to_string());
+              }
+        }
+      }
+    }
+    i += 1;
+  }
+  out
+}
+
+fn is_ident_char(b: u8) -> bool {
+  b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
+fn is_valid_ident(s: &str) -> bool {
+  if s.is_empty() || s == "default" {
+    return false;
+  }
+  let mut chars = s.chars();
+  let first = chars.next().unwrap();
+  if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+    return false;
+  }
+  chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+fn skip_whitespace(bytes: &[u8], idx: &mut usize) {
+  while *idx < bytes.len() && (bytes[*idx] as char).is_whitespace() {
+    *idx += 1;
+  }
+}
+
+fn matches_word(bytes: &[u8], idx: usize, word: &[u8]) -> bool {
+  if idx + word.len() > bytes.len() {
+    return false;
+  }
+  if idx > 0 && is_ident_char(bytes[idx - 1]) {
+    return false;
+  }
+  if &bytes[idx..idx + word.len()] != word {
+    return false;
+  }
+  if idx + word.len() < bytes.len() && is_ident_char(bytes[idx + word.len()]) {
+    return false;
+  }
+  true
+}
+
+fn read_ident<'a>(bytes: &'a [u8], idx: &mut usize) -> Option<&'a str> {
+  skip_whitespace(bytes, idx);
+  if *idx >= bytes.len() {
+    return None;
+  }
+  let start = *idx;
+  let first = bytes[start];
+  if !(first.is_ascii_alphabetic() || first == b'_' || first == b'$') {
+    return None;
+  }
+  *idx += 1;
+  while *idx < bytes.len() && is_ident_char(bytes[*idx]) {
+    *idx += 1;
+  }
+  std::str::from_utf8(&bytes[start..*idx]).ok()
+}
+
+fn read_string_literal<'a>(bytes: &'a [u8], idx: &mut usize) -> Option<&'a str> {
+  skip_whitespace(bytes, idx);
+  if *idx >= bytes.len() {
+    return None;
+  }
+  let quote = bytes[*idx];
+  if quote != b'"' && quote != b'\'' {
+    return None;
+  }
+  *idx += 1;
+  let start = *idx;
+  while *idx < bytes.len() && bytes[*idx] != quote {
+    if bytes[*idx] == b'\\' {
+      *idx += 1;
+    }
+    *idx += 1;
+  }
+  if *idx < bytes.len() {
+    let s = std::str::from_utf8(&bytes[start..*idx]).ok();
+    *idx += 1; // skip closing quote
+    s
+  } else {
+    None
+  }
+}
+
+fn skip_to_next_property(bytes: &[u8], idx: &mut usize) {
+  let len = bytes.len();
+  let mut p_depth = 0;
+  let mut b_depth = 0;
+  let mut bracket_depth = 0;
+
+  while *idx < len {
+    let b = bytes[*idx];
+    if b == b'/' && *idx + 1 < len && bytes[*idx + 1] == b'/' {
+      *idx += 2;
+      while *idx < len && bytes[*idx] != b'\n' {
+        *idx += 1;
+      }
+      continue;
+    }
+    if b == b'/' && *idx + 1 < len && bytes[*idx + 1] == b'*' {
+      *idx += 2;
+      while *idx + 1 < len && !(bytes[*idx] == b'*' && bytes[*idx + 1] == b'/') {
+        *idx += 1;
+      }
+      *idx += 2;
+      continue;
+    }
+    if b == b'\'' || b == b'"' || b == b'`' {
+      let quote = b;
+      *idx += 1;
+      while *idx < len && bytes[*idx] != quote {
+        if bytes[*idx] == b'\\' {
+          *idx += 1;
+        }
+        *idx += 1;
+      }
+      *idx += 1;
+      continue;
+    }
+
+    if b == b'(' {
+      p_depth += 1;
+    } else if b == b')' {
+      if p_depth > 0 {
+        p_depth -= 1;
+      }
+    } else if b == b'{' {
+      b_depth += 1;
+    } else if b == b'}' {
+      if b_depth > 0 {
+        b_depth -= 1;
+      } else {
+        break;
+      }
+    } else if b == b'[' {
+      bracket_depth += 1;
+    } else if b == b']' {
+      if bracket_depth > 0 {
+        bracket_depth -= 1;
+      }
+    } else if b == b',' && p_depth == 0 && b_depth == 0 && bracket_depth == 0 {
+      *idx += 1;
+      break;
+    }
+    *idx += 1;
+  }
+}
+
+fn scan_object_literal(bytes: &[u8], idx: &mut usize, exports: &mut Vec<String>) {
+  let len = bytes.len();
+  if *idx >= len || bytes[*idx] != b'{' {
+    return;
+  }
+  *idx += 1; // skip '{'
+  let mut depth = 1;
+
+  while *idx < len && depth > 0 {
+    let b = bytes[*idx];
+
+    if b == b'/' && *idx + 1 < len && bytes[*idx + 1] == b'/' {
+      *idx += 2;
+      while *idx < len && bytes[*idx] != b'\n' {
+        *idx += 1;
+      }
+      continue;
+    }
+    if b == b'/' && *idx + 1 < len && bytes[*idx + 1] == b'*' {
+      *idx += 2;
+      while *idx + 1 < len && !(bytes[*idx] == b'*' && bytes[*idx + 1] == b'/') {
+        *idx += 1;
+      }
+      *idx += 2;
+      continue;
+    }
+    if b == b'\'' || b == b'"' || b == b'`' {
+      let quote = b;
+      *idx += 1;
+      while *idx < len && bytes[*idx] != quote {
+        if bytes[*idx] == b'\\' {
+          *idx += 1;
+        }
+        *idx += 1;
+      }
+      *idx += 1;
+      continue;
+    }
+
+    if b == b'{' {
+      depth += 1;
+      *idx += 1;
+      continue;
+    }
+    if b == b'}' {
+      depth -= 1;
+      *idx += 1;
+      continue;
+    }
+
+    if depth == 1 {
+      skip_whitespace(bytes, idx);
+      if *idx >= len || bytes[*idx] == b'}' {
+        continue;
+      }
+      let key = if bytes[*idx] == b'"' || bytes[*idx] == b'\'' {
+        read_string_literal(bytes, idx)
+      } else {
+        read_ident(bytes, idx)
+      };
+
+      if let Some(name) = key {
+        if name != "get" && name != "set" && name != "async" {
+          if is_valid_ident(name) && !exports.iter().any(|e| e == name) {
+            exports.push(name.to_string());
+          }
+        } else {
+          skip_whitespace(bytes, idx);
+          if let Some(real_name) = read_ident(bytes, idx)
+            && is_valid_ident(real_name)
+            && !exports.iter().any(|e| e == real_name)
+          {
+            exports.push(real_name.to_string());
+          }
+        }
+        skip_to_next_property(bytes, idx);
+        continue;
+      }
+    }
+
+    *idx += 1;
+  }
+}
+
+/// Scan CommonJS source for static named exports.
+/// Detects `exports.foo =`, `module.exports.bar =`, `exports['foo'] =`,
+/// `module.exports = { a, b: 1, c() {} }`, and `Object.defineProperty(exports, "foo", ...)`.
+pub fn scan_cjs_exports(code: &str) -> Vec<String> {
+  let bytes = code.as_bytes();
+  let len = bytes.len();
+  let mut exports = Vec::new();
+  let mut i = 0;
+
+  let push_export = |name: &str, exports: &mut Vec<String>| {
+    if is_valid_ident(name) && !exports.iter().any(|e| e == name) {
+      exports.push(name.to_string());
+    }
+  };
+
+  while i < len {
+    let b = bytes[i];
+
+    if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+      i += 2;
+      while i < len && bytes[i] != b'\n' {
+        i += 1;
+      }
+      continue;
+    }
+
+    if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+      i += 2;
+      while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+
+    if b == b'\'' || b == b'"' || b == b'`' {
+      let quote = b;
+      i += 1;
+      while i < len && bytes[i] != quote {
+        if bytes[i] == b'\\' {
+          i += 1;
+        }
+        i += 1;
+      }
+      i += 1;
+      continue;
+    }
+
+    if matches_word(bytes, i, b"exports") {
+      let mut j = i + 7;
+      skip_whitespace(bytes, &mut j);
+      if j < len && bytes[j] == b'.' {
+        j += 1;
+        skip_whitespace(bytes, &mut j);
+        if let Some(name) = read_ident(bytes, &mut j) {
+          push_export(name, &mut exports);
+        }
+      } else if j < len && bytes[j] == b'[' {
+        j += 1;
+        skip_whitespace(bytes, &mut j);
+        if let Some(name) = read_string_literal(bytes, &mut j) {
+          push_export(name, &mut exports);
+        }
+      }
+      i = j;
+      continue;
+    }
+
+    if matches_word(bytes, i, b"module") {
+      let mut j = i + 6;
+      skip_whitespace(bytes, &mut j);
+      if j < len && bytes[j] == b'.' {
+        j += 1;
+        skip_whitespace(bytes, &mut j);
+        if matches_word(bytes, j, b"exports") {
+          j += 7;
+          skip_whitespace(bytes, &mut j);
+          if j < len && bytes[j] == b'.' {
+            j += 1;
+            skip_whitespace(bytes, &mut j);
+            if let Some(name) = read_ident(bytes, &mut j) {
+              push_export(name, &mut exports);
+            }
+          } else if j < len && bytes[j] == b'[' {
+            j += 1;
+            skip_whitespace(bytes, &mut j);
+            if let Some(name) = read_string_literal(bytes, &mut j) {
+              push_export(name, &mut exports);
+            }
+          } else if j < len && bytes[j] == b'=' {
+            j += 1;
+            skip_whitespace(bytes, &mut j);
+            if j < len && bytes[j] == b'{' {
+              scan_object_literal(bytes, &mut j, &mut exports);
+            }
+          }
+          i = j;
+          continue;
+        }
+      }
+    }
+
+    if matches_word(bytes, i, b"defineProperty") {
+      let mut j = i + 14;
+      skip_whitespace(bytes, &mut j);
+      if j < len && bytes[j] == b'(' {
+        j += 1;
+        skip_whitespace(bytes, &mut j);
+        let is_target = if matches_word(bytes, j, b"exports") {
+          j += 7;
+          true
+        } else if matches_word(bytes, j, b"module") {
+          j += 6;
+          skip_whitespace(bytes, &mut j);
+          if j < len && bytes[j] == b'.' {
+            j += 1;
+            skip_whitespace(bytes, &mut j);
+            if matches_word(bytes, j, b"exports") {
+              j += 7;
+              true
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        };
+
+        if is_target {
+          skip_whitespace(bytes, &mut j);
+          if j < len && bytes[j] == b',' {
+            j += 1;
+            skip_whitespace(bytes, &mut j);
+            if let Some(name) = read_string_literal(bytes, &mut j) {
+              push_export(name, &mut exports);
+            }
+          }
+        }
+      }
+      i = j;
+      continue;
+    }
+
+    if matches_word(bytes, i, b"__export") {
+      let mut j = i + 8;
+      skip_whitespace(bytes, &mut j);
+      if j < len && bytes[j] == b'(' {
+        j += 1;
+        skip_whitespace(bytes, &mut j);
+        if matches_word(bytes, j, b"exports") {
+          j += 7;
+          skip_whitespace(bytes, &mut j);
+          if j < len && bytes[j] == b',' {
+            j += 1;
+            skip_whitespace(bytes, &mut j);
+            if j < len && bytes[j] == b'{' {
+              scan_object_literal(bytes, &mut j, &mut exports);
+            }
+          }
+        }
+      }
+      i = j;
+      continue;
+    }
+
+    i += 1;
+  }
+
+  exports
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_scan_cjs_exports() {
+    let code = r#"
+      exports.foo = 1;
+      module.exports.bar = 2;
+      exports["baz"] = 3;
+      module.exports['qux'] = 4;
+      Object.defineProperty(exports, "prop1", { value: 10 });
+      Object.defineProperty(module.exports, "prop2", { get: () => 20 });
+      module.exports = {
+        alpha: 1,
+        beta,
+        gamma() {},
+        async delta() {},
+        "epsilon": 5,
+        "not-valid": 6
+      };
+      // exports.ignoredLine = 99;
+      /* exports.ignoredBlock = 100; */
+      const str = "exports.ignoredString = 101";
+    "#;
+    let exports = scan_cjs_exports(code);
+    assert_eq!(
+      exports,
+      vec!["foo", "bar", "baz", "qux", "prop1", "prop2", "alpha", "beta", "gamma", "delta", "epsilon"]
+    );
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@malia/win32-x64",
+  "version": "0.1.0",
+  "description": "Windows x64 native binary for Malia runtime",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "license": "MIT"
+}

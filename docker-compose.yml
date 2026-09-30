@@ -1,0 +1,90 @@
+# ==============================================================================
+# JSE Enterprise Production Stack: Microservice + MongoDB + Redis
+# ==============================================================================
+# Usage:
+#   docker compose up --build
+# ==============================================================================
+
+version: "3.8"
+
+services:
+  # ----------------------------------------------------------------------------
+  # Application Service (JSE Runtime)
+  # ----------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jse_app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    environment:
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - PORT=${PORT:-8000}
+      - MONGO_URI=mongodb://mongo:27017/jse_production
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 64M
+    volumes:
+      - ./examples/nosql_database_demo:/app:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/jse", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 8000) + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ----------------------------------------------------------------------------
+  # MongoDB 7.0 Document Database
+  # ----------------------------------------------------------------------------
+  mongo:
+    image: mongo:7.0
+    container_name: jse_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=jse_production
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ----------------------------------------------------------------------------
+  # Redis 7 In-Memory Key-Value & Cache Database
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: jse_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  mongo_data:
+  redis_data:

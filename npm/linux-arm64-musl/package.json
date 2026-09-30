@@ -1,0 +1,15 @@
+{
+  "name": "@malia/linux-arm64-musl",
+  "version": "0.1.0",
+  "description": "Linux ARM64 (musl / Alpine) native binary for Malia runtime",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "license": "MIT"
+}
