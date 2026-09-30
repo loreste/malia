@@ -19,13 +19,52 @@ use crate::ops::WorkerHost;
 /// built by build.rs; the extension itself is registered lazily (ops only,
 /// no esm re-execution) and its per-runtime options are applied through
 /// `lazy_init_extensions`.
+/// Inspector mode: None, listen only, or break on start.
+#[derive(Default, Clone)]
+pub enum InspectMode {
+  #[default]
+  Off,
+  /// --inspect[=host:port]
+  Listen { host: String, port: u16 },
+  /// --inspect-brk[=host:port]
+  Break { host: String, port: u16 },
+}
+
+static INSPECT_MODE: std::sync::OnceLock<InspectMode> = std::sync::OnceLock::new();
+
+pub fn set_inspect_mode(mode: InspectMode) {
+  let _ = INSPECT_MODE.set(mode);
+}
+
 pub fn create_runtime(worker_host: Option<WorkerHost>) -> JsRuntime {
+  let inspect = INSPECT_MODE.get().cloned().unwrap_or_default();
+  let enable_inspector = !matches!(inspect, InspectMode::Off);
   let mut rt = JsRuntime::new(RuntimeOptions {
     module_loader: Some(Rc::new(JseModuleLoader::new())),
     extensions: vec![crate::ops::jse::lazy_init()],
     startup_snapshot: Some(crate::snapshot::STARTUP_SNAPSHOT),
+    inspector: enable_inspector,
     ..Default::default()
   });
+
+  if enable_inspector {
+    let (host, port, wait) = match &inspect {
+      InspectMode::Listen { host, port } => (host.as_str(), *port, false),
+      InspectMode::Break { host, port } => (host.as_str(), *port, true),
+      InspectMode::Off => unreachable!(),
+    };
+    let session_sender = rt.inspector().get_session_sender();
+    match crate::inspector_server::start(host, port, wait, session_sender) {
+      Ok(_) => {
+        if wait {
+          rt.inspector().wait_for_session_and_break_on_next_statement();
+        }
+      }
+      Err(e) => {
+        eprintln!("Failed to start inspector: {e}");
+      }
+    }
+  }
   rt.lazy_init_extensions(vec![crate::ops::jse::args(worker_host)])
     .expect("jse extension lazy init");
   let _ = rt.execute_script(

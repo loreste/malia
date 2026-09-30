@@ -69,6 +69,14 @@ struct Cli {
   #[arg(long = "expose-gc", global = true)]
   expose_gc: bool,
 
+  /// Activate V8 inspector (default 127.0.0.1:9229).
+  #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "127.0.0.1:9229", global = true)]
+  inspect: Option<String>,
+
+  /// Activate V8 inspector and break before user code starts.
+  #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "127.0.0.1:9229", global = true)]
+  inspect_brk: Option<String>,
+
   /// Check syntax without executing (-c / --check).
   #[arg(short = 'c', long = "check", global = true)]
   check: bool,
@@ -626,6 +634,15 @@ pub fn run() -> anyhow::Result<()> {
   }
   if cli.no_warnings {
     js_engine::ops::set_no_warnings(true);
+  }
+
+  // --inspect / --inspect-brk
+  if let Some(addr) = &cli.inspect_brk {
+    let (host, port) = parse_inspect_addr(addr);
+    js_engine::runtime::set_inspect_mode(js_engine::runtime::InspectMode::Break { host, port });
+  } else if let Some(addr) = &cli.inspect {
+    let (host, port) = parse_inspect_addr(addr);
+    js_engine::runtime::set_inspect_mode(js_engine::runtime::InspectMode::Listen { host, port });
   }
 
   if cli.interactive {
@@ -1254,6 +1271,18 @@ pub fn run() -> anyhow::Result<()> {
       }))
     }
   }
+}
+
+fn parse_inspect_addr(addr: &str) -> (String, u16) {
+  if let Some((host, port_str)) = addr.rsplit_once(':') {
+    if let Ok(port) = port_str.parse::<u16>() {
+      return (host.to_string(), port);
+    }
+  }
+  if let Ok(port) = addr.parse::<u16>() {
+    return ("127.0.0.1".to_string(), port);
+  }
+  ("127.0.0.1".to_string(), 9229)
 }
 
 fn current_exe_name() -> String {
