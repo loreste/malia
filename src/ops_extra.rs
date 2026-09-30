@@ -2862,6 +2862,7 @@ struct NicAddr {
   netmask: String,
   family: String,
   internal: bool,
+  mac: String,
 }
 
 #[op2]
@@ -2870,10 +2871,24 @@ pub fn op_network_interfaces() -> Vec<NicAddr> {
   let Ok(ifaces) = if_addrs::get_if_addrs() else {
     return Vec::new();
   };
+  // Build a name -> MAC map from sysinfo::Networks.
+  let mut mac_map = std::collections::HashMap::new();
+  let mut networks = sysinfo::Networks::new_with_refreshed_list();
+  for (name, data) in &networks {
+    let mac = data.mac_address();
+    let bytes = mac.0;
+    if bytes != [0; 6] {
+      mac_map.insert(
+        name.clone(),
+        format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]),
+      );
+    }
+  }
   ifaces
     .into_iter()
     .map(|iface| {
       let internal = iface.is_loopback();
+      let mac = mac_map.get(&iface.name).cloned().unwrap_or_else(|| "00:00:00:00:00:00".to_string());
       let name = iface.name;
       let (address, netmask, family) = match iface.addr {
         if_addrs::IfAddr::V4(addr) => (addr.ip.to_string(), addr.netmask.to_string(), "IPv4"),
@@ -2885,6 +2900,7 @@ pub fn op_network_interfaces() -> Vec<NicAddr> {
         netmask,
         family: family.to_string(),
         internal,
+        mac,
       }
     })
     .collect()
@@ -3343,5 +3359,194 @@ pub fn op_log_is_http_enabled() -> bool {
 #[op2(fast)]
 pub fn op_log_set_http_enabled(enabled: bool) {
   crate::logger::set_http_log_enabled(enabled);
+}
+
+// ---------------------------------------------------------------------------
+// fs.watch (native inotify/kqueue/ReadDirectoryChanges via notify crate)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct FsWatchEvent {
+  kind: String, // "change" | "rename"
+  filename: String,
+}
+
+struct FsWatcher {
+  _watcher: notify::RecommendedWatcher,
+  rx: Arc<TokioMutex<mpsc::UnboundedReceiver<FsWatchEvent>>>,
+}
+
+#[derive(Default)]
+struct FsWatchTable {
+  next_id: u32,
+  watchers: HashMap<u32, FsWatcher>,
+}
+
+fn fswatch_table(state: &mut OpState) -> &mut FsWatchTable {
+  if !state.has::<FsWatchTable>() {
+    state.put(FsWatchTable::default());
+  }
+  state.borrow_mut::<FsWatchTable>()
+}
+
+#[op2(fast)]
+pub fn op_fs_watch(state: &mut OpState, #[string] path: String, recursive: bool) -> Result<u32, JsErrorBox> {
+  use notify::Watcher;
+  crate::permissions::check_read(&path)?;
+  let (tx, rx) = mpsc::unbounded_channel();
+  let watched = std::path::PathBuf::from(&path);
+  let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+    let Ok(event) = res else { return };
+    let kind = match event.kind {
+      notify::EventKind::Create(_) | notify::EventKind::Remove(_) => "rename",
+      _ => "change",
+    };
+    for p in &event.paths {
+      let filename = p.strip_prefix(&watched)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .into_owned();
+      let _ = tx.send(FsWatchEvent { kind: kind.to_string(), filename });
+    }
+  }).map_err(|e| JsErrorBox::generic(format!("fs.watch: {e}")))?;
+
+  let mode = if recursive { notify::RecursiveMode::Recursive } else { notify::RecursiveMode::NonRecursive };
+  watcher.watch(std::path::Path::new(&path), mode)
+    .map_err(|e| JsErrorBox::generic(format!("fs.watch: {e}")))?;
+
+  let table = fswatch_table(state);
+  let id = table.next_id;
+  table.next_id += 1;
+  table.watchers.insert(id, FsWatcher { _watcher: watcher, rx: Arc::new(TokioMutex::new(rx)) });
+  Ok(id)
+}
+
+#[op2]
+#[serde]
+pub async fn op_fs_watch_poll(state: Rc<RefCell<OpState>>, id: u32) -> Result<Option<FsWatchEvent>, JsErrorBox> {
+  let rx = {
+    let st = state.borrow();
+    st.try_borrow::<FsWatchTable>().and_then(|t| t.watchers.get(&id).map(|w| w.rx.clone()))
+  };
+  let Some(rx) = rx else { return Ok(None) };
+  let mut guard = rx.lock().await;
+  Ok(guard.recv().await)
+}
+
+#[op2(fast)]
+pub fn op_fs_watch_close(state: &mut OpState, id: u32) {
+  fswatch_table(state).watchers.remove(&id);
+}
+
+// ---------------------------------------------------------------------------
+// dgram (UDP sockets)
+// ---------------------------------------------------------------------------
+
+struct UdpEntry {
+  socket: Arc<tokio::net::UdpSocket>,
+}
+
+#[derive(Default)]
+struct UdpTable {
+  next_id: u32,
+  sockets: HashMap<u32, UdpEntry>,
+}
+
+fn udp_table(state: &mut OpState) -> &mut UdpTable {
+  if !state.has::<UdpTable>() {
+    state.put(UdpTable::default());
+  }
+  state.borrow_mut::<UdpTable>()
+}
+
+#[op2]
+pub async fn op_udp_bind(
+  state: Rc<RefCell<OpState>>,
+  #[string] address: String,
+  port: u32,
+  #[string] kind: String,
+) -> Result<u32, JsErrorBox> {
+  crate::permissions::check_net(&address)?;
+  let addr = if kind == "udp6" {
+    format!("[{address}]:{port}")
+  } else {
+    format!("{address}:{port}")
+  };
+  let socket = tokio::net::UdpSocket::bind(&addr).await
+    .map_err(|e| JsErrorBox::generic(format!("dgram bind {addr}: {e}")))?;
+  let mut st = state.borrow_mut();
+  let table = udp_table(&mut st);
+  let id = table.next_id;
+  table.next_id += 1;
+  table.sockets.insert(id, UdpEntry { socket: Arc::new(socket) });
+  Ok(id)
+}
+
+#[derive(serde::Serialize)]
+struct UdpAddr {
+  address: String,
+  port: u16,
+}
+
+#[op2]
+#[serde]
+pub fn op_udp_address(state: &mut OpState, id: u32) -> Result<UdpAddr, JsErrorBox> {
+  let table = udp_table(state);
+  let entry = table.sockets.get(&id).ok_or_else(|| JsErrorBox::generic("socket closed"))?;
+  let addr = entry.socket.local_addr().map_err(|e| JsErrorBox::generic(e.to_string()))?;
+  Ok(UdpAddr { address: addr.ip().to_string(), port: addr.port() })
+}
+
+#[op2]
+pub async fn op_udp_send(
+  state: Rc<RefCell<OpState>>,
+  id: u32,
+  #[buffer(copy)] data: Vec<u8>,
+  #[string] address: String,
+  port: u32,
+) -> Result<u32, JsErrorBox> {
+  let socket = {
+    let st = state.borrow();
+    st.try_borrow::<UdpTable>()
+      .and_then(|t| t.sockets.get(&id).map(|e| e.socket.clone()))
+      .ok_or_else(|| JsErrorBox::generic("socket closed"))?
+  };
+  let target: std::net::SocketAddr = format!("{address}:{port}").parse()
+    .map_err(|e| JsErrorBox::generic(format!("invalid address: {e}")))?;
+  let n = socket.send_to(&data, target).await
+    .map_err(|e| JsErrorBox::generic(format!("dgram send: {e}")))?;
+  Ok(n as u32)
+}
+
+#[derive(serde::Serialize)]
+struct UdpRecvResult {
+  #[serde(with = "serde_bytes")]
+  data: Vec<u8>,
+  address: String,
+  port: u16,
+}
+
+#[op2]
+#[serde]
+pub async fn op_udp_recv(
+  state: Rc<RefCell<OpState>>,
+  id: u32,
+) -> Result<UdpRecvResult, JsErrorBox> {
+  let socket = {
+    let st = state.borrow();
+    st.try_borrow::<UdpTable>()
+      .and_then(|t| t.sockets.get(&id).map(|e| e.socket.clone()))
+      .ok_or_else(|| JsErrorBox::generic("socket closed"))?
+  };
+  let mut buf = vec![0u8; 65536];
+  let (n, peer) = socket.recv_from(&mut buf).await
+    .map_err(|e| JsErrorBox::generic(format!("dgram recv: {e}")))?;
+  buf.truncate(n);
+  Ok(UdpRecvResult { data: buf, address: peer.ip().to_string(), port: peer.port() })
+}
+
+#[op2(fast)]
+pub fn op_udp_close(state: &mut OpState, id: u32) {
+  udp_table(state).sockets.remove(&id);
 }
 

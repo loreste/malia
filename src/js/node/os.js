@@ -81,7 +81,7 @@ export function networkInterfaces() {
       address: nic.address,
       netmask: nic.netmask,
       family: nic.family,
-      mac: "00:00:00:00:00:00",
+      mac: nic.mac || "00:00:00:00:00:00",
       internal: nic.internal,
       cidr: null,
     });

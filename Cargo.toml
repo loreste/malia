@@ -49,6 +49,7 @@ rusqlite = { version = "0.33", features = ["bundled"] }
 ring = "0.17"
 aws-lc-rs = "1"
 scrypt = { version = "0.11", default-features = false }
+notify = "8"
 
 url = "2"
 
@@ -85,6 +86,8 @@ tokio-tungstenite = { version = "0.26", default-features = false, features = ["h
 ring = "0.17"
 aws-lc-rs = "1"
 scrypt = { version = "0.11", default-features = false }
+notify = "8"
+base64 = "0.22"
 
 url = "2"
 

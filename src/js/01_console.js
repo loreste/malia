@@ -3,7 +3,11 @@
 
 ((globalThis) => {
   const ops = Deno.core.ops;
-  const print = (msg, isErr) => ops.op_print(msg + "\n", isErr);
+  let groupDepth = 0;
+  const print = (msg, isErr) => {
+    const indent = groupDepth > 0 ? "  ".repeat(groupDepth) : "";
+    ops.op_print(indent + msg + "\n", isErr);
+  };
   const timers = new Map();
   const counters = new Map();
 
@@ -142,9 +146,20 @@
     dir(value, options) {
       print(__jse.inspect(value, { customInspect: false, ...options }), false);
     },
-    group() {},
-    groupEnd() {},
-    clear() {},
+    group(...args) {
+      if (args.length) print(__jse.format(...args), false);
+      groupDepth++;
+    },
+    groupCollapsed(...args) {
+      if (args.length) print(__jse.format(...args), false);
+      groupDepth++;
+    },
+    groupEnd() {
+      if (groupDepth > 0) groupDepth--;
+    },
+    clear() {
+      ops.op_print("\x1b[2J\x1b[H", false);
+    },
   };
 
   globalThis.console = console;

@@ -41,9 +41,7 @@ function normalizeSpec(command, args, options) {
     cmd: String(command),
     args: (args ?? []).map(String),
     cwd: options.cwd !== undefined ? String(options.cwd) : undefined,
-    env: options.env
-      ? Object.entries(options.env).map(([k, v]) => [k, String(v)])
-      : undefined,
+    env: Object.entries(options.env || process.env).map(([k, v]) => [k, String(v)]),
     stdin: stdioAt(options, 0),
     stdout: stdioAt(options, 1),
     stderr: stdioAt(options, 2),

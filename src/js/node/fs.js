@@ -622,8 +622,7 @@ export class FileHandle extends EventEmitter {
 export class FSWatcher extends EventEmitter {
   #path;
   #closed = false;
-  #timer = null;
-  #lastStat = null;
+  #id = null;
 
   constructor(filename, options = {}, listener) {
     super();
@@ -635,54 +634,54 @@ export class FSWatcher extends EventEmitter {
     if (typeof listener === "function") {
       this.on("change", listener);
     }
-    const interval = options.interval || 200;
+    const recursive = !!options.recursive;
     try {
-      this.#lastStat = statSync(this.#path);
+      this.#id = ops.op_fs_watch(this.#path, recursive);
+      this.#pump();
     } catch {
-      this.#lastStat = null;
+      // Fallback: polling if native watch fails.
+      this.#pollFallback(options.interval || 200);
     }
-    this.#timer = setInterval(() => this.#poll(), interval);
   }
 
-  #poll() {
-    if (this.#closed) return;
-    let curr;
-    try {
-      curr = statSync(this.#path);
-    } catch {
-      curr = null;
-    }
-    const prev = this.#lastStat;
-    if (!prev && curr) {
-      this.#lastStat = curr;
-      this.emit("change", "rename", path.basename(this.#path));
-    } else if (prev && !curr) {
-      this.#lastStat = null;
-      this.emit("change", "rename", path.basename(this.#path));
-    } else if (prev && curr) {
-      if (prev.mtimeMs !== curr.mtimeMs || prev.size !== curr.size || prev.ino !== curr.ino) {
-        this.#lastStat = curr;
-        this.emit("change", "change", path.basename(this.#path));
+  #pump() {
+    if (this.#closed || this.#id === null) return;
+    ops.op_fs_watch_poll(this.#id).then(
+      (event) => {
+        if (!event || this.#closed) return;
+        this.emit("change", event.kind, event.filename || path.basename(this.#path));
+        this.#pump();
+      },
+      () => {},
+    );
+  }
+
+  #pollFallback(interval) {
+    let lastStat;
+    try { lastStat = statSync(this.#path); } catch { lastStat = null; }
+    const timer = setInterval(() => {
+      if (this.#closed) { clearInterval(timer); return; }
+      let curr;
+      try { curr = statSync(this.#path); } catch { curr = null; }
+      if (!lastStat && curr) { lastStat = curr; this.emit("change", "rename", path.basename(this.#path)); }
+      else if (lastStat && !curr) { lastStat = null; this.emit("change", "rename", path.basename(this.#path)); }
+      else if (lastStat && curr && (lastStat.mtimeMs !== curr.mtimeMs || lastStat.size !== curr.size)) {
+        lastStat = curr; this.emit("change", "change", path.basename(this.#path));
       }
-    }
+    }, interval);
+    this._fallbackTimer = timer;
   }
 
   close() {
     if (this.#closed) return;
     this.#closed = true;
-    if (this.#timer) {
-      clearInterval(this.#timer);
-      this.#timer = null;
-    }
+    if (this.#id !== null) { ops.op_fs_watch_close(this.#id); this.#id = null; }
+    if (this._fallbackTimer) { clearInterval(this._fallbackTimer); this._fallbackTimer = null; }
     this.emit("close");
   }
 
-  ref() {
-    return this;
-  }
-  unref() {
-    return this;
-  }
+  ref() { return this; }
+  unref() { return this; }
 }
 
 export function watch(filename, options, listener) {
