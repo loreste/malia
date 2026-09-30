@@ -5,11 +5,15 @@
 use crate::ops::WorkerHost;
 
 pub fn spawn_worker_thread(specifier: String, host: WorkerHost) {
-  std::thread::spawn(move || {
+  let builder = std::thread::Builder::new().stack_size(2 * 1024 * 1024);
+  match builder.spawn(move || {
     if let Err(e) = run_worker(&specifier, host) {
       eprintln!("[worker] {specifier}: {e}");
     }
-  });
+  }) {
+    Ok(_) => {}
+    Err(e) => eprintln!("[worker] failed to spawn thread: {e}"),
+  }
 }
 
 fn run_worker(specifier: &str, host: WorkerHost) -> anyhow::Result<()> {
