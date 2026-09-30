@@ -65,12 +65,14 @@ export class WASI {
         }
         return 0;
       },
-      clock_time_get(_id, _precision, time_ptr) {
-        const mem = self.#memory();
-        const view = new DataView(mem.buffer);
-        const ms = performance.now();
-        const ns = BigInt(Math.floor(ms * 1e6));
-        view.setBigUint64(time_ptr, ns, true);
+      // Clock ids: 0 realtime (ns since the Unix epoch), 1 monotonic,
+      // 2/3 process/thread CPU time (approximated by the monotonic clock).
+      clock_time_get(id, _precision, time_ptr) {
+        let ns;
+        if (id === 0) ns = BigInt(Math.round((performance.timeOrigin + performance.now()) * 1e6));
+        else if (id >= 1 && id <= 3) ns = process.hrtime.bigint();
+        else return 28; // EINVAL
+        new DataView(self.#memory().buffer).setBigUint64(time_ptr, ns, true);
         return 0;
       },
       clock_res_get(_id, resolution_ptr) {

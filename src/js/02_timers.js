@@ -4,11 +4,18 @@
 // one bucket, so the whole batch costs one heap insert and one op
 // round-trip. The armed op is re-armed when the earliest deadline changes:
 // op_timer_poke wakes it early (earlier deadline pushed, or a timer
-// cleared) and the pump recomputes.
+// cleared) and the pump recomputes. Callbacks never run in the turn that
+// scheduled them: the pump starts after a zero-length op, so microtasks and
+// nextTicks go first, as in Node.
 "use strict";
 
 ((globalThis) => {
   const ops = Deno.core.ops;
+  const core = Deno.core;
+
+  // Live entries that keep the process alive (not unref'd). When it drops
+  // to 0 the armed sleep op is unref'd so the event loop can exit.
+  let refedCount = 0;
 
   // ---- Binary min-heap of buckets keyed by bucket.deadline ----------------
   // bucket = { deadline, entries: [{ run, cancelled }] }
@@ -52,8 +59,21 @@
   // also what keeps the event loop alive while timers are outstanding.
   let pumping = false;
   let armedDeadline = Infinity;
+  let armedPromise = null;
+
+  function syncArmedRef() {
+    if (armedPromise === null) return;
+    if (refedCount > 0) core.refOpPromise(armedPromise);
+    else core.unrefOpPromise(armedPromise);
+  }
 
   async function pump() {
+    // Yield one event-loop turn before firing anything. The deferred op
+    // resolves on the next tick even though it is ready immediately.
+    armedPromise = ops.op_void_async_deferred();
+    syncArmedRef();
+    await armedPromise;
+    armedPromise = null;
     while (heap.length > 0) {
       const top = heap[0];
       // Drop buckets whose entries were all cancelled before arming on
@@ -74,7 +94,10 @@
       const now = ops.op_now();
       if (top.deadline > now) {
         armedDeadline = top.deadline;
-        await ops.op_sleep_until(top.deadline);
+        armedPromise = ops.op_sleep_until(top.deadline);
+        syncArmedRef();
+        await armedPromise;
+        armedPromise = null;
         // Woke up: deadline reached, or poked (earlier entry / clear).
         // Loop around and recompute from the current heap top.
         continue;
@@ -85,6 +108,7 @@
       for (const entry of top.entries) {
         if (!entry.cancelled) {
           try {
+            if (!entry.repeat) setEntryRef(entry, false);
             entry.run();
           } catch (err) {
             if (!globalThis.process?._dispatchException?.(err)) {
@@ -97,6 +121,14 @@
     }
     armedDeadline = Infinity;
     pumping = false;
+  }
+
+  function setEntryRef(entry, refed) {
+    const counted = entry.refed && !entry.cancelled;
+    if (counted === refed) return;
+    entry.refed = refed;
+    refedCount += refed ? 1 : -1;
+    syncArmedRef();
   }
 
   function schedule(entry) {
@@ -145,78 +177,221 @@
     let promise = sleepCache.get(deadline);
     if (!promise) {
       promise = new Promise((resolve) => {
-        schedule({
+        const entry = {
           deadline,
           run: () => {
             sleepCache.delete(deadline);
             resolve();
           },
           cancelled: false,
-        });
+          refed: false,
+        };
+        setEntryRef(entry, true);
+        schedule(entry);
       });
       sleepCache.set(deadline, promise);
     }
     return promise;
   };
 
+  // Node clamps delays outside [1, 2^31 - 1] to 1ms.
+  function delayOf(ms) {
+    ms = Number(ms);
+    return ms >= 1 && ms <= 2147483647 ? ms : 1;
+  }
+
   let nextId = 1;
-  const timers = new Map();
+  const timers = new Map(); // id -> Timeout
+  const kEntry = Symbol("entry");
 
-  globalThis.setTimeout = (fn, ms = 0, ...args) => {
-    const id = nextId++;
-    const callback = typeof fn === "function" ? fn : () => eval(fn);
-    const entry = {
-      deadline: ops.op_now() + Math.max(ms, 0),
-      run: () => {
-        timers.delete(id);
-        callback(...args);
-      },
-      cancelled: false,
-    };
-    timers.set(id, entry);
-    schedule(entry);
-    return id;
-  };
-
-  globalThis.setInterval = (fn, ms = 0, ...args) => {
-    const id = nextId++;
-    // Node clamps interval delays to >= 1ms; it also keeps a 0ms interval
-    // from busy-spinning the pump without ever yielding to the event loop.
-    const interval = Math.max(ms, 1);
-    const entry = {
-      deadline: ops.op_now() + interval,
-      run: () => {
-        if (entry.cancelled) return;
-        fn(...args);
-        if (!entry.cancelled && timers.has(id)) {
-          entry.deadline = ops.op_now() + interval;
-          schedule(entry);
-        }
-      },
-      cancelled: false,
-    };
-    timers.set(id, entry);
-    schedule(entry);
-    return id;
-  };
-
-  const clear = (id) => {
-    const entry = timers.get(id);
-    if (entry) {
-      entry.cancelled = true;
-      timers.delete(id);
-      // Wake the pump so a cleared earliest timer does not hold the event
-      // loop open until its (now dead) deadline.
-      ops.op_timer_poke();
+  // Node's Timeout object; numeric coercion gives the id, so
+  // clearTimeout(+timer) and timers used as map keys keep working.
+  class Timeout {
+    constructor(callback, ms, args, repeat) {
+      this._id = nextId++;
+      this._idleTimeout = ms;
+      this._onTimeout = callback;
+      this._repeat = repeat ? ms : null;
+      const entry = {
+        deadline: ops.op_now() + ms,
+        repeat,
+        run: () => {
+          if (repeat) {
+            callback(...args);
+            // Read the entry through `this`: refresh() may have replaced it.
+            const current = this[kEntry];
+            if (!current.cancelled && timers.has(this._id)) {
+              current.deadline = ops.op_now() + ms;
+              schedule(current);
+            }
+          } else {
+            timers.delete(this._id);
+            callback(...args);
+          }
+        },
+        cancelled: false,
+        refed: false,
+      };
+      this[kEntry] = entry;
+      timers.set(this._id, this);
+      setEntryRef(entry, true);
+      schedule(entry);
     }
+
+    ref() {
+      if (!this[kEntry].cancelled) setEntryRef(this[kEntry], true);
+      return this;
+    }
+
+    unref() {
+      setEntryRef(this[kEntry], false);
+      return this;
+    }
+
+    hasRef() {
+      return this[kEntry].refed;
+    }
+
+    refresh() {
+      const entry = this[kEntry];
+      if (entry.cancelled) return this;
+      // Re-arm from now: retire the old heap entry, schedule a fresh one.
+      const fresh = { ...entry, deadline: ops.op_now() + this._idleTimeout, cancelled: false, refed: false };
+      const refed = entry.refed;
+      setEntryRef(entry, false);
+      entry.cancelled = true;
+      this[kEntry] = fresh;
+      fresh.run = entry.run;
+      setEntryRef(fresh, refed);
+      schedule(fresh);
+      return this;
+    }
+
+    close() {
+      clear(this);
+      return this;
+    }
+
+    [Symbol.toPrimitive]() {
+      return this._id;
+    }
+
+    [Symbol.dispose]() {
+      clear(this);
+    }
+  }
+
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    const callback = typeof fn === "function" ? fn : () => (0, eval)(String(fn));
+    return new Timeout(callback, delayOf(ms), args, false);
   };
+
+  globalThis.setInterval = (fn, ms, ...args) => new Timeout(fn, delayOf(ms), args, true);
+
+  function clear(timer) {
+    const t = timer instanceof Timeout ? timer : timers.get(Number(timer));
+    if (!t || !timers.has(t._id)) return;
+    timers.delete(t._id);
+    const entry = t[kEntry];
+    setEntryRef(entry, false);
+    entry.cancelled = true;
+    // Wake the pump so a cleared earliest timer does not hold the event
+    // loop open until its (now dead) deadline.
+    ops.op_timer_poke();
+  }
   globalThis.clearTimeout = clear;
   globalThis.clearInterval = clear;
 
-  // setImmediate: fires on the next event-loop turn (deadline already
-  // elapsed, so the pump runs it as soon as it is scheduled).
-  globalThis.setImmediate = (fn, ...args) => globalThis.setTimeout(fn, 0, ...args);
-  globalThis.clearImmediate = globalThis.clearTimeout;
+  // setImmediate: a FIFO drained once per event-loop turn, after I/O and
+  // before later timers. Immediates queued while draining run next turn.
+  let immediateQueue = [];
+  let immediatePromise = null;
+  let immediateRefs = 0;
+
+  class Immediate {
+    constructor(fn, args) {
+      this._onImmediate = fn;
+      this._args = args;
+      this._cleared = false;
+      this._refed = true;
+      immediateRefs++;
+    }
+
+    ref() {
+      if (!this._refed && !this._cleared) {
+        this._refed = true;
+        immediateRefs++;
+        syncImmediateRef();
+      }
+      return this;
+    }
+
+    unref() {
+      if (this._refed) {
+        this._refed = false;
+        immediateRefs--;
+        syncImmediateRef();
+      }
+      return this;
+    }
+
+    hasRef() {
+      return this._refed;
+    }
+
+    [Symbol.dispose]() {
+      clearImmediate(this);
+    }
+  }
+
+  function syncImmediateRef() {
+    if (immediatePromise === null) return;
+    if (immediateRefs > 0) core.refOpPromise(immediatePromise);
+    else core.unrefOpPromise(immediatePromise);
+  }
+
+  function runImmediates() {
+    immediatePromise = null;
+    const batch = immediateQueue;
+    immediateQueue = [];
+    for (const imm of batch) {
+      if (imm._cleared) continue;
+      imm._cleared = true;
+      if (imm._refed) {
+        imm._refed = false;
+        immediateRefs--;
+      }
+      try {
+        imm._onImmediate(...imm._args);
+      } catch (err) {
+        if (!globalThis.process?._dispatchException?.(err)) throw err;
+      }
+    }
+    if (immediateQueue.length > 0) armImmediates();
+  }
+
+  function armImmediates() {
+    immediatePromise = ops.op_void_async_deferred();
+    syncImmediateRef();
+    immediatePromise.then(runImmediates);
+  }
+
+  globalThis.setImmediate = (fn, ...args) => {
+    const imm = new Immediate(fn, args);
+    immediateQueue.push(imm);
+    if (immediatePromise === null) armImmediates();
+    return imm;
+  };
+
+  globalThis.clearImmediate = (imm) => {
+    if (!(imm instanceof Immediate) || imm._cleared) return;
+    imm._cleared = true;
+    imm.unref();
+  };
+
+  // Exposed for node:timers.
+  globalThis.__jse.Timeout = Timeout;
+  globalThis.__jse.Immediate = Immediate;
 
   globalThis.performance = globalThis.performance || {
     now: () => ops.op_now(),

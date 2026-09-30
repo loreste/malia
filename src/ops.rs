@@ -39,6 +39,31 @@ pub fn get_no_warnings() -> bool {
   NO_WARNINGS.load(Ordering::SeqCst)
 }
 
+#[op2(fast)]
+pub fn op_no_warnings() -> bool {
+  get_no_warnings()
+}
+
+/// process.umask(): a negative mask only reads the current value.
+#[op2(fast)]
+pub fn op_umask(mask: i32) -> u32 {
+  #[cfg(unix)]
+  {
+    use nix::sys::stat::{Mode, umask};
+    let new = if mask < 0 { Mode::empty() } else { Mode::from_bits_truncate(mask as nix::libc::mode_t) };
+    let old = umask(new);
+    if mask < 0 {
+      umask(old);
+    }
+    old.bits() as u32
+  }
+  #[cfg(not(unix))]
+  {
+    let _ = mask;
+    0
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Channels (green-thread messaging, backed by tokio mpsc).
@@ -223,14 +248,14 @@ pub async fn op_read_text_file(#[string] path: String) -> Result<String, JsError
   crate::permissions::check_read(&path)?;
   tokio::fs::read_to_string(&path)
     .await
-    .map_err(|e| JsErrorBox::generic(format!("read {}: {e}", path)))
+    .map_err(|e| io_box("open", &path, e))
 }
 
 #[op2]
 #[string]
 pub fn op_read_text_file_sync(#[string] path: String) -> Result<String, JsErrorBox> {
   crate::permissions::check_read(&path)?;
-  std::fs::read_to_string(&path).map_err(|e| JsErrorBox::generic(format!("read {}: {e}", path)))
+  std::fs::read_to_string(&path).map_err(|e| io_box("open", &path, e))
 }
 
 #[op2]
@@ -239,14 +264,14 @@ pub async fn op_read_file_bytes(#[string] path: String) -> Result<Vec<u8>, JsErr
   crate::permissions::check_read(&path)?;
   tokio::fs::read(&path)
     .await
-    .map_err(|e| JsErrorBox::generic(format!("read {}: {e}", path)))
+    .map_err(|e| io_box("open", &path, e))
 }
 
 #[op2]
 #[buffer]
 pub fn op_read_file_bytes_sync(#[string] path: String) -> Result<Vec<u8>, JsErrorBox> {
   crate::permissions::check_read(&path)?;
-  std::fs::read(&path).map_err(|e| JsErrorBox::generic(format!("read {}: {e}", path)))
+  std::fs::read(&path).map_err(|e| io_box("open", &path, e))
 }
 
 #[op2]
@@ -257,7 +282,7 @@ pub async fn op_write_text_file(
   crate::permissions::check_write(&path)?;
   tokio::fs::write(&path, contents)
     .await
-    .map_err(|e| JsErrorBox::generic(format!("write {}: {e}", path)))
+    .map_err(|e| io_box("open", &path, e))
 }
 
 #[op2(fast)]
@@ -266,7 +291,7 @@ pub fn op_write_text_file_sync(
   #[string] contents: String,
 ) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(&path)?;
-  std::fs::write(&path, contents).map_err(|e| JsErrorBox::generic(format!("write {}: {e}", path)))
+  std::fs::write(&path, contents).map_err(|e| io_box("open", &path, e))
 }
 
 #[op2]
@@ -277,7 +302,7 @@ pub async fn op_write_file_bytes(
   crate::permissions::check_write(&path)?;
   tokio::fs::write(&path, data)
     .await
-    .map_err(|e| JsErrorBox::generic(format!("write {}: {e}", path)))
+    .map_err(|e| io_box("open", &path, e))
 }
 
 #[op2(fast)]
@@ -286,7 +311,7 @@ pub fn op_write_file_bytes_sync(
   #[buffer] data: &[u8],
 ) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(&path)?;
-  std::fs::write(&path, data).map_err(|e| JsErrorBox::generic(format!("write {}: {e}", path)))
+  std::fs::write(&path, data).map_err(|e| io_box("open", &path, e))
 }
 
 #[op2(fast)]
@@ -333,7 +358,7 @@ fn stat_info(path: &str, follow: bool) -> Result<StatInfo, JsErrorBox> {
   } else {
     std::fs::symlink_metadata(path)
   }
-  .map_err(|e| JsErrorBox::generic(format!("ENOENT: no such file or directory, stat '{path}': {e}")))?;
+  .map_err(|e| io_box(if follow { "stat" } else { "lstat" }, path, e))?;
   let birthtime_ms = meta
     .created()
     .ok()
@@ -461,6 +486,10 @@ pub fn op_fs_open(
       }
     }
   }
+  // "x" (exclusive) in any flag string: fail if the path exists.
+  if flags.contains('x') {
+    opts.create_new(true);
+  }
   #[cfg(unix)]
   {
     use std::os::unix::fs::OpenOptionsExt;
@@ -470,7 +499,7 @@ pub fn op_fs_open(
   }
   let file = opts
     .open(&path)
-    .map_err(|e| JsErrorBox::generic(format!("open '{path}': {e}")))?;
+    .map_err(|e| io_box("open", &path, e))?;
   let table = fd_table(state);
   let fd = table.next_fd;
   table.next_fd += 1;
@@ -500,7 +529,7 @@ pub fn op_fs_fstat(state: &mut OpState, fd: u32) -> Result<StatInfo, JsErrorBox>
   let guard = file.lock().unwrap();
   let meta = guard
     .metadata()
-    .map_err(|e| JsErrorBox::generic(format!("fstat {fd}: {e}")))?;
+    .map_err(|e| io_box_fd("fstat", e))?;
   Ok(fstat_info(&meta))
 }
 
@@ -524,12 +553,12 @@ pub fn op_fs_read(
     use std::os::unix::fs::FileExt;
     guard
       .read_at(&mut buf, position as u64)
-      .map_err(|e| JsErrorBox::generic(format!("read {fd}: {e}")))?
+      .map_err(|e| io_box_fd("read", e))?
   } else {
     use std::io::Read;
     guard
       .read(&mut buf)
-      .map_err(|e| JsErrorBox::generic(format!("read {fd}: {e}")))?
+      .map_err(|e| io_box_fd("read", e))?
   };
   buf.truncate(n);
   Ok(buf)
@@ -553,12 +582,12 @@ pub fn op_fs_write(
     use std::os::unix::fs::FileExt;
     guard
       .write_at(data, position as u64)
-      .map_err(|e| JsErrorBox::generic(format!("write {fd}: {e}")))?
+      .map_err(|e| io_box_fd("write", e))?
   } else {
     use std::io::Write;
     guard
       .write(data)
-      .map_err(|e| JsErrorBox::generic(format!("write {fd}: {e}")))?
+      .map_err(|e| io_box_fd("write", e))?
   };
   Ok(n as u32)
 }
@@ -574,7 +603,7 @@ pub fn op_fs_ftruncate(state: &mut OpState, fd: u32, len: f64) -> Result<(), JsE
   let guard = file.lock().unwrap();
   guard
     .set_len(len as u64)
-    .map_err(|e| JsErrorBox::generic(format!("ftruncate {fd}: {e}")))
+    .map_err(|e| io_box_fd("ftruncate", e))
 }
 
 #[op2(fast)]
@@ -588,7 +617,7 @@ pub fn op_fs_fsync(state: &mut OpState, fd: u32) -> Result<(), JsErrorBox> {
   let guard = file.lock().unwrap();
   guard
     .sync_all()
-    .map_err(|e| JsErrorBox::generic(format!("fsync {fd}: {e}")))
+    .map_err(|e| io_box_fd("fsync", e))
 }
 
 #[op2]
@@ -921,9 +950,13 @@ pub fn op_text_decode<'a>(
 // crypto (node:crypto backing)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 enum Hasher {
+  Sha224(sha2::Sha224),
   Sha256(sha2::Sha256),
+  Sha384(sha2::Sha384),
   Sha512(sha2::Sha512),
+  Sha512_256(sha2::Sha512_256),
   Sha1(sha1::Sha1),
   Md5(md5::Context),
 }
@@ -931,24 +964,29 @@ enum Hasher {
 impl Hasher {
   fn new(algo: &str) -> Result<Self, JsErrorBox> {
     use sha2::Digest;
-    Ok(match algo.to_ascii_lowercase().as_str() {
+    // Accept OpenSSL-style aliases: "SHA-256", "RSA-SHA256", "sha512-256".
+    let name = algo.to_ascii_lowercase();
+    let name = name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "");
+    Ok(match name.as_str() {
+      "sha224" => Self::Sha224(sha2::Sha224::new()),
       "sha256" => Self::Sha256(sha2::Sha256::new()),
+      "sha384" => Self::Sha384(sha2::Sha384::new()),
       "sha512" => Self::Sha512(sha2::Sha512::new()),
+      "sha512256" => Self::Sha512_256(sha2::Sha512_256::new()),
       "sha1" => Self::Sha1(sha1::Sha1::new()),
       "md5" => Self::Md5(md5::Context::new()),
-      _ => {
-        return Err(JsErrorBox::generic(format!(
-          "unsupported hash algorithm '{algo}' (supported: sha256, sha512, sha1, md5)"
-        )));
-      }
+      _ => return Err(JsErrorBox::generic("Digest method not supported")),
     })
   }
 
   fn update(&mut self, data: &[u8]) {
     use sha2::Digest;
     match self {
+      Self::Sha224(h) => h.update(data),
       Self::Sha256(h) => h.update(data),
+      Self::Sha384(h) => h.update(data),
       Self::Sha512(h) => h.update(data),
+      Self::Sha512_256(h) => h.update(data),
       Self::Sha1(h) => h.update(data),
       Self::Md5(h) => h.consume(data),
     }
@@ -957,8 +995,11 @@ impl Hasher {
   fn finalize(self) -> Vec<u8> {
     use sha2::Digest;
     match self {
+      Self::Sha224(h) => h.finalize().to_vec(),
       Self::Sha256(h) => h.finalize().to_vec(),
+      Self::Sha384(h) => h.finalize().to_vec(),
       Self::Sha512(h) => h.finalize().to_vec(),
+      Self::Sha512_256(h) => h.finalize().to_vec(),
       Self::Sha1(h) => h.finalize().to_vec(),
       Self::Md5(h) => h.compute().to_vec(),
     }
@@ -1002,6 +1043,21 @@ pub fn op_crypto_hash_update(
     }
     None => Err(JsErrorBox::generic("hash already digested or unknown")),
   }
+}
+
+/// Hash.prototype.copy(): a new hash with the same state.
+#[op2(fast)]
+pub fn op_crypto_hash_copy(state: &mut OpState, id: u32) -> Result<u32, JsErrorBox> {
+  let table = hash_table(state);
+  let copy = table
+    .hashes
+    .get(&id)
+    .cloned()
+    .ok_or_else(|| JsErrorBox::generic("hash already digested or unknown"))?;
+  let new_id = table.next_id;
+  table.next_id += 1;
+  table.hashes.insert(new_id, copy);
+  Ok(new_id)
 }
 
 #[op2]
@@ -2166,6 +2222,7 @@ deno_core::extension!(
     op_crypto_hash_new,
     op_crypto_hash_update,
     op_crypto_hash_digest,
+    op_crypto_hash_copy,
     op_crypto_random_bytes,
     op_crypto_timing_safe_equal,
     op_url_parse,
@@ -2202,6 +2259,10 @@ deno_core::extension!(
     op_rename,
     op_copy_file_sync,
     op_copy_file,
+    op_utimes_sync,
+    op_utimes,
+    op_link_sync,
+    op_link,
     op_append_bytes_sync,
     op_append_bytes,
     op_realpath_sync,
@@ -2249,6 +2310,10 @@ deno_core::extension!(
     op_hmac_update,
     op_hmac_digest,
     op_crypto_pbkdf2,
+    op_no_warnings,
+    op_umask,
+    op_crypto_scrypt_sync,
+    op_crypto_scrypt,
     op_crypto_cipher_encrypt,
     op_crypto_cipher_decrypt,
     op_crypto_keypair_ed25519,
@@ -2333,6 +2398,7 @@ deno_core::extension!(
     "19_queue.js",
     "20_malia.js",
     "21_web_streams.js",
+    "22_blob.js",
   ],
 
   options = {

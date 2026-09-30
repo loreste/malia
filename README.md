@@ -261,12 +261,18 @@ start = "jse start"
 | `jse.onShutdown`, `jse.healthCheck`, `jse.metrics` | Shutdown hooks on SIGTERM/SIGINT, a health-check handler, Prometheus-format metrics |
 | `jse.optimizer` | Sets V8 Wasm tiering flags and triggers V8 memory compaction during idle turns and between request batches |
 
-Browser globals used by SSR code are defined: `self`, `window`, `global`,
-`navigator`, `DOMException`, `btoa`, `atob`, `crypto.getRandomValues`,
-`crypto.randomUUID`, `EventTarget`, `Event`, `MessageEvent`, `CloseEvent`,
-`ErrorEvent`, `MessageChannel`, `BroadcastChannel`, and the WHATWG streams
-(`ReadableStream`, `WritableStream`, `TransformStream`, `TextEncoderStream`,
-`TextDecoderStream`, `CompressionStream`, `DecompressionStream`).
+Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
+`btoa`, `atob`, `crypto.getRandomValues`, `crypto.randomUUID`,
+`crypto.subtle.digest`, `EventTarget`, `Event`, `CustomEvent`,
+`MessageEvent`, `CloseEvent`, `ErrorEvent`, `AbortController`,
+`AbortSignal` (`abort`, `timeout`, `any`), `Blob`, `File`, `FormData`,
+`MessageChannel`, `TextEncoder`/`TextDecoder` (utf-8, utf-16le, latin1;
+`fatal`, `ignoreBOM`, `stream`), and the WHATWG streams (`ReadableStream`,
+`WritableStream`, `TransformStream`, `TextEncoderStream`, `TextDecoderStream`,
+`CompressionStream`, `DecompressionStream`).
+
+`setTimeout`/`setInterval` return `Timeout` objects (`ref`, `unref`,
+`hasRef`, `refresh`); `setImmediate` runs after I/O and before later timers.
 
 ## Node builtins
 
@@ -278,12 +284,12 @@ Browser globals used by SSR code are defined: `self`, `window`, `global`,
 | `child_process` | `spawn`, `exec`, `execFile`, their `*Sync` forms, `fork` with IPC |
 | `cluster` | `isPrimary`, `isWorker`, `fork`, lifecycle events, IPC. Workers bind the same port with `SO_REUSEPORT` |
 | `console` | `log`, `info`, `warn`, `error`, `debug`, `trace`, `assert`, `time`, `timeEnd`, `dir` |
-| `crypto` | `createHash`, `createHmac` (sha1/sha256/sha512/md5), `randomBytes`, `randomUUID`, `timingSafeEqual`, `pbkdf2`/`pbkdf2Sync`, `createCipheriv`/`createDecipheriv` for `aes-128-gcm`, `aes-256-gcm`, `chacha20-poly1305`, Ed25519 `generateKeyPairSync`/`sign`/`verify`, `subtle` |
+| `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`/`pbkdf2Sync`, `scrypt`/`scryptSync`, `createCipheriv`/`createDecipheriv` for `aes-128-gcm`, `aes-256-gcm`, `chacha20-poly1305`, Ed25519 `generateKeyPairSync`/`sign`/`verify`, `webcrypto`/`subtle` (`digest` only) |
 | `diagnostics_channel` | `channel`, `subscribe`, `unsubscribe`, `hasSubscribers`, `tracingChannel` |
 | `dns`, `dns/promises` | `lookup`, `lookupService`, `resolve4`, `resolve6`, `resolveTxt`, `resolveSrv`, `resolveMx`, `resolveNs`, `resolveCname`, `resolvePtr`, `reverse` |
 | `domain` | `create`, `Domain` |
 | `events` | `EventEmitter`, `once`, `on` (async iterator), `getEventListeners`, `defaultMaxListeners` |
-| `fs`, `fs/promises` | Sync, callback, and promise APIs, including file descriptors (`open`, `read`, `write`, `fstat`, `ftruncate`, `fsync`), `FileHandle`, streams, `watch`, `watchFile` |
+| `fs`, `fs/promises` | Sync, callback, and promise APIs with Node's error shape (`code`, `errno`, `syscall`, `path`): read/write with `flag`, `mode`, and encodings, `stat` (`throwIfNoEntry`), `readdir` (`recursive`, `withFileTypes`), `mkdir`, `rm`, `cp`, `copyFile` (`COPYFILE_EXCL`), `rename`, `link`, `symlink`, `utimes`, `opendir`, file descriptors, `FileHandle`, streams, `watch`, `watchFile` |
 | `http`, `https` | `createServer`, `request`, `get`, `IncomingMessage`, `ServerResponse`. Shares the hyper engine with `jse.serve` |
 | `http2` | Server and client; ALPN `h2` and cleartext `h2c` with prior knowledge |
 | `inspector` | `Session`, `open`, `close`, `url` |
@@ -294,14 +300,14 @@ Browser globals used by SSR code are defined: `self`, `window`, `global`,
 | `process` | `argv`, `env`, `cwd`, `chdir`, `nextTick`, `hrtime`, `memoryUsage`, `exit` and error events, signals. `process.version` is `v20.18.0` |
 | `punycode`, `querystring`, `readline`, `string_decoder`, `timers`, `tty`, `perf_hooks`, `constants` | Available |
 | `sqlite` | `DatabaseSync`, `StatementSync` (Node 22 API) |
-| `stream`, `stream/promises`, `stream/consumers`, `stream/web` | `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline`, `finished`, consumers, WHATWG streams |
+| `stream`, `stream/promises`, `stream/consumers`, `stream/web` | Node's stream implementation (readable-stream 4): `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline`, `finished`, `compose`, backpressure, `toWeb`/`fromWeb`; consumers; WHATWG streams |
 | `test` | `test`, `describe`, `it`, `before`/`after`/`beforeEach`/`afterEach`, TAP output |
 | `url` | `URL`, `URLSearchParams`, `fileURLToPath`, `pathToFileURL` |
 | `util`, `util/types` | `format`, `inspect`, `promisify`, `callbackify`, `inherits`, `deprecate`, `isDeepStrictEqual`, type predicates |
 | `v8` | `getHeapStatistics`, `serialize`, `deserialize`, `Serializer`, `Deserializer` |
 | `vm` | `createContext`, `runInContext`, `runInNewContext`, `runInThisContext`, `Script` |
 | `wasi` | WASI Preview 1: args, env, clocks, random, stdio, exit |
-| `worker_threads` | `Worker`, `isMainThread`, `threadId`, `workerData`, `parentPort`, `MessageChannel`, `BroadcastChannel`, `SHARE_ENV` |
+| `worker_threads` | `Worker`, `isMainThread`, `threadId`, `workerData`, `parentPort`, `MessageChannel`, `BroadcastChannel` (same thread only), `SHARE_ENV` |
 | `ws` | `WebSocket` and `WebSocketServer` compatible with the `ws` package |
 | `zlib` | gzip, deflate, raw deflate, Brotli, `unzip`; sync, callback, and stream forms; CRC-32 |
 
@@ -352,7 +358,12 @@ See the [Dockerfile](Dockerfile) in the repository root and
 ## Limitations
 
 - `fetch` buffers stream request bodies before sending them (no streaming
-  upload). `Blob` and `FormData` are not implemented.
+  upload). `Blob` contents are held in memory.
+- `crypto.subtle` implements `digest` only; other WebCrypto methods reject
+  with `NotSupportedError`. Ciphers are limited to the AEAD modes listed
+  above and key pairs to Ed25519.
+- `BroadcastChannel` delivers messages within one thread, not across
+  workers.
 - HTTP server request bodies are read fully into memory. The `node:http`
   client sends buffered bodies with `Content-Length` and `Connection: close`.
 - A `WorkerPool` worker must reply with exactly one `postMessage` per

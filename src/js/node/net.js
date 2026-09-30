@@ -72,7 +72,7 @@ Socket.prototype._onConnect = function (info) {
   this.connecting = false;
   this.readyState = "open";
   this.emit("connect");
-  if (this._rState.flowing) this._read();
+  if (this.readableFlowing) this._read();
 };
 
 Socket.prototype.connect = function (port, host, cb) {
@@ -184,12 +184,10 @@ Socket.prototype._final = function (cb) {
   ops.op_net_shutdown(this._id).then(() => cb(), cb);
 };
 
-Socket.prototype.destroy = function (err) {
-  if (this.destroyed) return this;
-  this.destroyed = true;
+// Stream destroy() hook: release the socket, then let the stream machinery
+// emit 'error'/'close'.
+Socket.prototype._destroy = function (err, cb) {
   this.readyState = "closed";
-  this.readable = false;
-  this.writable = false;
   if (this._timeoutId) {
     clearTimeout(this._timeoutId);
     this._timeoutId = null;
@@ -198,7 +196,7 @@ Socket.prototype.destroy = function (err) {
     ops.op_net_close(this._id);
     this._id = null;
   }
-  return Duplex.prototype.destroy.call(this, err);
+  cb(err);
 };
 
 Socket.prototype.address = function () {

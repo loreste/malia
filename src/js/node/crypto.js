@@ -1,30 +1,84 @@
-// node:crypto shim: createHash (sha256/sha512/sha1/md5), randomBytes and
-// timingSafeEqual, backed by Rust ops (RustCrypto hashes, getrandom).
+// node:crypto: hashes (SHA-1/2, MD5), HMAC, PBKDF2, scrypt, AEAD ciphers,
+// Ed25519, and randomness, backed by Rust ops (RustCrypto, ring, getrandom).
 const ops = Deno.core.ops;
 const { Buffer } = globalThis;
+const webcrypto = globalThis.crypto;
+const subtle = webcrypto?.subtle;
+
+function codeError(Ctor, code, message) {
+  const err = new Ctor(message);
+  err.code = code;
+  return err;
+}
+
+const hashFinalized = () => codeError(Error, "ERR_CRYPTO_HASH_FINALIZED", "Digest already called");
+
+function inputBytes(data, inputEncoding, name = "data") {
+  if (typeof data === "string") return Buffer.from(data, inputEncoding ?? "utf8");
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  throw __jse.invalidArgType(name, "string or an instance of Buffer, TypedArray, or DataView", data);
+}
 
 class Hash {
   #id;
   #digested = false;
 
-  constructor(algorithm) {
-    this.#id = ops.op_crypto_hash_new(String(algorithm));
+  constructor(algorithm, _options, id) {
+    this.#id = id ?? ops.op_crypto_hash_new(String(algorithm));
   }
 
   update(data, inputEncoding) {
-    if (this.#digested) throw new Error("Digest already called");
-    const bytes =
-      typeof data === "string" ? Buffer.from(data, inputEncoding ?? "utf8") : Buffer.from(data);
-    ops.op_crypto_hash_update(this.#id, bytes);
+    if (this.#digested) throw hashFinalized();
+    ops.op_crypto_hash_update(this.#id, inputBytes(data, inputEncoding));
     return this;
   }
 
   digest(encoding) {
-    if (this.#digested) throw new Error("Digest already called");
+    if (this.#digested) throw hashFinalized();
     this.#digested = true;
     const out = Buffer.from(ops.op_crypto_hash_digest(this.#id));
-    return encoding === undefined ? out : out.toString(encoding);
+    return encoding === undefined || encoding === "buffer" ? out : out.toString(encoding);
   }
+
+  copy() {
+    if (this.#digested) throw hashFinalized();
+    return new Hash(undefined, undefined, ops.op_crypto_hash_copy(this.#id));
+  }
+}
+
+// crypto.hash(algorithm, data, outputEncoding = "hex"): one-shot digest.
+function hash(algorithm, data, outputEncoding = "hex") {
+  return new Hash(algorithm).update(data).digest(outputEncoding);
+}
+
+// Uniform integer in [min, max) by rejection sampling (no modulo bias).
+function randomInt(min, max, callback) {
+  if (typeof max === "undefined" || typeof max === "function") {
+    callback = max;
+    max = min;
+    min = 0;
+  }
+  if (!Number.isSafeInteger(min)) throw __jse.invalidArgType("min", "a safe integer", min);
+  if (!Number.isSafeInteger(max)) throw __jse.invalidArgType("max", "a safe integer", max);
+  if (max <= min) {
+    throw codeError(RangeError, "ERR_OUT_OF_RANGE", `The value of "max" is out of range. It must be greater than the value of "min" (${min}). Received ${max}`);
+  }
+  const range = max - min;
+  if (range > 2 ** 48 - 1) {
+    throw codeError(RangeError, "ERR_OUT_OF_RANGE", `The value of "max - min" is out of range. It must be <= 281474976710655. Received ${range}`);
+  }
+  const limit = 2 ** 48 - (2 ** 48 % range);
+  let value;
+  do {
+    value = Buffer.from(ops.op_crypto_random_bytes(6)).readUIntBE(0, 6);
+  } while (value >= limit);
+  const result = min + (value % range);
+  if (typeof callback === "function") {
+    queueMicrotask(() => callback(null, result));
+    return undefined;
+  }
+  return result;
 }
 
 function createHash(algorithm) {
@@ -52,20 +106,17 @@ class Hmac {
   #digested = false;
 
   constructor(algorithm, key) {
-    const bytes = typeof key === "string" ? Buffer.from(key) : Buffer.from(key);
-    this.#id = ops.op_hmac_new(String(algorithm), bytes);
+    this.#id = ops.op_hmac_new(String(algorithm), inputBytes(key, undefined, "key"));
   }
 
   update(data, inputEncoding) {
-    if (this.#digested) throw new Error("Digest already called");
-    const bytes =
-      typeof data === "string" ? Buffer.from(data, inputEncoding ?? "utf8") : Buffer.from(data);
-    ops.op_hmac_update(this.#id, bytes);
+    if (this.#digested) throw hashFinalized();
+    ops.op_hmac_update(this.#id, inputBytes(data, inputEncoding));
     return this;
   }
 
   digest(encoding) {
-    if (this.#digested) throw new Error("Digest already called");
+    if (this.#digested) throw hashFinalized();
     this.#digested = true;
     const out = Buffer.from(ops.op_hmac_digest(this.#id));
     return encoding === undefined ? out : out.toString(encoding);
@@ -95,14 +146,14 @@ function randomFillSync(buf, offset = 0, size) {
 function timingSafeEqual(a, b) {
   const ba = typeof a === "string" ? Buffer.from(a) : a;
   const bb = typeof b === "string" ? Buffer.from(b) : b;
-  if (ba.length !== bb.length) {
-    throw new RangeError("Input buffers must have the same byte length");
+  if (ba.byteLength !== bb.byteLength) {
+    throw codeError(RangeError, "ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH", "Input buffers must have the same byte length");
   }
   return ops.op_crypto_timing_safe_equal(ba, bb);
 }
 
 function getHashes() {
-  return ["md5", "sha1", "sha256", "sha512"];
+  return ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha512-256"];
 }
 
 function pbkdf2Sync(password, salt, iterations, keylen, digest = "sha1") {
@@ -135,9 +186,28 @@ function pbkdf2(password, salt, iterations, keylen, digest, callback) {
   }
 }
 
-function scryptSync(password, salt, keylen, options = {}) {
-  const cost = typeof options === "object" && options?.cost ? options.cost : 16384;
-  return pbkdf2Sync(password, salt, cost, keylen, "sha256");
+// Node's option names and their aliases (N/r/p), with Node's defaults.
+function scryptParams(options) {
+  const o = options ?? {};
+  return [
+    o.cost ?? o.N ?? 16384,
+    o.blockSize ?? o.r ?? 8,
+    o.parallelization ?? o.p ?? 1,
+    o.maxmem ?? 32 * 1024 * 1024,
+  ];
+}
+
+function scryptSync(password, salt, keylen, options) {
+  const [cost, blockSize, parallelization, maxmem] = scryptParams(options);
+  return Buffer.from(ops.op_crypto_scrypt_sync(
+    inputBytes(password, undefined, "password"),
+    inputBytes(salt, undefined, "salt"),
+    cost,
+    blockSize,
+    parallelization,
+    keylen,
+    maxmem,
+  ));
 }
 
 function scrypt(password, salt, keylen, options, callback) {
@@ -148,12 +218,27 @@ function scrypt(password, salt, keylen, options, callback) {
   if (typeof callback !== "function") {
     throw new TypeError("callback must be a function");
   }
-  try {
-    const res = scryptSync(password, salt, keylen, options);
-    queueMicrotask(() => callback(null, res));
-  } catch (err) {
-    queueMicrotask(() => callback(err));
+  const [cost, blockSize, parallelization, maxmem] = scryptParams(options);
+  ops.op_crypto_scrypt(
+    inputBytes(password, undefined, "password"),
+    inputBytes(salt, undefined, "salt"),
+    cost,
+    blockSize,
+    parallelization,
+    keylen,
+    maxmem,
+  ).then((key) => callback(null, Buffer.from(key)), (err) => callback(err));
+}
+
+const CIPHERS = ["aes-256-gcm", "aes-128-gcm", "chacha20-poly1305"];
+
+// Reject unsupported ciphers up front (as Node does), not at final().
+function checkCipher(algorithm) {
+  const name = String(algorithm).toLowerCase();
+  if (!CIPHERS.includes(name)) {
+    throw codeError(TypeError, "ERR_CRYPTO_UNKNOWN_CIPHER", `Unknown cipher: ${algorithm} (supported: ${CIPHERS.join(", ")})`);
   }
+  return name;
 }
 
 class Cipheriv {
@@ -165,7 +250,7 @@ class Cipheriv {
   #tag = null;
 
   constructor(algorithm, key, iv, options = {}) {
-    this.#algorithm = String(algorithm);
+    this.#algorithm = checkCipher(algorithm);
     this.#key = Buffer.isBuffer(key) ? key : Buffer.from(key);
     this.#iv = Buffer.isBuffer(iv) ? iv : Buffer.from(iv);
   }
@@ -206,7 +291,7 @@ class Decipheriv {
   #tag = null;
 
   constructor(algorithm, key, iv, options = {}) {
-    this.#algorithm = String(algorithm);
+    this.#algorithm = checkCipher(algorithm);
     this.#key = Buffer.isBuffer(key) ? key : Buffer.from(key);
     this.#iv = Buffer.isBuffer(iv) ? iv : Buffer.from(iv);
   }
@@ -247,7 +332,7 @@ function createDecipheriv(algorithm, key, iv, options) {
 }
 
 function getCiphers() {
-  return ["aes-256-gcm", "aes-128-gcm", "chacha20-poly1305"];
+  return [...CIPHERS];
 }
 
 function generateKeyPairSync(type, options = {}) {
@@ -278,6 +363,10 @@ function verify(algorithm, data, key, signature) {
 
 export {
   Hash,
+  hash,
+  randomInt,
+  webcrypto,
+  subtle,
   Hmac,
   Cipheriv,
   Decipheriv,
@@ -301,6 +390,10 @@ export {
 };
 export default {
   Hash,
+  hash,
+  randomInt,
+  webcrypto,
+  subtle,
   Hmac,
   Cipheriv,
   Decipheriv,

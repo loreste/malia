@@ -291,11 +291,18 @@ enum Command {
   Custom(Vec<String>),
 }
 
+/// Run a program on a blocking thread, then exit with its process.exitCode
+/// if non-zero.
 async fn supervise<F>(f: F) -> anyhow::Result<()>
 where
   F: FnOnce() -> anyhow::Result<()> + Send + 'static,
 {
-  tokio::task::spawn_blocking(f).await?
+  tokio::task::spawn_blocking(f).await??;
+  let code = js_engine::runtime::exit_code();
+  if code != 0 {
+    std::process::exit(code);
+  }
+  Ok(())
 }
 
 fn check_standalone_binary() -> Option<String> {
@@ -416,7 +423,11 @@ fn run_with_watch(
     js_engine::permissions::set_permissions(p);
     js_engine::ops::set_argv(make_argv(&f, &a));
 
-    let result = tokio_rt.block_on(supervise(move || js_engine::runtime::run_file_blocking(&f)));
+    // Not supervise(): a non-zero exit code must not end the watcher.
+    let result = tokio_rt
+      .block_on(tokio::task::spawn_blocking(move || js_engine::runtime::run_file_blocking(&f)))
+      .map_err(anyhow::Error::from)
+      .and_then(|r| r);
     if let Err(e) = result {
       eprintln!("[jse:watch] Execution error: {e:#}");
     }

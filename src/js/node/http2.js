@@ -177,6 +177,13 @@ export class Http2Session extends EventEmitter {
 }
 
 export class ServerHttp2Stream extends Duplex {
+  // Duplex defines a read-only `closed`; track HTTP/2 stream closure here.
+  #h2Closed = false;
+
+  get closed() {
+    return this.#h2Closed;
+  }
+
   constructor(session, reqId, headers) {
     super();
     this.session = session;
@@ -184,7 +191,7 @@ export class ServerHttp2Stream extends Duplex {
     this._headers = headers;
     this.sentHeaders = {};
     this.headersSent = false;
-    this.closed = false;
+    this.#h2Closed = false;
     this.destroyed = false;
     this.rstCode = 0;
     this._chunks = [];
@@ -234,7 +241,7 @@ export class ServerHttp2Stream extends Duplex {
 
   close(code = constants.NGHTTP2_NO_ERROR, callback) {
     if (this.closed) return;
-    this.closed = true;
+    this.#h2Closed = true;
     this.rstCode = code;
     this.end();
     if (typeof callback === "function") this.once("close", callback);
@@ -264,19 +271,26 @@ export class ServerHttp2Stream extends Duplex {
     if (chunk) this.write(chunk, encoding);
     super.end(callback);
     this._finalizeResponse();
-    this.closed = true;
+    this.#h2Closed = true;
     return this;
   }
 }
 
 export class ClientHttp2Stream extends Duplex {
+  // Duplex defines a read-only `closed`; track HTTP/2 stream closure here.
+  #h2Closed = false;
+
+  get closed() {
+    return this.#h2Closed;
+  }
+
   constructor(session, reqHeaders) {
     super();
     this.session = session;
     this.reqHeaders = reqHeaders;
     this.sentHeaders = reqHeaders;
     this.headersSent = true;
-    this.closed = false;
+    this.#h2Closed = false;
     this.destroyed = false;
     this._requestChunks = [];
     this._started = false;
@@ -297,7 +311,7 @@ export class ClientHttp2Stream extends Duplex {
   _read() {}
 
   close(code = constants.NGHTTP2_NO_ERROR) {
-    this.closed = true;
+    this.#h2Closed = true;
     this.emit("close");
   }
 
@@ -336,7 +350,7 @@ export class ClientHttp2Stream extends Duplex {
         this.push(Buffer.from(chunk));
       }
       this.push(null);
-      this.closed = true;
+      this.#h2Closed = true;
       this.emit("close");
     } catch (err) {
       this.emit("error", err);

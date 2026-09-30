@@ -131,6 +131,10 @@
     if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
       return { bytes: toBytes(body), type: null };
     }
+    if (body instanceof Blob) {
+      return { bytes: __jse.blobBytes(body), type: body.type || null };
+    }
+    if (body instanceof FormData) return __jse.encodeFormData(body);
     return null;
   }
 
@@ -261,6 +265,59 @@
     async bytes() {
       return this._drainBytes();
     }
+
+    async blob() {
+      return new Blob([await this._drainBytes()], { type: this.headers.get("content-type") ?? "" });
+    }
+
+    async formData() {
+      const type = this.headers.get("content-type") ?? "";
+      const bytes = await this._drainBytes();
+      if (/^application\/x-www-form-urlencoded\b/i.test(type)) {
+        const form = new FormData();
+        for (const [name, value] of new URLSearchParams(sharedDecoder.decode(bytes))) form.append(name, value);
+        return form;
+      }
+      const boundary = /^multipart\/form-data\b.*?;\s*boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(type);
+      if (!boundary) throw new TypeError(`Could not parse content as FormData (content-type: ${type || "none"})`);
+      return parseMultipart(bytes, boundary[1] ?? boundary[2]);
+    }
+  }
+
+  // multipart/form-data -> FormData. Headers are read as latin1 so byte
+  // offsets line up; field names and text values are UTF-8.
+  function parseMultipart(bytes, boundary) {
+    const form = new FormData();
+    const text = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
+    const delimiter = `--${boundary}`;
+    let pos = text.indexOf(delimiter);
+    if (pos === -1) throw new TypeError("Could not parse content as FormData (missing boundary)");
+    for (;;) {
+      pos += delimiter.length;
+      if (text.startsWith("--", pos)) break; // closing delimiter
+      pos = text.indexOf("\r\n", pos) + 2;
+      const headerEnd = text.indexOf("\r\n\r\n", pos);
+      const next = text.indexOf(`\r\n${delimiter}`, headerEnd);
+      if (pos < 2 || headerEnd === -1 || next === -1) {
+        throw new TypeError("Could not parse content as FormData (truncated part)");
+      }
+      const headers = text.slice(pos, headerEnd);
+      const body = bytes.subarray(headerEnd + 4, next);
+      const utf8 = (s) => Buffer.from(s, "latin1").toString("utf8");
+      const disposition = /^content-disposition:(.*)$/im.exec(headers)?.[1] ?? "";
+      const name = /\bname="([^"]*)"/i.exec(disposition)?.[1];
+      const filename = /\bfilename="([^"]*)"/i.exec(disposition)?.[1];
+      const partType = /^content-type:\s*(.*)$/im.exec(headers)?.[1]?.trim() ?? "";
+      if (name !== undefined) {
+        if (filename !== undefined) {
+          form.append(utf8(name), new File([body], utf8(filename), { type: partType }));
+        } else {
+          form.append(utf8(name), sharedDecoder.decode(body));
+        }
+      }
+      pos = next + 2;
+    }
+    return form;
   }
 
   // ---- Request -----------------------------------------------------------------
@@ -344,6 +401,14 @@
         // Check byte-like bodies before iterables: strings ARE iterable
         // (per character) and must never take the stream path.
         this._bodyBytes = toBytes(body);
+      } else if (body instanceof Blob || body instanceof FormData || body instanceof URLSearchParams) {
+        const { bytes, type } = extractBody(body);
+        this._bodyBytes = bytes;
+        if (type) {
+          const headers = new Headers(init.headers);
+          if (!headers.has("content-type")) headers.set("content-type", type);
+          this._responseHeadersInit = headers;
+        }
       } else if (
         typeof body[Symbol.asyncIterator] === "function" ||
         typeof body[Symbol.iterator] === "function"

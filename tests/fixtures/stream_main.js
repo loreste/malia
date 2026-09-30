@@ -1,5 +1,6 @@
 // node:stream fixture: Readable/Writable/Transform basics, pipe and pipeline.
-import { Readable, Writable, Transform, pipeline } from "node:stream";
+import { Readable, Writable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 function assertEq(a, b, what) {
   if (a !== b) throw new Error(`${what}: expected ${b}, got ${a}`);
@@ -77,12 +78,14 @@ function assertEq(a, b, what) {
 {
   const src = Readable.from([1, 2, 3]);
   const double = new Transform({
+    objectMode: true,
     transform(chunk, encoding, cb) {
       cb(null, chunk * 2);
     },
   });
   const out = [];
   const sink = new Writable({
+    objectMode: true,
     write(chunk, encoding, cb) {
       out.push(chunk);
       cb();

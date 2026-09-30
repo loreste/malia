@@ -173,6 +173,14 @@ pub fn clear_preload_modules() {
 
 /// Load and evaluate a main ES module, then drive the event loop to
 /// completion. Shuts down any remaining workers afterwards.
+/// `process.exitCode` at the end of the last completed run_module (Node exits
+/// with it). The CLI applies it; in-process callers (tests) can ignore it.
+static EXIT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+pub fn exit_code() -> i32 {
+  EXIT_CODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub async fn run_module(specifier: &ModuleSpecifier) -> anyhow::Result<()> {
   crate::logger::init();
   crate::panic::init();
@@ -186,7 +194,9 @@ pub async fn run_module(specifier: &ModuleSpecifier) -> anyhow::Result<()> {
       let req_spec = resolve_main_specifier(&req, &cwd)?;
       let p_mod_id = rt.load_side_es_module(&req_spec).await?;
       let evaluate = rt.mod_evaluate(p_mod_id);
-      let _ = rt.run_event_loop(PollEventLoopOptions::default()).await;
+      // Propagate a loop error before awaiting evaluation: the evaluation
+      // future only resolves while the loop is polled, so it would hang.
+      rt.run_event_loop(PollEventLoopOptions::default()).await?;
       evaluate.await?;
     }
   }
@@ -279,6 +289,19 @@ pub async fn run_module(specifier: &ModuleSpecifier) -> anyhow::Result<()> {
       }
     }
   }.await;
+
+  // An event loop error (e.g. an exception thrown from a microtask) ends
+  // the run here. Awaiting `evaluate` first would hang: it only resolves
+  // while the loop is polled.
+  if let Err(e) = loop_res {
+    crate::logger::log(
+      crate::logger::LogLevel::Error,
+      "runtime",
+      &format!("Unhandled event loop error in {specifier}: {e}"),
+    );
+    return Err(anyhow::anyhow!("{e}"));
+  }
+
   let eval_res = evaluate.await;
 
   if let Err(e) = eval_res {
@@ -305,15 +328,6 @@ pub async fn run_module(specifier: &ModuleSpecifier) -> anyhow::Result<()> {
     }
   }
 
-  if let Err(e) = loop_res {
-    crate::logger::log(
-      crate::logger::LogLevel::Error,
-      "runtime",
-      &format!("Unhandled event loop error in {specifier}: {e}"),
-    );
-    return Err(anyhow::anyhow!("{e}"));
-  }
-
   // Node emits beforeExit once the loop is idle, then drains work the
   // handler scheduled. A throw inside the hook must not fail the run.
   let _ = rt.execute_script(
@@ -322,6 +336,21 @@ pub async fn run_module(specifier: &ModuleSpecifier) -> anyhow::Result<()> {
   );
 
   let _ = rt.run_event_loop(PollEventLoopOptions::default()).await;
+
+  // Like Node: emit 'exit' with process.exitCode, which a listener may
+  // still change, and exit with the final value.
+  let code = rt
+    .execute_script(
+      "<exit>",
+      "(() => { const p = globalThis.process; if (!p) return 0; const code = p.exitCode ?? 0; try { p.emit('exit', code); } catch (e) { console.error(e); } return (p.exitCode ?? code) | 0; })()",
+    )
+    .ok()
+    .and_then(|val| {
+      deno_core::scope!(scope, &mut rt);
+      v8::Local::new(scope, val).int32_value(scope)
+    })
+    .unwrap_or(0);
+  EXIT_CODE.store(code, std::sync::atomic::Ordering::Relaxed);
   crate::ops::shutdown_workers(&mut rt.op_state().borrow_mut());
   Ok(())
 }

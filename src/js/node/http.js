@@ -601,7 +601,9 @@ function validateHeader(name, value) {
 
 class ClientRequest extends Writable {
   constructor(opts, cb) {
-    super();
+    // Finishing the request body must not destroy the request (and with it
+    // the socket still waiting for the response).
+    super({ autoDestroy: false });
     if (!TOKEN_RE.test(opts.method)) {
       throw httpError("ERR_INVALID_HTTP_TOKEN", `Method must be a valid HTTP token ["${opts.method}"]`);
     }

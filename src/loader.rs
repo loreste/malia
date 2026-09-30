@@ -35,6 +35,7 @@ fn builtin_source(spec: &str) -> Option<&'static str> {
   match spec {
     "jse:internal/cjs" => Some(include_str!("js/internal/cjs.js")),
     "jse:internal/cjs-missing" => Some(include_str!("js/internal/cjs-missing.js")),
+    "jse:internal/readable_stream" => Some(include_str!("js/internal/readable_stream.js")),
     "node:assert" => Some(include_str!("js/node/assert.js")),
     "node:assert/strict" => Some(include_str!("js/node/assert_strict.js")),
     "node:async_hooks" => Some(include_str!("js/node/async_hooks.js")),

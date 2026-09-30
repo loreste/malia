@@ -42,10 +42,56 @@ function callbackize(fn) {
   };
 }
 
+function flagOf(options, fallback) {
+  return (options && typeof options === "object" && options.flag) || fallback;
+}
+
+function modeOf(options) {
+  return (options && typeof options === "object" && options.mode) || 0o666;
+}
+
+// Buffer.toString for every encoding except the utf8 fast path.
+function decode(bytes, encoding) {
+  return encoding === "buffer" ? asBuffer(bytes) : asBuffer(bytes).toString(encoding);
+}
+
+const isUtf8 = (encoding) => encoding === "utf8" || encoding === "utf-8";
+
+export class Stats {}
+export class Dirent {
+  constructor(name, entry, parentPath) {
+    this.name = name;
+    this.parentPath = parentPath;
+    this.path = parentPath;
+    this._entry = entry;
+  }
+  isFile() {
+    return this._entry.is_file;
+  }
+  isDirectory() {
+    return this._entry.is_dir;
+  }
+  isSymbolicLink() {
+    return this._entry.is_symlink;
+  }
+  isBlockDevice() {
+    return false;
+  }
+  isCharacterDevice() {
+    return false;
+  }
+  isFIFO() {
+    return false;
+  }
+  isSocket() {
+    return false;
+  }
+}
+
 function makeStat(raw) {
   const atime = raw.atime_ms ?? raw.mtime_ms;
   const birth = raw.birthtime_ms ?? raw.ctime_ms;
-  return {
+  return Object.assign(Object.create(Stats.prototype), {
     size: raw.size,
     ino: raw.ino,
     mode: raw.mode ?? 0,
@@ -71,60 +117,129 @@ function makeStat(raw) {
     isCharacterDevice: () => false,
     isFIFO: () => false,
     isSocket: () => false,
-  };
+  });
 }
 
-function dirent(entry) {
-  return {
-    name: entry.name,
-    isFile: () => entry.is_file,
-    isDirectory: () => entry.is_dir,
-    isSymbolicLink: () => entry.is_symlink,
-  };
+function dirent(entry, parentPath) {
+  return new Dirent(entry.name, entry, parentPath);
 }
 
 export function readFileSync(path, options) {
   const encoding = encodingOf(options);
   const p = String(path);
-  if (encoding) return ops.op_read_text_file_sync(p);
-  return asBuffer(ops.op_read_file_bytes_sync(p));
+  if (encoding && isUtf8(encoding)) return ops.op_read_text_file_sync(p);
+  const bytes = ops.op_read_file_bytes_sync(p);
+  return encoding ? decode(bytes, encoding) : asBuffer(bytes);
+}
+
+// Writes through a file descriptor so any open flag (a, wx, a+, ...) works.
+function writeAllSync(p, bytes, flag, mode) {
+  const fd = openSync(p, flag, mode);
+  try {
+    let offset = 0;
+    while (offset < bytes.byteLength) offset += writeSync(fd, bytes, offset, bytes.byteLength - offset);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function writeFileSync(path, data, options) {
   const p = String(path);
-  if (typeof data === "string") ops.op_write_text_file_sync(p, data);
-  else ops.op_write_file_bytes_sync(p, toBytes(data, encodingOf(options)));
+  const flag = flagOf(options, "w");
+  const encoding = encodingOf(options);
+  if (flag !== "w") return writeAllSync(p, toBytes(data, encoding), flag, modeOf(options));
+  if (typeof data === "string" && (!encoding || isUtf8(encoding))) ops.op_write_text_file_sync(p, data);
+  else ops.op_write_file_bytes_sync(p, toBytes(data, encoding));
 }
 
 export function appendFileSync(path, data, options) {
+  const flag = flagOf(options, "a");
+  if (flag !== "a") return writeAllSync(String(path), toBytes(data, encodingOf(options)), flag, modeOf(options));
   ops.op_append_bytes_sync(String(path), toBytes(data, encodingOf(options)));
 }
 
 export function existsSync(path) {
-  return ops.op_exists_sync(String(path));
+  try {
+    return ops.op_exists_sync(String(path));
+  } catch {
+    return false;
+  }
 }
 
-export function statSync(path) {
-  return makeStat(ops.op_stat_sync(String(path)));
+function statOrUndefined(fn, path, options) {
+  try {
+    return makeStat(fn(String(path)));
+  } catch (err) {
+    if (options?.throwIfNoEntry === false && (err.code === "ENOENT" || err.code === "ENOTDIR")) return undefined;
+    throw err;
+  }
 }
 
-export function lstatSync(path) {
-  return makeStat(ops.op_lstat_sync(String(path)));
+export function statSync(path, options) {
+  return statOrUndefined(ops.op_stat_sync, path, options);
+}
+
+export function lstatSync(path, options) {
+  return statOrUndefined(ops.op_lstat_sync, path, options);
+}
+
+function listDir(read, dir, options) {
+  const root = String(dir);
+  const out = [];
+  const walk = (current, prefix) => {
+    for (const entry of read(current)) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (options?.withFileTypes) out.push(dirent(entry, current));
+      else out.push(options?.encoding === "buffer" ? Buffer.from(rel) : rel);
+      if (options?.recursive && entry.is_dir) walk(`${current}/${entry.name}`, rel);
+    }
+  };
+  walk(root, "");
+  return out;
 }
 
 export function readdirSync(path, options) {
-  const entries = ops.op_readdir_sync(String(path));
-  if (options && options.withFileTypes) return entries.map(dirent);
-  return entries.map((entry) => entry.name);
+  return listDir(ops.op_readdir_sync, path, typeof options === "string" ? { encoding: options } : options);
 }
 
-export function mkdirSync(path, options) {
+// Returns the first directory created (recursive) or undefined, as Node does.
+function firstMissingDir(p) {
+  let first;
+  for (let dir = path.resolve(p); !existsSync(dir); dir = path.dirname(dir)) {
+    first = dir;
+    if (dir === path.dirname(dir)) break;
+  }
+  return first;
+}
+
+export function mkdirSync(p, options) {
   const recursive = !!(options && typeof options === "object" && options.recursive);
-  ops.op_mkdir_sync(String(path), recursive);
+  const first = recursive ? firstMissingDir(String(p)) : undefined;
+  ops.op_mkdir_sync(String(p), recursive);
+  return first;
+}
+
+class SystemError extends Error {
+  get name() {
+    return "SystemError";
+  }
+}
+
+function isDirError(p) {
+  const err = new SystemError(`Path is a directory: rm returned EISDIR (is a directory) ${p}`);
+  err.code = "ERR_FS_EISDIR";
+  err.errno = 21;
+  err.syscall = "rm";
+  err.path = p;
+  return err;
 }
 
 export function rmSync(path, options = {}) {
-  ops.op_remove_sync(String(path), 2, !!options.recursive, !!options.force);
+  const p = String(path);
+  if (!options.recursive && statOrUndefined(ops.op_lstat_sync, p, { throwIfNoEntry: false })?.isDirectory()) {
+    throw isDirError(p);
+  }
+  ops.op_remove_sync(p, 2, !!options.recursive, !!options.force);
 }
 
 export function unlinkSync(path) {
@@ -139,8 +254,77 @@ export function renameSync(from, to) {
   ops.op_rename_sync(String(from), String(to));
 }
 
-export function copyFileSync(from, to) {
-  ops.op_copy_file_sync(String(from), String(to));
+export function copyFileSync(from, to, mode = 0) {
+  ops.op_copy_file_sync(String(from), String(to), (mode & constants.COPYFILE_EXCL) !== 0);
+}
+
+export function utimesSync(path, atime, mtime) {
+  ops.op_utimes_sync(String(path), toSeconds(atime), toSeconds(mtime));
+}
+
+function toSeconds(time) {
+  if (time instanceof Date) return time.getTime() / 1000;
+  if (typeof time === "string") return Number(time);
+  return time;
+}
+
+export function linkSync(existingPath, newPath) {
+  ops.op_link_sync(String(existingPath), String(newPath));
+}
+
+// fs.cpSync: files, directories (with recursive), and symlinks.
+export function cpSync(src, dest, options = {}) {
+  const { recursive = false, force = true, errorOnExist = false, filter, dereference = false } = options;
+  const copy = (from, to) => {
+    if (filter && !filter(from, to)) return;
+    const st = dereference ? statSync(from) : lstatSync(from);
+    if (st.isDirectory()) {
+      if (!recursive) {
+        const err = new SystemError(`Recursive option is required to copy a directory: cp returned EISDIR (${from} is a directory (not copied)) ${from}`);
+        err.code = "ERR_FS_EISDIR";
+        throw err;
+      }
+      mkdirSync(to, { recursive: true });
+      for (const name of readdirSync(from)) copy(path.join(from, name), path.join(to, name));
+    } else if (st.isSymbolicLink()) {
+      if (existsSync(to) || lstatSync(to, { throwIfNoEntry: false })) {
+        if (!force) return;
+        unlinkSync(to);
+      }
+      symlinkSync(readlinkSync(from), to);
+    } else if (lstatSync(to, { throwIfNoEntry: false })) {
+      if (force) copyFileSync(from, to);
+      else if (errorOnExist) copyFileSync(from, to, constants.COPYFILE_EXCL);
+    } else {
+      copyFileSync(from, to);
+    }
+  };
+  copy(String(src), String(dest));
+}
+
+export class Dir {
+  #entries;
+  #index = 0;
+  constructor(dirPath, entries) {
+    this.path = dirPath;
+    this.#entries = entries;
+  }
+  readSync() {
+    return this.#entries[this.#index++] ?? null;
+  }
+  async read() {
+    return this.readSync();
+  }
+  closeSync() {}
+  async close() {}
+  async *[Symbol.asyncIterator]() {
+    for (let entry = this.readSync(); entry !== null; entry = this.readSync()) yield entry;
+  }
+}
+
+export function opendirSync(dirPath) {
+  const p = String(dirPath);
+  return new Dir(p, ops.op_readdir_sync(p).map((entry) => dirent(entry, p)));
 }
 
 export function realpathSync(path) {
@@ -174,34 +358,58 @@ export function mkdtempSync(prefix) {
 async function readFileInner(path, options) {
   const encoding = encodingOf(options);
   const p = String(path);
-  if (encoding) return ops.op_read_text_file(p);
-  return asBuffer(await ops.op_read_file_bytes(p));
+  if (encoding && isUtf8(encoding)) return ops.op_read_text_file(p);
+  const bytes = await ops.op_read_file_bytes(p);
+  return encoding ? decode(bytes, encoding) : asBuffer(bytes);
 }
 
 async function writeFileInner(path, data, options) {
   const p = String(path);
-  if (typeof data === "string") await ops.op_write_text_file(p, data);
-  else await ops.op_write_file_bytes(p, toBytes(data, encodingOf(options)));
+  const flag = flagOf(options, "w");
+  const encoding = encodingOf(options);
+  if (flag !== "w") return writeAllSync(p, toBytes(data, encoding), flag, modeOf(options));
+  if (typeof data === "string" && (!encoding || isUtf8(encoding))) await ops.op_write_text_file(p, data);
+  else await ops.op_write_file_bytes(p, toBytes(data, encoding));
 }
 
 export const readFile = callbackize(readFileInner);
 export const writeFile = callbackize(writeFileInner);
 export const appendFile = callbackize(async (path, data, options) => {
+  const flag = flagOf(options, "a");
+  if (flag !== "a") return writeAllSync(String(path), toBytes(data, encodingOf(options)), flag, modeOf(options));
   await ops.op_append_bytes(String(path), toBytes(data, encodingOf(options)));
 });
-export const stat = callbackize(async (path) => makeStat(await ops.op_stat(String(path))));
+export const stat = callbackize(async (path, options) => {
+  try {
+    return makeStat(await ops.op_stat(String(path)));
+  } catch (err) {
+    if (options?.throwIfNoEntry === false && err.code === "ENOENT") return undefined;
+    throw err;
+  }
+});
 export const lstat = callbackize(async (path) => makeStat(await ops.op_lstat(String(path))));
 export const readdir = callbackize(async (path, options) => {
-  const entries = await ops.op_readdir(String(path));
-  if (options && options.withFileTypes) return entries.map(dirent);
-  return entries.map((entry) => entry.name);
+  options = typeof options === "string" ? { encoding: options } : options;
+  // ponytail: recursive listing walks synchronously; make it async if huge
+  // trees show up in profiles.
+  if (options?.recursive) return listDir(ops.op_readdir_sync, path, options);
+  const p = String(path);
+  const entries = await ops.op_readdir(p);
+  if (options?.withFileTypes) return entries.map((entry) => dirent(entry, p));
+  return entries.map((entry) => (options?.encoding === "buffer" ? Buffer.from(entry.name) : entry.name));
 });
-export const mkdir = callbackize(async (path, options) => {
+export const mkdir = callbackize(async (p, options) => {
   const recursive = !!(options && typeof options === "object" && options.recursive);
-  await ops.op_mkdir(String(path), recursive);
+  const first = recursive ? firstMissingDir(String(p)) : undefined;
+  await ops.op_mkdir(String(p), recursive);
+  return first;
 });
 export const rm = callbackize(async (path, options = {}) => {
-  await ops.op_remove(String(path), 2, !!options.recursive, !!options.force);
+  const p = String(path);
+  if (!options.recursive && statOrUndefined(ops.op_lstat_sync, p, { throwIfNoEntry: false })?.isDirectory()) {
+    throw isDirError(p);
+  }
+  await ops.op_remove(p, 2, !!options.recursive, !!options.force);
 });
 export const unlink = callbackize(async (path) => {
   await ops.op_remove(String(path), 0, false, false);
@@ -212,9 +420,20 @@ export const rmdir = callbackize(async (path) => {
 export const rename = callbackize(async (from, to) => {
   await ops.op_rename(String(from), String(to));
 });
-export const copyFile = callbackize(async (from, to) => {
-  await ops.op_copy_file(String(from), String(to));
+export const copyFile = callbackize(async (from, to, mode = 0) => {
+  await ops.op_copy_file(String(from), String(to), (mode & constants.COPYFILE_EXCL) !== 0);
 });
+export const utimes = callbackize(async (path, atime, mtime) => {
+  await ops.op_utimes(String(path), toSeconds(atime), toSeconds(mtime));
+});
+export const link = callbackize(async (existingPath, newPath) => {
+  await ops.op_link(String(existingPath), String(newPath));
+});
+export const cp = callbackize(async (src, dest, options) => cpSync(src, dest, options));
+export const opendir = callbackize(async (dirPath) => opendirSync(dirPath));
+export function exists(path, cb) {
+  queueMicrotask(() => cb(existsSync(path)));
+}
 export const realpath = callbackize(async (path) => ops.op_realpath(String(path)));
 export const access = callbackize(async (path, mode = 0) => {
   await ops.op_access(String(path), mode >>> 0);
@@ -249,7 +468,7 @@ export function createReadStream(path, options = {}) {
       const self = this;
       ops.op_read_range_at(file, pos, len).then(
         (bytes) => {
-          if (self._rState.destroyed) return;
+          if (self.destroyed) return;
           if (!bytes || bytes.byteLength === 0) {
             self.push(null);
             return;
@@ -260,7 +479,7 @@ export function createReadStream(path, options = {}) {
           if (self._left <= 0) self.push(null);
         },
         (err) => {
-          if (!self._rState.destroyed) self.destroy(err);
+          if (!self.destroyed) self.destroy(err);
         },
       );
     },
@@ -294,7 +513,13 @@ export function createWriteStream(path, options = {}) {
   });
 }
 
-export const constants = ops.op_fs_constants();
+export const constants = {
+  COPYFILE_EXCL: 1,
+  COPYFILE_FICLONE: 2,
+  COPYFILE_FICLONE_FORCE: 4,
+  ...ops.op_fs_constants(),
+};
+export const { F_OK = 0, R_OK = 4, W_OK = 2, X_OK = 1 } = constants;
 
 export function openSync(filePath, flags = "r", mode = 0o666) {
   const f = typeof flags === "number" ? flagsToString(flags) : String(flags || "r");
@@ -548,6 +773,11 @@ export const promises = {
   symlink,
   readlink,
   mkdtemp,
+  utimes,
+  link,
+  cp,
+  opendir,
+  constants,
 };
 
 export default {
@@ -590,6 +820,18 @@ export default {
   readlink,
   mkdtempSync,
   mkdtemp,
+  utimesSync,
+  utimes,
+  linkSync,
+  link,
+  cpSync,
+  cp,
+  opendirSync,
+  opendir,
+  exists,
+  Stats,
+  Dirent,
+  Dir,
   openSync,
   closeSync,
   fstatSync,

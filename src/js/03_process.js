@@ -194,8 +194,41 @@
   }
   hrtime.bigint = () => BigInt(Math.floor(ops.op_now() * 1e6));
 
-  function exit(code = 0) {
-    const status = code | 0;
+  // process.emitWarning(warning[, type | options][, code]): emits 'warning'
+  // and prints `(node:PID) [code] Type: message` unless --no-warnings.
+  function emitWarning(warning, typeOrOptions, code) {
+    let type = "Warning";
+    let detail;
+    if (typeOrOptions && typeof typeOrOptions === "object") {
+      type = typeOrOptions.type ?? type;
+      code = typeOrOptions.code;
+      detail = typeOrOptions.detail;
+    } else if (typeof typeOrOptions === "string") {
+      type = typeOrOptions;
+    }
+    if (typeof warning === "string") {
+      const err = new Error(warning);
+      err.name = String(type);
+      if (code !== undefined) err.code = code;
+      if (detail !== undefined) err.detail = detail;
+      warning = err;
+    } else if (!(warning instanceof Error)) {
+      throw __jse.invalidArgType("warning", "string or an instance of Error", warning);
+    }
+    if (warning.name === "DeprecationWarning" && process.noDeprecation) return;
+    queueMicrotask(() => {
+      emit("warning", warning);
+      if (ops.op_no_warnings() || process.env.NODE_NO_WARNINGS === "1") return;
+      const prefix = warning.code ? `[${warning.code}] ` : "";
+      let text = `(node:${process.pid}) ${prefix}${warning.name}: ${warning.message}`;
+      if (warning.detail) text += `\n${warning.detail}`;
+      ops.op_print(text + "\n", true);
+    });
+  }
+
+  // process.exit() with no argument uses process.exitCode, as in Node.
+  function exit(code) {
+    const status = (code ?? process.exitCode ?? 0) | 0;
     process.exitCode = status;
     try {
       emit("exit", status);
@@ -241,7 +274,9 @@
       headersUrl: "",
       libUrl: "",
     },
-    exitCode: 0,
+    exitCode: undefined,
+    emitWarning,
+    umask: (mask) => ops.op_umask(mask === undefined ? -1 : typeof mask === "string" ? parseInt(mask, 8) : mask),
     cwd: () => ops.op_cwd(),
     chdir: (dir) => ops.op_chdir(String(dir)),
     exit,

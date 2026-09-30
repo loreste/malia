@@ -25,13 +25,19 @@ function checkListener(listener) {
   if (typeof listener !== "function") throw __jse.invalidArgType("listener", "function", listener);
 }
 
-function addEntry(emitter, type, listener, once, prepend) {
+// Listeners are stored as { fn }. A once() listener is stored as a wrapper
+// function whose .listener is the original, as in Node, so once() goes
+// through this.on() and subclass overrides (Readable's on('data') resuming
+// the stream) still apply.
+function addEntry(emitter, type, listener, prepend) {
   checkListener(listener);
   // Like Node, announce before adding so a newListener handler does not
   // see itself called for its own registration.
-  if (emitter._events?.get("newListener")?.length) emitter.emit("newListener", type, listener);
+  if (emitter._events?.get("newListener")?.length) {
+    emitter.emit("newListener", type, listener.listener ?? listener);
+  }
   const list = emitter._listeners(type);
-  const entry = { fn: listener, once };
+  const entry = { fn: listener };
   if (prepend) list.unshift(entry);
   else list.push(entry);
   return emitter;
@@ -44,11 +50,25 @@ function removeEntry(emitter, type, entry) {
   if (idx < 0) return;
   list.splice(idx, 1);
   if (list.length === 0) emitter._events.delete(type);
-  if (emitter._events.get("removeListener")?.length) emitter.emit("removeListener", type, entry.fn);
+  if (emitter._events.get("removeListener")?.length) {
+    emitter.emit("removeListener", type, entry.fn.listener ?? entry.fn);
+  }
+}
+
+function onceWrapper(target, type, listener) {
+  let fired = false;
+  const wrapped = function (...args) {
+    if (fired) return undefined;
+    fired = true;
+    target.removeListener(type, wrapped);
+    return listener.apply(target, args);
+  };
+  wrapped.listener = listener;
+  return wrapped;
 }
 
 EventEmitter.prototype.on = function (type, listener) {
-  return addEntry(this, type, listener, false, false);
+  return addEntry(this, type, listener, false);
 };
 
 EventEmitter.prototype.addListener = function (type, listener) {
@@ -56,15 +76,17 @@ EventEmitter.prototype.addListener = function (type, listener) {
 };
 
 EventEmitter.prototype.once = function (type, listener) {
-  return addEntry(this, type, listener, true, false);
+  checkListener(listener);
+  return this.on(type, onceWrapper(this, type, listener));
 };
 
 EventEmitter.prototype.prependListener = function (type, listener) {
-  return addEntry(this, type, listener, false, true);
+  return addEntry(this, type, listener, true);
 };
 
 EventEmitter.prototype.prependOnceListener = function (type, listener) {
-  return addEntry(this, type, listener, true, true);
+  checkListener(listener);
+  return this.prependListener(type, onceWrapper(this, type, listener));
 };
 
 EventEmitter.prototype.off = function (type, listener) {
@@ -76,7 +98,7 @@ EventEmitter.prototype.removeListener = function (type, listener) {
   if (list) {
     // Node removes the most recently added matching listener.
     for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].fn === listener) {
+      if (list[i].fn === listener || list[i].fn.listener === listener) {
         removeEntry(this, type, list[i]);
         break;
       }
@@ -105,30 +127,18 @@ EventEmitter.prototype.emit = function (type, ...args) {
     }
     return false;
   }
-  for (const entry of [...list]) {
-    if (entry.once) removeEntry(this, type, entry);
-    entry.fn.apply(this, args);
-  }
+  for (const entry of [...list]) entry.fn.apply(this, args);
   return true;
 };
 
 EventEmitter.prototype.listeners = function (type) {
-  return (this._events?.get(type) || []).map((l) => l.fn);
+  return (this._events?.get(type) || []).map((l) => l.fn.listener ?? l.fn);
 };
 
-// Like listeners(), but once() registrations come back as wrappers with a
-// .listener property, as in Node.
+// Like listeners(), but once() registrations come back as their wrappers
+// (with a .listener property), as in Node.
 EventEmitter.prototype.rawListeners = function (type) {
-  return (this._events?.get(type) || []).map((entry) => {
-    if (!entry.once) return entry.fn;
-    const emitter = this;
-    const wrapper = function (...args) {
-      removeEntry(emitter, type, entry);
-      return entry.fn.apply(this, args);
-    };
-    wrapper.listener = entry.fn;
-    return wrapper;
-  });
+  return (this._events?.get(type) || []).map((l) => l.fn);
 };
 
 EventEmitter.prototype.listenerCount = function (type) {

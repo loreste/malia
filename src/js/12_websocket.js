@@ -1,5 +1,6 @@
 // 12_websocket.js: Standards-compliant WebSocket client and server upgrade.
-// Provides EventTarget, Event, MessageEvent, CloseEvent, ErrorEvent, and WebSocket.
+// Provides EventTarget, Event, MessageEvent, CloseEvent, ErrorEvent,
+// AbortController/AbortSignal, and WebSocket.
 "use strict";
 
 ((globalThis) => {
@@ -163,6 +164,8 @@
     addEventListener(type, callback, options = {}) {
       if (typeof callback !== "function" && typeof callback?.handleEvent !== "function") return;
       const once = typeof options === "object" ? Boolean(options?.once) : false;
+      const signal = typeof options === "object" ? options?.signal : undefined;
+      if (signal?.aborted) return;
       let list = this.#listeners.get(type);
       if (!list) {
         list = [];
@@ -170,6 +173,7 @@
       }
       if (!list.some((item) => item.callback === callback)) {
         list.push({ callback, once });
+        signal?.addEventListener("abort", () => this.removeEventListener(type, callback), { once: true });
       }
     }
 
@@ -404,8 +408,10 @@
         ops.op_ws_send(this.#id, new Uint8Array(data), false);
       } else if (ArrayBuffer.isView(data)) {
         ops.op_ws_send(this.#id, new Uint8Array(data.buffer, data.byteOffset, data.byteLength), false);
+      } else if (typeof Blob !== "undefined" && data instanceof Blob) {
+        ops.op_ws_send(this.#id, __jse.blobBytes(data), false);
       } else {
-        throw new TypeError("data must be a string, Buffer, ArrayBuffer, or ArrayBufferView");
+        throw new TypeError("data must be a string, Blob, Buffer, ArrayBuffer, or ArrayBufferView");
       }
     }
 
@@ -488,7 +494,94 @@
     return { response, socket };
   }
 
+  // ---- AbortController / AbortSignal -----------------------------------------
+
+  const kConstruct = Symbol("AbortSignal construct");
+
+  class AbortSignal extends EventTarget {
+    #aborted = false;
+    #reason = undefined;
+    onabort = null;
+
+    constructor(key) {
+      if (key !== kConstruct) throw new TypeError("Illegal constructor");
+      super();
+    }
+
+    get aborted() {
+      return this.#aborted;
+    }
+
+    get reason() {
+      return this.#reason;
+    }
+
+    throwIfAborted() {
+      if (this.#aborted) throw this.#reason;
+    }
+
+    static _abort(signal, reason) {
+      if (signal.#aborted) return;
+      signal.#aborted = true;
+      signal.#reason = reason;
+      const event = new Event("abort");
+      if (typeof signal.onabort === "function") {
+        try {
+          signal.onabort.call(signal, event);
+        } catch (err) {
+          queueMicrotask(() => { throw err; });
+        }
+      }
+      signal.dispatchEvent(event);
+    }
+
+    static abort(reason = new DOMException("This operation was aborted", "AbortError")) {
+      const signal = new AbortSignal(kConstruct);
+      AbortSignal._abort(signal, reason);
+      return signal;
+    }
+
+    static timeout(ms) {
+      const signal = new AbortSignal(kConstruct);
+      const timer = setTimeout(
+        () => AbortSignal._abort(signal, new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+        ms,
+      );
+      // Like Node, a pending timeout signal does not keep the process alive.
+      timer?.unref?.();
+      return signal;
+    }
+
+    static any(signals) {
+      const signal = new AbortSignal(kConstruct);
+      for (const source of signals) {
+        if (source.aborted) {
+          AbortSignal._abort(signal, source.reason);
+          return signal;
+        }
+      }
+      for (const source of signals) {
+        source.addEventListener("abort", () => AbortSignal._abort(signal, source.reason), { once: true });
+      }
+      return signal;
+    }
+  }
+
+  class AbortController {
+    #signal = new AbortSignal(kConstruct);
+
+    get signal() {
+      return this.#signal;
+    }
+
+    abort(reason = new DOMException("This operation was aborted", "AbortError")) {
+      AbortSignal._abort(this.#signal, reason);
+    }
+  }
+
   // Export to globalThis
+  globalThis.AbortSignal = AbortSignal;
+  globalThis.AbortController = AbortController;
   globalThis.Event = Event;
   globalThis.CustomEvent = CustomEvent;
   globalThis.MessageEvent = MessageEvent;

@@ -22,6 +22,33 @@ fn run_fixture(name: &str) {
 }
 
 #[test]
+fn node_runtime_compat() {
+  run_fixture("node_runtime_compat.mjs");
+}
+
+/// process.exitCode and 'exit' on normal completion, and an uncaught
+/// exception in a microtask ending the process with code 1 (not hanging).
+#[test]
+fn process_exit_semantics() {
+  let run = |code: &str| {
+    std::process::Command::new(env!("CARGO_BIN_EXE_jse"))
+      .args(["eval", code])
+      .output()
+      .unwrap()
+  };
+  let out = run("process.on('exit', (c) => console.log('exit', c)); process.exitCode = 3;");
+  assert_eq!(out.status.code(), Some(3));
+  assert!(String::from_utf8_lossy(&out.stdout).contains("exit 3"));
+
+  let out = run("process.exitCode = 4; process.exit();");
+  assert_eq!(out.status.code(), Some(4));
+
+  let out = run("queueMicrotask(() => { throw new Error('boom'); }); setTimeout(() => {}, 60000);");
+  assert_eq!(out.status.code(), Some(1));
+  assert!(String::from_utf8_lossy(&out.stderr).contains("boom"));
+}
+
+#[test]
 fn node_core_compat() {
   run_fixture("node_core_compat.mjs");
 }

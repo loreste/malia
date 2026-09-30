@@ -6,8 +6,125 @@ use std::io::Write;
 // Filesystem
 // ---------------------------------------------------------------------------
 
-fn io_box(action: &str, path: &str, err: std::io::Error) -> JsErrorBox {
-  JsErrorBox::generic(format!("{action} '{path}': {err}"))
+/// An I/O failure shaped like Node's fs errors: message
+/// `ENOENT: no such file or directory, open '/x'` plus `code`, `errno`,
+/// `syscall`, and `path` properties.
+#[derive(Debug)]
+struct NodeIoError {
+  code: &'static str,
+  errno: i32,
+  syscall: String,
+  path: Option<String>,
+  dest: Option<String>,
+  message: String,
+}
+
+impl std::fmt::Display for NodeIoError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(&self.message)
+  }
+}
+
+impl std::error::Error for NodeIoError {}
+
+impl deno_error::JsErrorClass for NodeIoError {
+  fn get_class(&self) -> std::borrow::Cow<'static, str> {
+    "Error".into()
+  }
+
+  fn get_message(&self) -> std::borrow::Cow<'static, str> {
+    self.message.clone().into()
+  }
+
+  fn get_additional_properties(&self) -> deno_error::AdditionalProperties {
+    use deno_error::PropertyValue;
+    let mut props: Vec<(std::borrow::Cow<'static, str>, PropertyValue)> = vec![
+      ("errno".into(), PropertyValue::Number(self.errno as f64)),
+      ("code".into(), PropertyValue::String(self.code.into())),
+      ("syscall".into(), PropertyValue::String(self.syscall.clone().into())),
+    ];
+    if let Some(path) = &self.path {
+      props.push(("path".into(), PropertyValue::String(path.clone().into())));
+    }
+    if let Some(dest) = &self.dest {
+      props.push(("dest".into(), PropertyValue::String(dest.clone().into())));
+    }
+    Box::new(props.into_iter())
+  }
+
+  fn get_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+    self
+  }
+}
+
+/// libuv's description for common error codes (what Node prints).
+fn uv_description(code: &str) -> Option<&'static str> {
+  Some(match code {
+    "ENOENT" => "no such file or directory",
+    "EEXIST" => "file already exists",
+    "EACCES" => "permission denied",
+    "EPERM" => "operation not permitted",
+    "EISDIR" => "illegal operation on a directory",
+    "ENOTDIR" => "not a directory",
+    "ENOTEMPTY" => "directory not empty",
+    "EBADF" => "bad file descriptor",
+    "EINVAL" => "invalid argument",
+    "EMFILE" => "too many open files",
+    "ELOOP" => "too many symbolic links encountered",
+    "EXDEV" => "cross-device link not permitted",
+    "ENAMETOOLONG" => "name too long",
+    "EBUSY" => "resource busy or locked",
+    "ENOSPC" => "no space left on device",
+    "EROFS" => "read-only file system",
+    "EAGAIN" => "resource temporarily unavailable",
+    "ECONNREFUSED" => "connection refused",
+    "ECONNRESET" => "connection reset by peer",
+    "EADDRINUSE" => "address already in use",
+    "ETIMEDOUT" => "connection timed out",
+    "EPIPE" => "broken pipe",
+    _ => return None,
+  })
+}
+
+fn node_io_error(syscall: &str, path: Option<&str>, dest: Option<&str>, err: std::io::Error) -> JsErrorBox {
+  let code = deno_error::get_error_code(&err).unwrap_or("EIO");
+  let description = uv_description(code).map(str::to_string).unwrap_or_else(|| {
+    // Strip Rust's " (os error N)" suffix and lowercase like libuv.
+    let text = err.to_string();
+    let text = text.split(" (os error").next().unwrap_or(&text).to_string();
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
+  });
+  let mut message = format!("{code}: {description}, {syscall}");
+  if let Some(path) = path {
+    message.push_str(&format!(" '{path}'"));
+  }
+  if let Some(dest) = dest {
+    message.push_str(&format!(" -> '{dest}'"));
+  }
+  // ponytail: errno is the negated OS error, which matches libuv on Unix
+  // only; Windows would need libuv's error table.
+  let errno = err.raw_os_error().map_or(-5, |n| -n);
+  JsErrorBox::from_err(NodeIoError {
+    code,
+    errno,
+    syscall: syscall.to_string(),
+    path: path.map(str::to_string),
+    dest: dest.map(str::to_string),
+    message,
+  })
+}
+
+fn io_box(syscall: &str, path: &str, err: std::io::Error) -> JsErrorBox {
+  node_io_error(syscall, Some(path), None, err)
+}
+
+fn io_box_dest(syscall: &str, path: &str, dest: &str, err: std::io::Error) -> JsErrorBox {
+  node_io_error(syscall, Some(path), Some(dest), err)
+}
+
+fn io_box_fd(syscall: &str, err: std::io::Error) -> JsErrorBox {
+  node_io_error(syscall, None, None, err)
 }
 
 /// Run blocking host work off the isolate thread. The JS event loop keeps
@@ -100,7 +217,7 @@ pub fn op_remove_sync(
 fn rename_at(from: &str, to: &str) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(from)?;
   crate::permissions::check_write(to)?;
-  std::fs::rename(from, to).map_err(|e| io_box("rename", from, e))
+  std::fs::rename(from, to).map_err(|e| io_box_dest("rename", from, to, e))
 }
 
 #[op2(fast)]
@@ -108,17 +225,28 @@ pub fn op_rename_sync(#[string] from: String, #[string] to: String) -> Result<()
   rename_at(&from, &to)
 }
 
-fn copy_file_at(from: &str, to: &str) -> Result<(), JsErrorBox> {
+/// `excl` is COPYFILE_EXCL: fail with EEXIST instead of overwriting.
+fn copy_file_at(from: &str, to: &str, excl: bool) -> Result<(), JsErrorBox> {
   crate::permissions::check_read(from)?;
   crate::permissions::check_write(to)?;
-  std::fs::copy(from, to)
-    .map(|_| ())
-    .map_err(|e| io_box("copy", from, e))
+  let err = |e| io_box_dest("copyfile", from, to, e);
+  if excl {
+    let mut src = std::fs::File::open(from).map_err(err)?;
+    let mut dst = std::fs::OpenOptions::new()
+      .write(true)
+      .create_new(true)
+      .open(to)
+      .map_err(err)?;
+    std::io::copy(&mut src, &mut dst).map_err(err)?;
+    let perms = src.metadata().map_err(err)?.permissions();
+    return dst.set_permissions(perms).map_err(err);
+  }
+  std::fs::copy(from, to).map(|_| ()).map_err(err)
 }
 
 #[op2(fast)]
-pub fn op_copy_file_sync(#[string] from: String, #[string] to: String) -> Result<(), JsErrorBox> {
-  copy_file_at(&from, &to)
+pub fn op_copy_file_sync(#[string] from: String, #[string] to: String, excl: bool) -> Result<(), JsErrorBox> {
+  copy_file_at(&from, &to, excl)
 }
 
 fn append_bytes_at(path: &str, data: &[u8]) -> Result<(), JsErrorBox> {
@@ -127,8 +255,8 @@ fn append_bytes_at(path: &str, data: &[u8]) -> Result<(), JsErrorBox> {
     .create(true)
     .append(true)
     .open(path)
-    .map_err(|e| io_box("append", path, e))?;
-  file.write_all(data).map_err(|e| io_box("append", path, e))
+    .map_err(|e| io_box("open", path, e))?;
+  file.write_all(data).map_err(|e| io_box("open", path, e))
 }
 
 #[op2(fast)]
@@ -205,10 +333,10 @@ fn truncate_at(path: &str, len: f64) -> Result<(), JsErrorBox> {
   let file = std::fs::OpenOptions::new()
     .write(true)
     .open(path)
-    .map_err(|e| io_box("truncate", path, e))?;
+    .map_err(|e| io_box("open", path, e))?;
   file
     .set_len(len.max(0.0) as u64)
-    .map_err(|e| io_box("truncate", path, e))
+    .map_err(|e| io_box("open", path, e))
 }
 
 #[op2(fast)]
@@ -224,12 +352,12 @@ fn read_range_at(path: &str, offset: f64, len: u32) -> Result<Vec<u8>, JsErrorBo
     return Err(JsErrorBox::generic("read: negative offset"));
   }
   let len = (len as usize).min(1024 * 1024);
-  let mut file = std::fs::File::open(path).map_err(|e| io_box("read", path, e))?;
+  let mut file = std::fs::File::open(path).map_err(|e| io_box("open", path, e))?;
   file
     .seek(std::io::SeekFrom::Start(offset as u64))
-    .map_err(|e| io_box("read", path, e))?;
+    .map_err(|e| io_box("open", path, e))?;
   let mut buf = vec![0u8; len];
-  let n = file.read(&mut buf).map_err(|e| io_box("read", path, e))?;
+  let n = file.read(&mut buf).map_err(|e| io_box("open", path, e))?;
   buf.truncate(n);
   Ok(buf)
 }
@@ -243,7 +371,7 @@ pub fn op_read_range(#[string] path: String, offset: f64, len: u32) -> Result<Ve
 fn symlink_at(target: &str, link: &str) -> Result<(), JsErrorBox> {
   // The target may not exist; only the new link path is a write.
   crate::permissions::check_write(link)?;
-  std::os::unix::fs::symlink(target, link).map_err(|e| io_box("symlink", link, e))
+  std::os::unix::fs::symlink(target, link).map_err(|e| io_box_dest("symlink", target, link, e))
 }
 
 #[op2(fast)]
@@ -325,8 +453,47 @@ pub async fn op_rename(#[string] from: String, #[string] to: String) -> Result<(
 }
 
 #[op2]
-pub async fn op_copy_file(#[string] from: String, #[string] to: String) -> Result<(), JsErrorBox> {
-  off_thread(move || copy_file_at(&from, &to)).await
+pub async fn op_copy_file(#[string] from: String, #[string] to: String, excl: bool) -> Result<(), JsErrorBox> {
+  off_thread(move || copy_file_at(&from, &to, excl)).await
+}
+
+fn file_times(atime_secs: f64, mtime_secs: f64) -> std::fs::FileTimes {
+  let at = |secs: f64| std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(secs.max(0.0));
+  std::fs::FileTimes::new().set_accessed(at(atime_secs)).set_modified(at(mtime_secs))
+}
+
+fn utimes_at(path: &str, atime_secs: f64, mtime_secs: f64) -> Result<(), JsErrorBox> {
+  crate::permissions::check_write(path)?;
+  let file = std::fs::File::open(path).map_err(|e| io_box("utime", path, e))?;
+  file
+    .set_times(file_times(atime_secs, mtime_secs))
+    .map_err(|e| io_box("utime", path, e))
+}
+
+#[op2(fast)]
+pub fn op_utimes_sync(#[string] path: String, atime_secs: f64, mtime_secs: f64) -> Result<(), JsErrorBox> {
+  utimes_at(&path, atime_secs, mtime_secs)
+}
+
+#[op2]
+pub async fn op_utimes(#[string] path: String, atime_secs: f64, mtime_secs: f64) -> Result<(), JsErrorBox> {
+  off_thread(move || utimes_at(&path, atime_secs, mtime_secs)).await
+}
+
+fn link_at(existing: &str, new_path: &str) -> Result<(), JsErrorBox> {
+  crate::permissions::check_read(existing)?;
+  crate::permissions::check_write(new_path)?;
+  std::fs::hard_link(existing, new_path).map_err(|e| io_box_dest("link", existing, new_path, e))
+}
+
+#[op2(fast)]
+pub fn op_link_sync(#[string] existing: String, #[string] new_path: String) -> Result<(), JsErrorBox> {
+  link_at(&existing, &new_path)
+}
+
+#[op2]
+pub async fn op_link(#[string] existing: String, #[string] new_path: String) -> Result<(), JsErrorBox> {
+  off_thread(move || link_at(&existing, &new_path)).await
 }
 
 #[op2]
@@ -1053,9 +1220,46 @@ fn compression(level: i32) -> flate2::Compression {
   flate2::Compression::new(level)
 }
 
+/// A zlib failure with Node's `code`/`errno` (corrupt input is Z_DATA_ERROR).
+#[derive(Debug)]
+struct ZlibError(String);
+
+impl std::fmt::Display for ZlibError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(&self.0)
+  }
+}
+
+impl std::error::Error for ZlibError {}
+
+impl deno_error::JsErrorClass for ZlibError {
+  fn get_class(&self) -> std::borrow::Cow<'static, str> {
+    "Error".into()
+  }
+
+  fn get_message(&self) -> std::borrow::Cow<'static, str> {
+    self.0.clone().into()
+  }
+
+  fn get_additional_properties(&self) -> deno_error::AdditionalProperties {
+    use deno_error::PropertyValue;
+    Box::new(
+      [
+        ("errno".into(), PropertyValue::Number(-3.0)),
+        ("code".into(), PropertyValue::String("Z_DATA_ERROR".into())),
+      ]
+      .into_iter(),
+    )
+  }
+
+  fn get_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+    self
+  }
+}
+
 fn z_feed(stream: &mut ZStream, data: &[u8], finish: bool) -> Result<Vec<u8>, JsErrorBox> {
   use std::io::Write;
-  let err = |e: std::io::Error| JsErrorBox::generic(format!("zlib: {e}"));
+  let err = |e: std::io::Error| JsErrorBox::from_err(ZlibError(e.to_string()));
   macro_rules! feed {
     ($enc:expr) => {{
       if !data.is_empty() {
@@ -1269,7 +1473,8 @@ fn hmac_table(state: &mut OpState) -> &mut HmacTable {
 }
 
 fn parse_mac(algo: &str) -> Result<MacAlgo, JsErrorBox> {
-  match algo.to_ascii_lowercase().as_str() {
+  let name = algo.to_ascii_lowercase();
+  match name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "").as_str() {
     "sha256" => Ok(MacAlgo::Sha256),
     "sha512" => Ok(MacAlgo::Sha512),
     "sha1" => Ok(MacAlgo::Sha1),
@@ -1491,6 +1696,52 @@ pub fn op_crypto_pbkdf2(
     return Err(JsErrorBox::generic("iterations must be > 0"));
   }
   Ok(pbkdf2_derive(algo, pass, salt, iterations, keylen as usize))
+}
+
+fn scrypt_derive(pass: &[u8], salt: &[u8], cost: f64, block_size: u32, parallelization: u32, keylen: u32, maxmem: f64) -> Result<Vec<u8>, JsErrorBox> {
+  let invalid = |msg: &str| JsErrorBox::range_error(format!("Invalid scrypt params: {msg}"));
+  if !(cost >= 2.0 && cost.fract() == 0.0 && (cost as u64).is_power_of_two()) {
+    return Err(invalid("N must be a power of 2 greater than 1"));
+  }
+  // Node rejects parameters whose working set exceeds maxmem (default 32 MiB).
+  if 128.0 * cost * block_size as f64 > maxmem {
+    return Err(invalid("memory limit exceeded"));
+  }
+  let log_n = (cost as u64).trailing_zeros() as u8;
+  let params = scrypt::Params::new(log_n, block_size, parallelization, keylen as usize)
+    .map_err(|e| invalid(&e.to_string()))?;
+  let mut out = vec![0u8; keylen as usize];
+  scrypt::scrypt(pass, salt, &params, &mut out).map_err(|e| invalid(&e.to_string()))?;
+  Ok(out)
+}
+
+#[op2]
+#[buffer]
+pub fn op_crypto_scrypt_sync(
+  #[buffer] pass: &[u8],
+  #[buffer] salt: &[u8],
+  cost: f64,
+  block_size: u32,
+  parallelization: u32,
+  keylen: u32,
+  maxmem: f64,
+) -> Result<Vec<u8>, JsErrorBox> {
+  scrypt_derive(pass, salt, cost, block_size, parallelization, keylen, maxmem)
+}
+
+#[op2]
+#[buffer]
+#[allow(clippy::too_many_arguments)]
+pub async fn op_crypto_scrypt(
+  #[buffer(copy)] pass: Vec<u8>,
+  #[buffer(copy)] salt: Vec<u8>,
+  cost: f64,
+  block_size: u32,
+  parallelization: u32,
+  keylen: u32,
+  maxmem: f64,
+) -> Result<Vec<u8>, JsErrorBox> {
+  off_thread(move || scrypt_derive(&pass, &salt, cost, block_size, parallelization, keylen, maxmem)).await
 }
 
 #[derive(serde::Serialize)]

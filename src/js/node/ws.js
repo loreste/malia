@@ -1,7 +1,14 @@
 // node:ws — standards-compliant WebSocket and WebSocketServer shim.
 import { EventEmitter } from "node:events";
 
-export const WebSocket = globalThis.WebSocket;
+// The ws package delivers binary messages as Buffers by default; the web
+// WebSocket default is Blob.
+export class WebSocket extends globalThis.WebSocket {
+  constructor(...args) {
+    super(...args);
+    this.binaryType = "nodebuffer";
+  }
+}
 
 export class WebSocketServer extends EventEmitter {
   constructor(options = {}, callback) {
@@ -18,6 +25,7 @@ export class WebSocketServer extends EventEmitter {
           const upgradeHeader = req.headers.get("upgrade");
           if (upgradeHeader && upgradeHeader.toLowerCase() === "websocket") {
             const { response, socket } = jse.upgradeWebSocket(req);
+            socket.binaryType = "nodebuffer";
             this.clients.add(socket);
             socket.on("close", () => this.clients.delete(socket));
             this.emit("connection", socket, req);

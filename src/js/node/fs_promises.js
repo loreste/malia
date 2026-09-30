@@ -21,6 +21,12 @@ export const {
   symlink,
   readlink,
   mkdtemp,
+  utimes,
+  link,
+  cp,
+  opendir,
+  open,
+  constants,
 } = promises;
 
 export default promises;
