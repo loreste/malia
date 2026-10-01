@@ -10,6 +10,7 @@
 #   MALIA_INSTALL_DIR - install location (default: %LOCALAPPDATA%\malia)
 
 $ErrorActionPreference = "Stop"
+# Failures throw instead of calling exit: under `irm | iex`, exit closes the shell.
 
 $InstallDir = if ($env:MALIA_INSTALL_DIR) { $env:MALIA_INSTALL_DIR } else { "$env:LOCALAPPDATA\malia" }
 $BinDir = "$InstallDir\bin"
@@ -18,21 +19,19 @@ $Version = if ($env:MALIA_VERSION) { $env:MALIA_VERSION } else { "latest" }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
     Write-Error "Malia requires 64-bit Windows."
-    exit 1
+    throw "malia install failed"
 }
 
-$DownloadUrl = if ($Version -eq "latest") {
-    "https://github.com/$Repo/releases/latest/download/malia-win32-x64.zip"
+$Base = if ($Version -eq "latest") {
+    "https://github.com/$Repo/releases/latest/download"
 } else {
-    "https://github.com/$Repo/releases/download/$Version/malia-win32-x64.zip"
+    "https://github.com/$Repo/releases/download/$Version"
 }
+$Asset = "malia-win32-x64.zip"
+$DownloadUrl = "$Base/$Asset"
 
 Write-Host "Installing malia for win32-x64..."
 Write-Host "  from: $DownloadUrl"
-
-if (-not (Test-Path $BinDir)) {
-    New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-}
 
 $TempZip = Join-Path ([System.IO.Path]::GetTempPath()) "malia-install.zip"
 
@@ -47,9 +46,27 @@ try {
         Write-Host ""
         Write-Host "To build from source instead:"
         Write-Host "  git clone https://github.com/$Repo.git; cd malia; cargo build --release"
-        exit 1
+        throw "malia install failed"
     }
 
+    # Verify against the release's SHA256SUMS before extracting.
+    $Sums = (Invoke-WebRequest -Uri "$Base/SHA256SUMS" -UseBasicParsing).Content
+    if ($Sums -is [byte[]]) { $Sums = [System.Text.Encoding]::UTF8.GetString($Sums) }
+    $Line = ($Sums -split "`n") | Where-Object { $_ -match "\s$([regex]::Escape($Asset))\s*$" } | Select-Object -First 1
+    if (-not $Line) {
+        Write-Host "Error: no checksum for $Asset in the release's SHA256SUMS." -ForegroundColor Red
+        throw "malia install failed"
+    }
+    $Expected = ($Line -split "\s+")[0].ToLower()
+    $Actual = (Get-FileHash -Path $TempZip -Algorithm SHA256).Hash.ToLower()
+    if ($Actual -ne $Expected) {
+        Write-Host "Error: checksum mismatch for $Asset." -ForegroundColor Red
+        Write-Host "  expected: $Expected"
+        Write-Host "  got:      $Actual"
+        throw "malia install failed"
+    }
+
+    New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
     Expand-Archive -Path $TempZip -DestinationPath $BinDir -Force
 
     if (-not (Test-Path "$BinDir\jse.exe") -and (Test-Path "$BinDir\malia.exe")) {

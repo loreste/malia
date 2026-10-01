@@ -323,3 +323,13 @@ fn log_level_and_format_from_env() {
   assert!(!text.contains("HIDDEN_INFO"), "{}", describe(&out));
   assert!(text.contains(r#""level":"WARN","target":"SHOWN_WARN","message":"detail""#), "{}", describe(&out));
 }
+
+#[test]
+fn node_alias_version_matches_process_version() {
+  let dir = scratch("node-alias");
+  let node = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+  std::fs::copy(JSE, &node).unwrap();
+  let alias = Command::new(&node).arg("--version").current_dir(&dir).output().unwrap();
+  let inside = jse(&dir, &["eval", "console.log(process.version)"]);
+  assert_eq!(stdout(&alias).trim(), stdout(&inside).trim(), "{}\n{}", describe(&alias), describe(&inside));
+}

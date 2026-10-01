@@ -55,10 +55,12 @@ TARGET="${PLATFORM}-${ARCH}${LIBC}"
 # -- Download ------------------------------------------------------------------
 
 if [ "$VERSION" = "latest" ]; then
-  URL="https://github.com/${REPO}/releases/latest/download/malia-${TARGET}.tar.gz"
+  BASE="https://github.com/${REPO}/releases/latest/download"
 else
-  URL="https://github.com/${REPO}/releases/download/${VERSION}/malia-${TARGET}.tar.gz"
+  BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 fi
+ASSET="malia-${TARGET}.tar.gz"
+URL="$BASE/$ASSET"
 
 echo "Installing malia for ${TARGET}..."
 echo "  from: $URL"
@@ -85,6 +87,30 @@ elif command -v wget >/dev/null 2>&1; then
   }
 else
   echo "Error: curl or wget required."
+  exit 1
+fi
+
+# -- Verify checksum -----------------------------------------------------------
+
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$BASE/SHA256SUMS" -o "$TMP/SHA256SUMS" 2>/dev/null || true
+else
+  wget -qO "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null || true
+fi
+EXPECTED="$(grep " ${ASSET}\$" "$TMP/SHA256SUMS" 2>/dev/null | cut -d' ' -f1)"
+if [ -z "$EXPECTED" ]; then
+  echo "Error: no checksum for ${ASSET} in the release's SHA256SUMS."
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "$TMP/malia.tar.gz" | cut -d' ' -f1)"
+else
+  ACTUAL="$(shasum -a 256 "$TMP/malia.tar.gz" | cut -d' ' -f1)"
+fi
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+  echo "Error: checksum mismatch for ${ASSET}."
+  echo "  expected: $EXPECTED"
+  echo "  got:      $ACTUAL"
   exit 1
 fi
 
@@ -133,6 +159,7 @@ esac
 
 if [ "$NEED_PATH" -eq 1 ] && [ -n "$PROFILE" ]; then
   if ! grep -q "$BIN_DIR" "$PROFILE" 2>/dev/null; then
+    mkdir -p "$(dirname "$PROFILE")"
     printf "\n# Malia\n%s\n" "$PATH_LINE" >> "$PROFILE"
   fi
 fi
@@ -147,7 +174,7 @@ echo "  jse:   $BIN_DIR/jse"
 echo ""
 if [ "$NEED_PATH" -eq 1 ]; then
   echo "Run this to add it to your current shell:"
-  echo "  export PATH=\"$BIN_DIR:\$PATH\""
+  echo "  $PATH_LINE"
   echo ""
   echo "Or restart your terminal."
 else

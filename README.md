@@ -12,10 +12,10 @@ Guides for common tasks are in [docs/HOWTO.md](docs/HOWTO.md).
 
 ## Installation
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the
-archives below and attaches them to a GitHub release. The install scripts
-download from the latest release. No release has been published yet, so
-until one is, build from source.
+The install scripts download the archive for your platform from the latest
+GitHub release, check it against the release's `SHA256SUMS`, and install it.
+Set `MALIA_VERSION` (e.g. `v0.1.0`) to pick a release and `MALIA_INSTALL_DIR`
+to change the location. CI runs both scripts against the latest release.
 
 **macOS / Linux**
 
@@ -35,7 +35,9 @@ Installs `malia.exe` and `jse.exe` to `%LOCALAPPDATA%\malia\bin` and adds that d
 
 **Manual download**
 
-Archives are attached to each [GitHub release](https://github.com/loreste/malia/releases):
+Archives and `SHA256SUMS` are attached to each
+[GitHub release](https://github.com/loreste/malia/releases); pushing a `v*`
+tag builds them (`.github/workflows/release.yml`):
 
 | Platform | Archive |
 |---|---|
@@ -96,7 +98,8 @@ malia run app.wasm
 `-i/--interactive`, `-v/--version`, `--no-warnings`, `--max-old-space-size`,
 `--inspect[=host:port]`, `--inspect-brk[=host:port]`,
 and `--enable-source-maps` are accepted. Flags in `NODE_OPTIONS` are read as
-well. When invoked through a `node` symlink, `--version` prints `v20.18.0`.
+well. `process.version` is `v26.0.0`, and when invoked through a `node`
+symlink, `--version` prints the same.
 
 ### Debugging
 
@@ -222,7 +225,7 @@ start = "jse start"
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Execution**: V8 150.4 from `deno_core` 0.412.
+- **Execution**: V8 15.0 (`v8` crate 150.4) from `deno_core` 0.412.
 - **Startup snapshot**: the JS bootstrap in `src/js/` (console, process,
   Buffer, timers, channels, Worker, WorkerPool, URL, fetch, …) is serialized
   into a V8 heap snapshot by `build.rs` and deserialized at startup.
@@ -250,7 +253,7 @@ start = "jse start"
 
 | Feature | Status |
 |---|---|
-| ECMAScript | Whatever V8 150.4 supports, including ES2024 and ES2025 features (`Promise.withResolvers`, `Object.groupBy`, `RegExp.escape`, `Promise.try`, `Float16Array`, Set methods, iterator helpers). See `tests/fixtures/es_features.js` |
+| ECMAScript | Whatever V8 15.0 supports, including ES2024 and ES2025 features (`Promise.withResolvers`, `Object.groupBy`, `RegExp.escape`, `Promise.try`, `Float16Array`, Set methods, iterator helpers). See `tests/fixtures/es_features.js` |
 | Import attributes | `with { type: "json" }`. `text` and `bytes` are not supported |
 | TypeScript | `.ts`, `.mts`, `.cts`, `.tsx`, `.jsx` transpiled; `.cts` loads as CommonJS; `tsconfig.json` `paths` and `baseUrl`; ECMA decorators |
 | ESM | Static and dynamic import, top-level await, `import.meta` |

@@ -29,6 +29,10 @@ jobs:
           npm install --no-audit --no-fund --prefix tests/fixtures/frameworks
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Installer (latest release)
+        run: |
+          MALIA_INSTALL_DIR="$RUNNER_TEMP/malia" sh scripts/install.sh
+          "$RUNNER_TEMP/malia/bin/jse" eval "console.log(process.version, navigator.userAgent)"
 
   windows:
     name: Build and test (Windows)
@@ -44,6 +48,13 @@ jobs:
           ./target/debug/malia run examples/hello.ts
           ./target/debug/malia eval --allow-all "const fs = await import('node:fs'); const os = await import('node:os'); const p = await import('node:path'); const f = p.join(os.tmpdir(), 'jse-ci.txt'); fs.writeFileSync(f, 'ok'); console.log(fs.readFileSync(f, 'utf8'), p.sep, os.platform(), fs.statSync(f).isFile());"
       - run: cargo test
+      - name: Installer (latest release)
+        shell: pwsh
+        run: |
+          $env:MALIA_INSTALL_DIR = "$env:RUNNER_TEMP\malia"
+          ./scripts/install.ps1
+          & "$env:RUNNER_TEMP\malia\bin\jse.exe" eval "console.log(process.version, navigator.userAgent)"
+          if ($LASTEXITCODE -ne 0) { throw "installed jse failed" }
 
   databases:
     name: Database drivers (Linux)

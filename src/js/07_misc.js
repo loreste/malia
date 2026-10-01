@@ -28,7 +28,7 @@
   // navigator for framework SSR (Vue, Angular, React, Vite)
   if (!globalThis.navigator) {
     globalThis.navigator = {
-      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) jse/0.1.0 Node/26.0.0",
+      userAgent: "Node.js/26", // what Node reports
       userAgentData: {
         brands: [
           { brand: "jse", version: "0.1.0" },
@@ -37,7 +37,10 @@
         mobile: false,
         platform: typeof process !== "undefined" ? process.platform : "darwin",
       },
-      hardwareConcurrency: 8,
+      // A getter: this object is built into the snapshot at build time.
+      get hardwareConcurrency() {
+        return ops.op_cpus();
+      },
       language: "en-US",
       languages: ["en-US", "en"],
       platform: typeof process !== "undefined" ? process.platform : "darwin",
