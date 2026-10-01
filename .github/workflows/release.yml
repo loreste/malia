@@ -85,9 +85,8 @@ jobs:
         if: matrix.build_packages
         shell: bash
         run: |
-          # Install nfpm
-          curl -sfL https://github.com/goreleaser/nfpm/releases/latest/download/nfpm_linux_amd64.tar.gz | tar xz -C /tmp nfpm
-          chmod +x /tmp/nfpm
+          # Install nfpm via its install script
+          curl -sfL https://raw.githubusercontent.com/goreleaser/nfpm/main/install.sh | sh -s -- -b /tmp
 
           BIN_DIR="target/${{ matrix.target }}/release"
           VERSION="${GITHUB_REF_NAME#v}"
@@ -95,7 +94,7 @@ jobs:
 
           # Copy binaries to working dir for nfpm
           cp "$BIN_DIR/malia" ./malia
-          cp "$BIN_DIR/jse" ./jse 2>/dev/null || ln -sf malia jse
+          cp "$BIN_DIR/jse" ./jse 2>/dev/null || cp ./malia ./jse
 
           # Build .deb
           ARCH="$ARCH" VERSION="$VERSION" /tmp/nfpm package \
@@ -122,29 +121,6 @@ jobs:
           $BinDir = "target/${{ matrix.target }}/release"
           New-Item -ItemType Directory -Path "dist" -Force | Out-Null
           Compress-Archive -Path "$BinDir\malia.exe", "$BinDir\jse.exe" -DestinationPath "dist\${{ matrix.asset_name }}.zip" -Force
-
-      - name: Build Windows installer
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        shell: pwsh
-        run: |
-          $BinDir = "target/${{ matrix.target }}/release"
-          $Version = "${{ github.ref_name }}".TrimStart("v")
-
-          # Download Inno Setup
-          $InnoUrl = "https://jrsoftware.org/download.php/is.exe"
-          Invoke-WebRequest -Uri $InnoUrl -OutFile "$env:TEMP\innosetup.exe" -UseBasicParsing
-          Start-Process -FilePath "$env:TEMP\innosetup.exe" -Args "/VERYSILENT /SUPPRESSMSGBOXES /DIR=`"$env:TEMP\inno`"" -Wait
-
-          # Copy binaries next to the .iss script
-          Copy-Item "$BinDir\malia.exe" -Destination "scripts\malia.exe"
-          Copy-Item "$BinDir\jse.exe" -Destination "scripts\jse.exe"
-
-          # Compile installer
-          & "$env:TEMP\inno\ISCC.exe" "/DAppVersion=$Version" "scripts\installer.iss"
-          Move-Item "scripts\malia-win32-x64-setup.exe" -Destination "dist\malia-win32-x64-setup.exe"
-
-          # Clean up
-          Remove-Item "scripts\malia.exe", "scripts\jse.exe" -ErrorAction SilentlyContinue
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

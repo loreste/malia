@@ -39,14 +39,7 @@ sudo rpm -i malia-0.1.0-1.x86_64.rpm
 
 Packages install `malia` and `jse` to `/usr/bin`.
 
-**Windows (installer)**
-
-Download and run
-[`malia-win32-x64-setup.exe`](https://github.com/loreste/malia/releases/latest/download/malia-win32-x64-setup.exe)
-from the latest release. It installs to `Program Files\Malia` and adds
-it to your `PATH`.
-
-Or use PowerShell:
+**Windows**
 
 ```powershell
 irm https://raw.githubusercontent.com/loreste/malia/main/scripts/install.ps1 | iex
@@ -69,8 +62,7 @@ tag builds them (`.github/workflows/release.yml`):
 | Linux x64 (.rpm) | `malia-<version>-1.x86_64.rpm` |
 | Linux arm64 (.deb) | `malia_<version>_arm64.deb` |
 | Linux arm64 (.rpm) | `malia-<version>-1.aarch64.rpm` |
-| Windows x64 (zip) | `malia-win32-x64.zip` |
-| Windows x64 (installer) | `malia-win32-x64-setup.exe` |
+| Windows x64 | `malia-win32-x64.zip` |
 
 **From source**
 
