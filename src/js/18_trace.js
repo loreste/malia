@@ -200,6 +200,14 @@
                       key: k,
                       value: attributeValue(v),
                     })),
+                    events: (s.events || []).map((e) => ({
+                      name: e.name,
+                      timeUnixNano: (BigInt(Math.trunc(e.time)) * 1_000_000n).toString(),
+                      attributes: Object.entries(e.attributes || {}).map(([k, v]) => ({
+                        key: k,
+                        value: attributeValue(v),
+                      })),
+                    })),
                     status: { code: ({ UNSET: 0, OK: 1, ERROR: 2 })[s.status.code] ?? 0, message: s.status.message },
                   })),
                 },

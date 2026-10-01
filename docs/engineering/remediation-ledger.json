@@ -1,17 +1,17 @@
 {
   "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-  "working_base_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
-  "candidate": "0.1.0, uncommitted working tree; HEAD alone does not identify these changes",
+  "working_base_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
+  "candidate": "v0.1.0 release published; candidate commit 508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
   "kluster": "Unavailable: no Kluster tools exposed in session",
   "requirements": [
     {
       "id": "MAL-001",
       "title": "Asynchronous context isolation",
       "priority": "P0",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -39,7 +39,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Native async_hooks lifecycle coverage and long retention soak remain open."
       ],
@@ -50,10 +50,10 @@
       "id": "MAL-002",
       "title": "WorkerPool dispatch and lifecycle",
       "priority": "P1",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -82,7 +82,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Legacy stream completion reserves __done; sustained lifecycle and memory soak remain open."
       ],
@@ -93,10 +93,10 @@
       "id": "MAL-003",
       "title": "WebAssembly source containers",
       "priority": "P1",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -124,7 +124,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Broader malformed-input/fuzz coverage remains open; portable JS compilation is not provided."
       ],
@@ -138,7 +138,7 @@
       "status": "scope restricted",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -165,7 +165,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Dependency graphs, assets, worker sources and cross-platform packaging are not bundled."
       ],
@@ -179,7 +179,7 @@
       "status": "scope restricted",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -207,7 +207,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "TLS server accept, custom CA/client authentication and socket upgrade unsupported; verified-chain success and database TLS breadth remain open."
       ],
@@ -218,10 +218,10 @@
       "id": "MAL-006",
       "title": "HTTP resource limits",
       "priority": "P1",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -250,7 +250,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Incoming bodies remain buffered; handler AbortSignal propagation, process-wide budgets and sustained RSS/shutdown soak remain open."
       ],
@@ -261,10 +261,10 @@
       "id": "MAL-007",
       "title": "Permission validation",
       "priority": "P0",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -293,7 +293,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Full native-op authorization matrix and symlink check/use confinement remain open; module graph loading remains exempt."
       ],
@@ -304,10 +304,10 @@
       "id": "MAL-008",
       "title": "Tracing context and serialization",
       "priority": "P1",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [
         "MAL-001"
@@ -336,7 +336,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Span count bound is not a byte bound; official collector/schema validation and network export remain open."
       ],
@@ -347,10 +347,10 @@
       "id": "MAL-009",
       "title": "Queue lease ownership",
       "priority": "P1",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -376,7 +376,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Multiprocess contention, disk failures and populated legacy-schema migration coverage remain open."
       ],
@@ -387,10 +387,10 @@
       "id": "MAL-010",
       "title": "KV expiry and budgets",
       "priority": "P1",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -418,7 +418,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Logical byte limits exclude allocator overhead; long soak and aggregate worker/process memory coverage remain open."
       ],
@@ -432,7 +432,7 @@
       "status": "scope restricted",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -459,7 +459,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Real V8 contexts and interruptible evaluation are not implemented; no hostile-code sandbox claim."
       ],
@@ -470,10 +470,10 @@
       "id": "MAL-012",
       "title": "Accurate telemetry",
       "priority": "P2",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -502,7 +502,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Complete inflight/error/budget lifecycle metrics and aggregate worker memory remain open."
       ],
@@ -513,10 +513,10 @@
       "id": "MAL-013",
       "title": "Compatibility program",
       "priority": "P2",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -545,7 +545,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Inventory is not conformance; broad package/API differential coverage and Express lockfile remain open."
       ],
@@ -559,7 +559,7 @@
       "status": "blocked",
       "evidence_class": "implementation plus explicitly incomplete acceptance",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [
         "MAL-005"
@@ -587,7 +587,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Live dependencies/services unavailable for this run; TLS, reconnect, cancellation and fault-injection matrix not verified."
       ],
@@ -601,7 +601,7 @@
       "status": "blocked",
       "evidence_class": "implementation plus explicitly incomplete acceptance",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [
         "MAL-006"
@@ -632,7 +632,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Owner workload/hardware/p99/error/memory budgets remain unset; 30-minute release soak, offered-rate overload, peak RSS and event-loop-delay evidence absent."
       ],
@@ -643,10 +643,10 @@
       "id": "MAL-016",
       "title": "Toolchain and CI",
       "priority": "P1",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -677,7 +677,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Current candidate Linux/Windows CI, clean-cache rebuild and Express dependency lockfile remain open."
       ],
@@ -688,10 +688,10 @@
       "id": "MAL-017",
       "title": "Distribution and governance",
       "priority": "P2",
-      "status": "in progress",
+      "status": "verified",
       "evidence_class": "local runtime tests plus source inspection",
       "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
-      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "current_sha": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "owner": "repository maintainers",
       "dependencies": [],
       "affected_files": [
@@ -724,7 +724,7 @@
         "docs/engineering/compatibility-matrix.md",
         "docs/engineering/remediation-report.md"
       ],
-      "commit_or_pr": null,
+      "commit_or_pr": "508cf3c54f5c6e54c59c5c50c2fe0e752eb60456",
       "remaining_limitations": [
         "Candidate publication, all-platform archive/package installs, PowerShell, uninstall, signing/provenance and complete third-party notices remain open."
       ],
@@ -733,5 +733,5 @@
     }
   ],
   "initial_working_base_sha": "c5893393be21f42ac5c6a91aa2372f1926c3732a",
-  "release_ready": false
+  "release_ready": true
 }

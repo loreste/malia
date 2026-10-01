@@ -14,7 +14,9 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 // Static files from ./public.
-app.use("/static", express.static(new URL("./public", import.meta.url).pathname));
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+app.use("/static", express.static(join(dirname(fileURLToPath(import.meta.url)), "public")));
 
 app.get("/", (req, res) => {
   res.json({ hello: "world", framework: "express" });
