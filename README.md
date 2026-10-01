@@ -12,26 +12,45 @@ Guides for common tasks are in [docs/HOWTO.md](docs/HOWTO.md).
 
 ## Installation
 
-The install scripts download the archive for your platform from the latest
-GitHub release, check it against the release's `SHA256SUMS`, and install it.
-Set `MALIA_VERSION` (e.g. `v0.1.0`) to pick a release and `MALIA_INSTALL_DIR`
-to change the location. CI runs both scripts against the latest release.
+Prebuilt binaries for macOS, Linux, and Windows. No Rust or build
+tools required.
 
-**macOS / Linux**
+**macOS / Linux (one-liner)**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/loreste/malia/main/scripts/install.sh | sh
 ```
 
-Installs `malia` to `~/.malia/bin` and creates a `jse` alias.
+Installs `malia` and `jse` to `~/.malia/bin` and adds it to `PATH`.
 
-**Windows (PowerShell)**
+**Debian / Ubuntu (.deb)**
+
+```sh
+curl -fsSLO https://github.com/loreste/malia/releases/latest/download/malia_0.1.0_amd64.deb
+sudo dpkg -i malia_0.1.0_amd64.deb
+```
+
+**Fedora / RHEL / CentOS (.rpm)**
+
+```sh
+curl -fsSLO https://github.com/loreste/malia/releases/latest/download/malia-0.1.0-1.x86_64.rpm
+sudo rpm -i malia-0.1.0-1.x86_64.rpm
+```
+
+Packages install `malia` and `jse` to `/usr/bin`.
+
+**Windows (installer)**
+
+Download and run
+[`malia-win32-x64-setup.exe`](https://github.com/loreste/malia/releases/latest/download/malia-win32-x64-setup.exe)
+from the latest release. It installs to `Program Files\Malia` and adds
+it to your `PATH`.
+
+Or use PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/loreste/malia/main/scripts/install.ps1 | iex
 ```
-
-Installs `malia.exe` and `jse.exe` to `%LOCALAPPDATA%\malia\bin` and adds that directory to `PATH`.
 
 **Manual download**
 
@@ -46,7 +65,12 @@ tag builds them (`.github/workflows/release.yml`):
 | Linux x64 (glibc) | `malia-linux-x64-gnu.tar.gz` |
 | Linux x64 (musl) | `malia-linux-x64-musl.tar.gz` |
 | Linux arm64 | `malia-linux-arm64-gnu.tar.gz` |
-| Windows x64 | `malia-win32-x64.zip` |
+| Linux x64 (.deb) | `malia_<version>_amd64.deb` |
+| Linux x64 (.rpm) | `malia-<version>-1.x86_64.rpm` |
+| Linux arm64 (.deb) | `malia_<version>_arm64.deb` |
+| Linux arm64 (.rpm) | `malia-<version>-1.aarch64.rpm` |
+| Windows x64 (zip) | `malia-win32-x64.zip` |
+| Windows x64 (installer) | `malia-win32-x64-setup.exe` |
 
 **From source**
 

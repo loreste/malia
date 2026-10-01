@@ -1,0 +1,26 @@
+name: malia
+arch: "${ARCH}"
+platform: linux
+version: "${VERSION}"
+maintainer: "Lance Oreste <loreste@users.noreply.github.com>"
+description: "JavaScript/TypeScript and WebAssembly runtime"
+homepage: "https://github.com/loreste/malia"
+license: MIT
+section: devel
+priority: optional
+
+contents:
+  - src: ./malia
+    dst: /usr/bin/malia
+    file_info:
+      mode: 0755
+  - src: ./jse
+    dst: /usr/bin/jse
+    file_info:
+      mode: 0755
+
+overrides:
+  rpm:
+    depends: []
+  deb:
+    depends: []
