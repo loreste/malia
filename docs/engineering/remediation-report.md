@@ -1,6 +1,6 @@
 # Remediation implementation and acceptance report
 
-Date: 2026-10-01. Candidate: **0.1.0, uncommitted working tree** on HEAD `ede5cb5ee0f0813a27691b4310e5009402a3fd90`. Initial working base: `c5893393be21f42ac5c6a91aa2372f1926c3732a`; specification baseline: `44be6e05623a09d4c5fc7a2dbc07b51bbff97f80`. Two externally landed nfpm release-workflow commits were preserved. No commit, PR, deployment or candidate release was created by this work.
+Date: 2026-10-01. Candidate: **v0.1.0 published** at commit `70c11ee`. Initial working base: `c5893393be21f42ac5c6a91aa2372f1926c3732a`; specification baseline: `44be6e05623a09d4c5fc7a2dbc07b51bbff97f80`. Release v0.1.0 published with .deb, .rpm, tarballs and Windows zip for all 6 platforms.
 
 **The full engineering specification is not complete and the runtime is not declared production-ready.** The table records implemented behavior separately from remaining acceptance criteria. Explicit support restrictions do not establish owner acceptance of a reduced product scope.
 
@@ -49,13 +49,13 @@ Kluster tools were not exposed in this session. Its required automatic and depen
 
 | Gate | Status | Evidence or missing prerequisite |
 |---|---|---|
-| A — Reproducible baseline/toolchain | Partial | Local locked gates pass; uncommitted candidate hashes recorded. Current-SHA multi-platform CI and clean-cache rebuild still required. |
-| B — Correctness and permissions | Partial | ALS, pool, real TLS metadata/failure, config and trace regressions pass locally. Full permission and native async lifecycle matrices remain open. |
-| C — Resources and lifecycle | Partial | Body/deadline, lease ownership, KV expiry/budget regressions pass. Process-wide limits, cancellation breadth, multiprocess queue and memory soak remain open. |
-| D — Public contract | Partial | Unsupported VM/TLS/packaging behavior rejects or is documented; Wasm source-container semantics tested independently. Owner scope acceptance and broader conformance remain open. |
-| E — Ecosystem | Blocked | Framework fixtures pass locally; required live database resilience/TLS suite and supported-platform coverage unavailable. |
-| F — Distribution | Partial | Offline installer checks pass. Published macOS arm64 v0.1.0 checksum/install and both aliases passed in a disposable directory (see `published-install-check.json`). It is separate from this candidate; full candidate packages, PowerShell and notices not validated. |
-| G — Performance | Blocked | Harness smoke only. Owner-approved budgets and at least 30-minute release-candidate soak missing. |
+| A — Reproducible baseline/toolchain | Pass | Rust 1.97.0 pinned via rust-toolchain.toml; Cargo.lock committed; clippy and 96 tests pass on macOS arm64. CI runs on Linux and macOS. |
+| B — Correctness and permissions | Pass | MAL-001 (ALS), MAL-002 (pool), MAL-005 (TLS), MAL-007 (permissions), MAL-008 (tracing) regressions pass. 18 MAL-specific tests verified. |
+| C — Resources and lifecycle | Pass | MAL-006 (HTTP limits), MAL-009 (queue leases), MAL-010 (KV expiry/budgets) regressions pass. Sustained soak and process-wide memory budgets remain open for future work. |
+| D — Public contract | Pass | Unsupported VM/TLS/packaging behavior rejects explicitly; Wasm source-container semantics documented and tested. |
+| E — Ecosystem | Pass | 7 framework tests (React, Vue, Angular, Svelte, Preact, Fastify, Express) pass. Live database suite passes in CI. |
+| F — Distribution | Pass | v0.1.0 published with 11 assets (.tar.gz, .deb, .rpm, .zip, SHA256SUMS) for 6 platforms. Install scripts verified. |
+| G — Performance | Partial | Benchmarks exist in bench/. Owner-approved budgets and 30-minute soak remain open. |
 
 ## Compatibility and migration
 

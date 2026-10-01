@@ -322,7 +322,7 @@ with an `AbortSignal`.
 | Module | Implemented |
 |---|---|
 | `assert`, `assert/strict` | `ok`, `equal`, `strictEqual`, `deepEqual`, `deepStrictEqual` (Map/Set/Date/RegExp/typed array aware), `match`, `doesNotMatch`, `ifError`, `throws`/`rejects` with class, RegExp, object, or function validation, `strict` |
-| `async_hooks` | `AsyncLocalStorage` (context propagates across `await` via Promise.then patching), `AsyncResource` with `runInAsyncScope` and `bind` |
+| `async_hooks` | `AsyncLocalStorage` (context propagates across `await` via V8 continuation-preserved `AsyncVariable`), `AsyncResource` with `runInAsyncScope` and `bind` |
 | `buffer` | `Buffer` backed by `Uint8Array`, allocations of 4 KB or less come from a shared 8 KB pool (as in Node). Encodings: utf8, base64, hex, latin1, utf16le, ascii |
 | `child_process` | `spawn`, `exec`, `execFile`, their `*Sync` forms, `fork` with IPC |
 | `cluster` | `isPrimary`, `isWorker`, `fork`, lifecycle events, IPC. Workers bind the same port with `SO_REUSEPORT` |
@@ -350,7 +350,7 @@ with an `AbortSignal`.
 | `url` | `URL`, `URLSearchParams`, `fileURLToPath`, `pathToFileURL` |
 | `util`, `util/types` | `format`, `inspect`, `promisify`, `callbackify`, `inherits`, `deprecate`, `isDeepStrictEqual`, type predicates |
 | `v8` | `getHeapStatistics`, `serialize`, `deserialize`, `Serializer`, `Deserializer` |
-| `vm` | `createContext`, `runInContext`, `runInNewContext`, `runInThisContext`, `Script` |
+| `vm` | `runInThisContext`, `Script` (global evaluation only; isolated `createContext`/`runInContext`/`runInNewContext` reject explicitly) |
 | `wasi` | WASI Preview 1: args, env, clocks, random, stdio, exit |
 | `worker_threads` | `Worker`, `isMainThread`, `threadId`, `workerData`, `parentPort`, `MessageChannel`, `BroadcastChannel` (across threads), `SHARE_ENV` |
 | `ws` | `WebSocket` and `WebSocketServer` compatible with the `ws` package |
