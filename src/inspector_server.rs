@@ -22,7 +22,11 @@ pub fn start(
   let bound_port = listener.local_addr()?.port();
   let uuid = uuid_v4();
 
-  let host_display = if host == "0.0.0.0" || host == "::" { "127.0.0.1" } else { host };
+  let host_display = if host == "0.0.0.0" || host == "::" {
+    "127.0.0.1"
+  } else {
+    host
+  };
   eprintln!("Debugger listening on ws://{host_display}:{bound_port}/{uuid}");
   eprintln!("For help, see: https://nodejs.org/en/docs/inspector");
   if wait_for_debugger {
@@ -31,9 +35,13 @@ pub fn start(
 
   let host_json = host_display.to_string();
   let handle = tokio::spawn(async move {
-    let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return };
+    let Ok(listener) = tokio::net::TcpListener::from_std(listener) else {
+      return;
+    };
     loop {
-      let Ok((stream, _)) = listener.accept().await else { break };
+      let Ok((stream, _)) = listener.accept().await else {
+        break;
+      };
       let session_tx = session_tx.clone();
       let uuid = uuid.clone();
       let host_json = host_json.clone();
@@ -78,7 +86,8 @@ async fn handle_connection(
         "Browser": "malia/0.1.0",
         "Protocol-Version": "1.3",
         "V8-Version": "15.0.4",
-      }).to_string()
+      })
+      .to_string()
     } else {
       "Not Found".to_string()
     };
@@ -88,7 +97,8 @@ async fn handle_connection(
     let _ = stream.read(&mut buf).await; // consume the request
     let resp = format!(
       "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-      body.len(), body
+      body.len(),
+      body
     );
     let _ = stream.write_all(resp.as_bytes()).await;
     return;
@@ -108,10 +118,7 @@ async fn handle_connection(
   let (c2s_tx, c2s_rx) = futures_mpsc::unbounded::<String>();
 
   let proxy = InspectorSessionProxy {
-    channels: InspectorSessionChannels::Regular {
-      tx: s2c_tx,
-      rx: c2s_rx,
-    },
+    channels: InspectorSessionChannels::Regular { tx: s2c_tx, rx: c2s_rx },
     kind: InspectorSessionKind::NonBlocking {
       wait_for_disconnect: false,
     },
@@ -165,7 +172,6 @@ fn uuid_v4() -> String {
   b[8] = (b[8] & 0x3f) | 0x80;
   format!(
     "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
   )
 }

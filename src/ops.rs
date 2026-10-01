@@ -50,7 +50,11 @@ pub fn op_umask(mask: i32) -> u32 {
   #[cfg(unix)]
   {
     use nix::sys::stat::{Mode, umask};
-    let new = if mask < 0 { Mode::empty() } else { Mode::from_bits_truncate(mask as nix::libc::mode_t) };
+    let new = if mask < 0 {
+      Mode::empty()
+    } else {
+      Mode::from_bits_truncate(mask as nix::libc::mode_t)
+    };
     let old = umask(new);
     if mask < 0 {
       umask(old);
@@ -63,7 +67,6 @@ pub fn op_umask(mask: i32) -> u32 {
     0
   }
 }
-
 
 // ---------------------------------------------------------------------------
 // Channels (green-thread messaging, backed by tokio mpsc).
@@ -131,9 +134,27 @@ fn chan_table(state: &mut OpState) -> &mut ChanTable {
 // reach channels owned by worker threads and vice versa.
 // ---------------------------------------------------------------------------
 
+type WorkerRx = Arc<TokioMutex<mpsc::Receiver<Vec<u8>>>>;
+const WORKER_MESSAGE_LIMIT: usize = 1024 * 1024;
+#[derive(Default)]
+pub struct WorkerCancellation {
+  pub handle: StdMutex<Option<deno_core::v8::IsolateHandle>>,
+  pub cancelled: std::sync::atomic::AtomicBool,
+}
 pub struct WorkerEntry {
-  pub to_child: mpsc::UnboundedSender<Vec<u8>>,
-  pub from_child: SharedRx,
+  pub to_child: mpsc::Sender<Vec<u8>>,
+  pub from_child: WorkerRx,
+  pub cancellation: Arc<WorkerCancellation>,
+}
+impl Drop for WorkerEntry {
+  fn drop(&mut self) {
+    self.cancellation.cancelled.store(true, Ordering::Release);
+    if let Ok(handle) = self.cancellation.handle.lock()
+      && let Some(handle) = handle.as_ref()
+    {
+      handle.terminate_execution();
+    }
+  }
 }
 
 static WORKERS: OnceLock<StdMutex<HashMap<u32, WorkerEntry>>> = OnceLock::new();
@@ -146,8 +167,9 @@ fn workers() -> &'static StdMutex<HashMap<u32, WorkerEntry>> {
 /// State placed in a worker isolate's OpState so its ops can talk to the
 /// parent.
 pub struct WorkerHost {
-  pub to_parent: mpsc::UnboundedSender<Vec<u8>>,
-  pub from_parent: SharedRx,
+  pub to_parent: mpsc::Sender<Vec<u8>>,
+  pub from_parent: WorkerRx,
+  pub cancellation: Arc<WorkerCancellation>,
 }
 
 /// Ids of workers spawned by one runtime, tracked in its OpState so
@@ -262,9 +284,7 @@ pub fn op_read_text_file_sync(#[string] path: String) -> Result<String, JsErrorB
 #[buffer]
 pub async fn op_read_file_bytes(#[string] path: String) -> Result<Vec<u8>, JsErrorBox> {
   crate::permissions::check_read(&path)?;
-  tokio::fs::read(&path)
-    .await
-    .map_err(|e| io_box("open", &path, e))
+  tokio::fs::read(&path).await.map_err(|e| io_box("open", &path, e))
 }
 
 #[op2]
@@ -275,10 +295,7 @@ pub fn op_read_file_bytes_sync(#[string] path: String) -> Result<Vec<u8>, JsErro
 }
 
 #[op2]
-pub async fn op_write_text_file(
-  #[string] path: String,
-  #[string] contents: String,
-) -> Result<(), JsErrorBox> {
+pub async fn op_write_text_file(#[string] path: String, #[string] contents: String) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(&path)?;
   tokio::fs::write(&path, contents)
     .await
@@ -286,19 +303,13 @@ pub async fn op_write_text_file(
 }
 
 #[op2(fast)]
-pub fn op_write_text_file_sync(
-  #[string] path: String,
-  #[string] contents: String,
-) -> Result<(), JsErrorBox> {
+pub fn op_write_text_file_sync(#[string] path: String, #[string] contents: String) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(&path)?;
   std::fs::write(&path, contents).map_err(|e| io_box("open", &path, e))
 }
 
 #[op2]
-pub async fn op_write_file_bytes(
-  #[string] path: String,
-  #[buffer(copy)] data: Vec<u8>,
-) -> Result<(), JsErrorBox> {
+pub async fn op_write_file_bytes(#[string] path: String, #[buffer(copy)] data: Vec<u8>) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(&path)?;
   tokio::fs::write(&path, data)
     .await
@@ -306,10 +317,7 @@ pub async fn op_write_file_bytes(
 }
 
 #[op2(fast)]
-pub fn op_write_file_bytes_sync(
-  #[string] path: String,
-  #[buffer] data: &[u8],
-) -> Result<(), JsErrorBox> {
+pub fn op_write_file_bytes_sync(#[string] path: String, #[buffer] data: &[u8]) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(&path)?;
   std::fs::write(&path, data).map_err(|e| io_box("open", &path, e))
 }
@@ -467,9 +475,7 @@ pub fn op_fs_open(
       opts.mode(mode);
     }
   }
-  let file = opts
-    .open(&path)
-    .map_err(|e| io_box("open", &path, e))?;
+  let file = opts.open(&path).map_err(|e| io_box("open", &path, e))?;
   let table = fd_table(state);
   let fd = table.next_fd;
   table.next_fd += 1;
@@ -497,20 +503,13 @@ pub fn op_fs_fstat(state: &mut OpState, fd: u32) -> Result<StatInfo, JsErrorBox>
     .cloned()
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
   let guard = file.lock().unwrap();
-  let meta = guard
-    .metadata()
-    .map_err(|e| io_box_fd("fstat", e))?;
+  let meta = guard.metadata().map_err(|e| io_box_fd("fstat", e))?;
   Ok(fstat_info(&meta))
 }
 
 #[op2]
 #[buffer]
-pub fn op_fs_read(
-  state: &mut OpState,
-  fd: u32,
-  len: u32,
-  position: f64,
-) -> Result<Vec<u8>, JsErrorBox> {
+pub fn op_fs_read(state: &mut OpState, fd: u32, len: u32, position: f64) -> Result<Vec<u8>, JsErrorBox> {
   let table = fd_table(state);
   let file = table
     .files
@@ -520,25 +519,17 @@ pub fn op_fs_read(
   let mut guard = file.lock().unwrap();
   let mut buf = vec![0u8; len as usize];
   let n = if position >= 0.0 {
-    crate::platform::read_at(&guard, &mut buf, position as u64)
-      .map_err(|e| io_box_fd("read", e))?
+    crate::platform::read_at(&guard, &mut buf, position as u64).map_err(|e| io_box_fd("read", e))?
   } else {
     use std::io::Read;
-    guard
-      .read(&mut buf)
-      .map_err(|e| io_box_fd("read", e))?
+    guard.read(&mut buf).map_err(|e| io_box_fd("read", e))?
   };
   buf.truncate(n);
   Ok(buf)
 }
 
 #[op2(fast)]
-pub fn op_fs_write(
-  state: &mut OpState,
-  fd: u32,
-  #[buffer] data: &[u8],
-  position: f64,
-) -> Result<u32, JsErrorBox> {
+pub fn op_fs_write(state: &mut OpState, fd: u32, #[buffer] data: &[u8], position: f64) -> Result<u32, JsErrorBox> {
   let table = fd_table(state);
   let file = table
     .files
@@ -547,13 +538,10 @@ pub fn op_fs_write(
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
   let mut guard = file.lock().unwrap();
   let n = if position >= 0.0 {
-    crate::platform::write_at(&guard, data, position as u64)
-      .map_err(|e| io_box_fd("write", e))?
+    crate::platform::write_at(&guard, data, position as u64).map_err(|e| io_box_fd("write", e))?
   } else {
     use std::io::Write;
-    guard
-      .write(data)
-      .map_err(|e| io_box_fd("write", e))?
+    guard.write(data).map_err(|e| io_box_fd("write", e))?
   };
   Ok(n as u32)
 }
@@ -567,9 +555,7 @@ pub fn op_fs_ftruncate(state: &mut OpState, fd: u32, len: f64) -> Result<(), JsE
     .cloned()
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
   let guard = file.lock().unwrap();
-  guard
-    .set_len(len as u64)
-    .map_err(|e| io_box_fd("ftruncate", e))
+  guard.set_len(len as u64).map_err(|e| io_box_fd("ftruncate", e))
 }
 
 #[op2(fast)]
@@ -581,9 +567,7 @@ pub fn op_fs_fsync(state: &mut OpState, fd: u32) -> Result<(), JsErrorBox> {
     .cloned()
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
   let guard = file.lock().unwrap();
-  guard
-    .sync_all()
-    .map_err(|e| io_box_fd("fsync", e))
+  guard.sync_all().map_err(|e| io_box_fd("fsync", e))
 }
 
 #[op2]
@@ -828,10 +812,7 @@ pub async fn op_chan_send(
 
 #[op2]
 #[buffer]
-pub async fn op_chan_recv(
-  state: Rc<RefCell<OpState>>,
-  id: u32,
-) -> Result<Vec<u8>, JsErrorBox> {
+pub async fn op_chan_recv(state: Rc<RefCell<OpState>>, id: u32) -> Result<Vec<u8>, JsErrorBox> {
   let rx = {
     let mut state = state.borrow_mut();
     let table = chan_table(&mut state);
@@ -872,31 +853,34 @@ pub fn op_chan_close(state: &mut OpState, id: u32) {
 // ---------------------------------------------------------------------------
 
 #[op2(fast)]
-pub fn op_worker_spawn(
-  state: &mut OpState,
-  #[string] specifier: String,
-) -> Result<u32, JsErrorBox> {
+pub fn op_worker_spawn(state: &mut OpState, #[string] specifier: String) -> Result<u32, JsErrorBox> {
   let id = NEXT_WORKER_ID.fetch_add(1, Ordering::SeqCst);
   if !state.has::<SpawnedWorkers>() {
     state.put(SpawnedWorkers::default());
   }
   state.borrow_mut::<SpawnedWorkers>().0.push(id);
-  let (to_child_tx, to_child_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-  let (from_child_tx, from_child_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+  let (to_child_tx, to_child_rx) = mpsc::channel::<Vec<u8>>(64);
+  let (from_child_tx, from_child_rx) = mpsc::channel::<Vec<u8>>(64);
+  let cancellation = Arc::new(WorkerCancellation::default());
   workers().lock().unwrap().insert(
     id,
     WorkerEntry {
       to_child: to_child_tx,
       from_child: Arc::new(TokioMutex::new(from_child_rx)),
+      cancellation: cancellation.clone(),
     },
   );
-  crate::worker::spawn_worker_thread(
+  if let Err(error) = crate::worker::spawn_worker_thread(
     specifier,
     WorkerHost {
       to_parent: from_child_tx,
       from_parent: Arc::new(TokioMutex::new(to_child_rx)),
+      cancellation,
     },
-  );
+  ) {
+    workers().lock().unwrap().remove(&id);
+    return Err(JsErrorBox::generic(format!("worker spawn: {error}")));
+  }
   Ok(id)
 }
 
@@ -904,7 +888,7 @@ pub fn op_worker_spawn(
 pub fn op_worker_send(id: u32, #[buffer] msg: &[u8]) -> bool {
   let registry = workers().lock().unwrap();
   match registry.get(&id) {
-    Some(entry) => entry.to_child.send(msg.to_vec()).is_ok(),
+    Some(entry) => msg.len() <= WORKER_MESSAGE_LIMIT && entry.to_child.try_send(msg.to_vec()).is_ok(),
     None => false,
   }
 }
@@ -923,7 +907,10 @@ pub async fn op_worker_recv(id: u32) -> Vec<u8> {
 }
 
 #[op2(fast)]
-pub fn op_worker_terminate(id: u32) {
+pub fn op_worker_terminate(state: &mut OpState, id: u32) {
+  if state.has::<SpawnedWorkers>() {
+    state.borrow_mut::<SpawnedWorkers>().0.retain(|worker| *worker != id);
+  }
   // Dropping the entry closes both channels: the worker's host loop sees
   // `None` and exits; pending parent-side receives resolve to null.
   workers().lock().unwrap().remove(&id);
@@ -941,7 +928,7 @@ pub fn op_in_worker(state: &mut OpState) -> bool {
 #[op2(fast)]
 pub fn op_host_send(state: &mut OpState, #[buffer] msg: &[u8]) -> bool {
   match state.try_borrow::<WorkerHost>() {
-    Some(host) => host.to_parent.send(msg.to_vec()).is_ok(),
+    Some(host) => msg.len() <= WORKER_MESSAGE_LIMIT && host.to_parent.try_send(msg.to_vec()).is_ok(),
     None => false,
   }
 }
@@ -1016,7 +1003,11 @@ impl Clone for Hasher {
       Self::AwsLc { algo, transcript, .. } => {
         let mut ctx = aws_lc_rs::digest::Context::new(algo);
         ctx.update(transcript);
-        Self::AwsLc { algo, ctx, transcript: transcript.clone() }
+        Self::AwsLc {
+          algo,
+          ctx,
+          transcript: transcript.clone(),
+        }
       }
       Self::Sha512_256(h) => Self::Sha512_256(h.clone()),
       Self::Md5(h) => Self::Md5(h.clone()),
@@ -1029,11 +1020,31 @@ impl Hasher {
     let name = algo.to_ascii_lowercase();
     let name = name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "");
     Ok(match name.as_str() {
-      "sha1" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY), transcript: Vec::new() },
-      "sha224" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA224, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA224), transcript: Vec::new() },
-      "sha256" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA256, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA256), transcript: Vec::new() },
-      "sha384" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA384, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA384), transcript: Vec::new() },
-      "sha512" => Self::AwsLc { algo: &aws_lc_rs::digest::SHA512, ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA512), transcript: Vec::new() },
+      "sha1" => Self::AwsLc {
+        algo: &aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY,
+        ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY),
+        transcript: Vec::new(),
+      },
+      "sha224" => Self::AwsLc {
+        algo: &aws_lc_rs::digest::SHA224,
+        ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA224),
+        transcript: Vec::new(),
+      },
+      "sha256" => Self::AwsLc {
+        algo: &aws_lc_rs::digest::SHA256,
+        ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA256),
+        transcript: Vec::new(),
+      },
+      "sha384" => Self::AwsLc {
+        algo: &aws_lc_rs::digest::SHA384,
+        ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA384),
+        transcript: Vec::new(),
+      },
+      "sha512" => Self::AwsLc {
+        algo: &aws_lc_rs::digest::SHA512,
+        ctx: aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA512),
+        transcript: Vec::new(),
+      },
       "sha512256" => {
         use sha2::Digest;
         Self::Sha512_256(sha2::Sha512_256::new())
@@ -1049,7 +1060,10 @@ impl Hasher {
         ctx.update(data);
         transcript.extend_from_slice(data);
       }
-      Self::Sha512_256(h) => { use sha2::Digest; h.update(data); }
+      Self::Sha512_256(h) => {
+        use sha2::Digest;
+        h.update(data);
+      }
       Self::Md5(h) => h.consume(data),
     }
   }
@@ -1057,7 +1071,10 @@ impl Hasher {
   fn finalize(self) -> Vec<u8> {
     match self {
       Self::AwsLc { ctx, .. } => ctx.finish().as_ref().to_vec(),
-      Self::Sha512_256(h) => { use sha2::Digest; h.finalize().to_vec() }
+      Self::Sha512_256(h) => {
+        use sha2::Digest;
+        h.finalize().to_vec()
+      }
       Self::Md5(h) => h.compute().to_vec(),
     }
   }
@@ -1087,11 +1104,7 @@ pub fn op_crypto_hash_new(state: &mut OpState, #[string] algo: String) -> Result
 }
 
 #[op2(fast)]
-pub fn op_crypto_hash_update(
-  state: &mut OpState,
-  id: u32,
-  #[buffer] data: &[u8],
-) -> Result<(), JsErrorBox> {
+pub fn op_crypto_hash_update(state: &mut OpState, id: u32, #[buffer] data: &[u8]) -> Result<(), JsErrorBox> {
   let table = hash_table(state);
   match table.hashes.get_mut(&id) {
     Some(hasher) => {
@@ -1212,14 +1225,10 @@ fn url_to_parts(u: &url::Url) -> UrlParts {
 
 #[op2]
 #[serde]
-pub fn op_url_parse(
-  #[string] href: String,
-  #[string] base: Option<String>,
-) -> Result<UrlParts, JsErrorBox> {
+pub fn op_url_parse(#[string] href: String, #[string] base: Option<String>) -> Result<UrlParts, JsErrorBox> {
   let parsed = match base {
     Some(base) if !base.is_empty() => {
-      let base_url = url::Url::parse(&base)
-        .map_err(|e| JsErrorBox::type_error(format!("Invalid base URL: {e}")))?;
+      let base_url = url::Url::parse(&base).map_err(|e| JsErrorBox::type_error(format!("Invalid base URL: {e}")))?;
       base_url
         .join(&href)
         .map_err(|e| JsErrorBox::type_error(format!("Invalid URL: {e}")))?
@@ -1237,8 +1246,7 @@ pub fn op_url_set_part(
   #[string] value: String,
 ) -> Result<String, JsErrorBox> {
   let invalid = || JsErrorBox::type_error(format!("Invalid URL {part} '{value}'"));
-  let mut u =
-    url::Url::parse(&href).map_err(|e| JsErrorBox::type_error(format!("Invalid URL: {e}")))?;
+  let mut u = url::Url::parse(&href).map_err(|e| JsErrorBox::type_error(format!("Invalid URL: {e}")))?;
   match part.as_str() {
     "protocol" => u.set_scheme(value.trim_end_matches(':')).map_err(|_| invalid())?,
     "username" => u.set_username(&value).map_err(|_| invalid())?,
@@ -1433,7 +1441,9 @@ pub async fn op_fetch_start(
     let Some(receiver) = receiver else {
       return Err(JsErrorBox::generic("request body stream is unknown"));
     };
-    request = request.body(reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(receiver)));
+    request = request.body(reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(
+      receiver,
+    )));
   }
   let response = request
     .send()
@@ -1443,12 +1453,7 @@ pub async fn op_fetch_start(
   let headers = response
     .headers()
     .iter()
-    .map(|(name, value)| {
-      (
-        name.as_str().to_string(),
-        value.to_str().unwrap_or("").to_string(),
-      )
-    })
+    .map(|(name, value)| (name.as_str().to_string(), value.to_str().unwrap_or("").to_string()))
     .collect();
   let url = response.url().to_string();
   let head = FetchHead {
@@ -1510,7 +1515,7 @@ struct ServeTable {
   next_id: u32,
   listeners: HashMap<u32, crate::serve::Listener>,
   /// req_id -> chunk sink for in-progress streaming responses.
-  streams: HashMap<u32, mpsc::UnboundedSender<Vec<u8>>>,
+  streams: HashMap<u32, (u32, mpsc::Sender<Vec<u8>>)>,
 }
 
 fn serve_table(state: &mut OpState) -> &mut ServeTable {
@@ -1558,9 +1563,7 @@ pub fn bind_reuse_tcp(hostname: &str, port: u16) -> std::io::Result<std::net::Tc
       }
     }
   }
-  Err(last_err.unwrap_or_else(|| {
-    std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no addresses found")
-  }))
+  Err(last_err.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no addresses found")))
 }
 
 #[op2]
@@ -1570,7 +1573,13 @@ pub fn op_serve_listen(
   #[string] hostname: String,
   port: u32,
   #[serde] tls: Option<TlsOptions>,
+  #[serde] limits: Option<crate::serve::ServeLimits>,
 ) -> Result<(u32, u32), JsErrorBox> {
+  let limits = limits.unwrap_or_default();
+  limits.validate().map_err(JsErrorBox::type_error)?;
+  if port > 65535 {
+    return Err(JsErrorBox::range_error("invalid HTTP port"));
+  }
   crate::permissions::check_net(&format!("{hostname}:{port}"))?;
   let tls_config = tls
     .map(|opts| crate::serve::tls_config(&opts.cert, &opts.key))
@@ -1578,16 +1587,13 @@ pub fn op_serve_listen(
     .map_err(JsErrorBox::generic)?;
   let std_listener = bind_reuse_tcp(hostname.as_str(), port as u16)
     .map_err(|e| JsErrorBox::generic(format!("listen {hostname}:{port}: {e}")))?;
-  let bound_port = std_listener
-    .local_addr()
-    .map(|a| a.port() as u32)
-    .unwrap_or(port);
+  let bound_port = std_listener.local_addr().map(|a| a.port() as u32).unwrap_or(port);
   let table = serve_table(state);
   let id = table.next_id;
   table.next_id += 1;
   table
     .listeners
-    .insert(id, crate::serve::start_listener(std_listener, tls_config));
+    .insert(id, crate::serve::start_listener(std_listener, tls_config, limits));
   Ok((id, bound_port))
 }
 
@@ -1596,11 +1602,7 @@ pub fn op_serve_listen(
 /// else is queued without blocking: one op round-trip per batch.
 #[op2]
 #[buffer]
-pub async fn op_serve_pull(
-  state: Rc<RefCell<OpState>>,
-  listener_id: u32,
-  max: u32,
-) -> Result<Vec<u8>, JsErrorBox> {
+pub async fn op_serve_pull(state: Rc<RefCell<OpState>>, listener_id: u32, max: u32) -> Result<Vec<u8>, JsErrorBox> {
   let rx = {
     let state = state.borrow();
     state
@@ -1649,6 +1651,11 @@ pub fn op_serve_respond(
   #[string] headers: String,
   #[buffer(copy)] body: Vec<u8>,
 ) -> Result<(), JsErrorBox> {
+  if body.len() > 8 * 1024 * 1024 {
+    return Err(JsErrorBox::range_error(
+      "response body exceeds 8 MiB; stream it instead",
+    ));
+  }
   let table = serve_table(state);
   let tx = take_pending(table, listener_id, req_id)?;
   let _ = tx.send(crate::serve::ServeResponse {
@@ -1669,10 +1676,10 @@ pub fn op_serve_respond_start(
   status: u32,
   #[string] headers: String,
 ) -> Result<(), JsErrorBox> {
-  let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+  let (chunk_tx, chunk_rx) = mpsc::channel::<Vec<u8>>(8);
   let table = serve_table(state);
   let tx = take_pending(table, listener_id, req_id)?;
-  table.streams.insert(req_id, chunk_tx);
+  table.streams.insert(req_id, (listener_id, chunk_tx));
   let _ = tx.send(crate::serve::ServeResponse {
     status: status as u16,
     headers: crate::serve::split_headers(&headers),
@@ -1681,20 +1688,30 @@ pub fn op_serve_respond_start(
   Ok(())
 }
 
-#[op2(fast)]
-pub fn op_serve_respond_chunk(
-  state: &mut OpState,
+#[op2]
+pub async fn op_serve_respond_chunk(
+  state: Rc<RefCell<OpState>>,
   req_id: u32,
-  #[buffer] chunk: &[u8],
+  #[buffer(copy)] chunk: Vec<u8>,
 ) -> Result<(), JsErrorBox> {
-  let table = serve_table(state);
-  match table.streams.get(&req_id) {
-    Some(tx) => {
-      let _ = tx.send(chunk.to_vec());
-      Ok(())
-    }
-    None => Err(JsErrorBox::generic(format!("no open stream for request {req_id}"))),
+  if chunk.len() > 1024 * 1024 {
+    return Err(JsErrorBox::range_error("response chunk exceeds 1 MiB"));
   }
+  let tx = {
+    let mut state = state.borrow_mut();
+    serve_table(&mut state).streams.get(&req_id).map(|(_, tx)| tx.clone())
+  }
+  .ok_or_else(|| JsErrorBox::generic("response stream is closed"))?;
+  for part in chunk.chunks(64 * 1024) {
+    match tokio::time::timeout(std::time::Duration::from_secs(30), tx.send(part.to_vec())).await {
+      Ok(Ok(())) => {}
+      _ => {
+        serve_table(&mut state.borrow_mut()).streams.remove(&req_id);
+        return Err(JsErrorBox::generic("response disconnected or write deadline exceeded"));
+      }
+    }
+  }
+  Ok(())
 }
 
 #[op2(fast)]
@@ -1708,6 +1725,7 @@ pub fn op_serve_respond_end(state: &mut OpState, req_id: u32) {
 #[op2(fast)]
 pub fn op_serve_close(state: &mut OpState, listener_id: u32) {
   let table = serve_table(state);
+  table.streams.retain(|_, (owner, _)| *owner != listener_id);
   if let Some(listener) = table.listeners.remove(&listener_id) {
     listener.accept_task.abort();
     for task in listener.conn_tasks.lock().unwrap().drain(..) {
@@ -1765,8 +1783,7 @@ where
   S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
   use futures_util::{SinkExt, StreamExt};
-  let (out_tx, mut out_rx) =
-    mpsc::unbounded_channel::<tokio_tungstenite::tungstenite::Message>();
+  let (out_tx, mut out_rx) = mpsc::unbounded_channel::<tokio_tungstenite::tungstenite::Message>();
   let (in_tx, in_rx) = mpsc::unbounded_channel::<WsEvent>();
   let task = tokio::spawn(async move {
     let (mut sink, mut stream) = ws_stream.split();
@@ -1859,10 +1876,7 @@ where
 }
 
 #[op2]
-pub async fn op_ws_connect(
-  state: Rc<RefCell<OpState>>,
-  #[string] url: String,
-) -> Result<u32, JsErrorBox> {
+pub async fn op_ws_connect(state: Rc<RefCell<OpState>>, #[string] url: String) -> Result<u32, JsErrorBox> {
   crate::permissions::check_net(&url_host_for_perm(&url))?;
   let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
     .await
@@ -1877,11 +1891,7 @@ pub async fn op_ws_connect(
 }
 
 #[op2]
-pub async fn op_ws_upgrade(
-  state: Rc<RefCell<OpState>>,
-  listener_id: u32,
-  req_id: u32,
-) -> Result<u32, JsErrorBox> {
+pub async fn op_ws_upgrade(state: Rc<RefCell<OpState>>, listener_id: u32, req_id: u32) -> Result<u32, JsErrorBox> {
   let (on_upgrade, key, resp_tx) = {
     let mut state = state.borrow_mut();
     let table = serve_table(&mut state);
@@ -1904,8 +1914,7 @@ pub async fn op_ws_upgrade(
     (on_upgrade, key, resp_tx)
   };
 
-  let accept_key =
-    tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+  let accept_key = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
   let response = crate::serve::ServeResponse {
     status: 101,
     headers: vec![
@@ -1940,20 +1949,14 @@ pub async fn op_ws_upgrade(
 }
 
 #[op2(fast)]
-pub fn op_ws_send(
-  state: &mut OpState,
-  ws_id: u32,
-  #[buffer] data: &[u8],
-  is_text: bool,
-) -> Result<(), JsErrorBox> {
+pub fn op_ws_send(state: &mut OpState, ws_id: u32, #[buffer] data: &[u8], is_text: bool) -> Result<(), JsErrorBox> {
   let table = ws_table(state);
   let entry = table
     .sockets
     .get(&ws_id)
     .ok_or_else(|| JsErrorBox::generic(format!("invalid websocket id {ws_id}")))?;
   let msg = if is_text {
-    let text = std::str::from_utf8(data)
-      .map_err(|e| JsErrorBox::generic(format!("invalid utf8: {e}")))?;
+    let text = std::str::from_utf8(data).map_err(|e| JsErrorBox::generic(format!("invalid utf8: {e}")))?;
     tokio_tungstenite::tungstenite::Message::text(text)
   } else {
     tokio_tungstenite::tungstenite::Message::binary(data.to_vec())
@@ -1967,10 +1970,7 @@ pub fn op_ws_send(
 
 #[op2]
 #[serde]
-pub async fn op_ws_poll(
-  state: Rc<RefCell<OpState>>,
-  ws_id: u32,
-) -> Result<Option<WsEvent>, JsErrorBox> {
+pub async fn op_ws_poll(state: Rc<RefCell<OpState>>, ws_id: u32) -> Result<Option<WsEvent>, JsErrorBox> {
   let rx = {
     let mut state = state.borrow_mut();
     let table = ws_table(&mut state);
@@ -1990,27 +1990,18 @@ pub async fn op_ws_poll(
 }
 
 #[op2(fast)]
-pub fn op_ws_close(
-  state: &mut OpState,
-  ws_id: u32,
-  code: u32,
-  #[string] reason: String,
-) -> Result<(), JsErrorBox> {
+pub fn op_ws_close(state: &mut OpState, ws_id: u32, code: u32, #[string] reason: String) -> Result<(), JsErrorBox> {
   let table = ws_table(state);
   if let Some(entry) = table.sockets.get(&ws_id) {
     let frame = if code > 0 {
       Some(tokio_tungstenite::tungstenite::protocol::frame::CloseFrame {
-        code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(
-          code as u16,
-        ),
+        code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(code as u16),
         reason: reason.into(),
       })
     } else {
       None
     };
-    let _ = entry
-      .tx
-      .send(tokio_tungstenite::tungstenite::Message::Close(frame));
+    let _ = entry.tx.send(tokio_tungstenite::tungstenite::Message::Close(frame));
   }
   Ok(())
 }
@@ -2072,7 +2063,12 @@ fn checked_program(spec: &SpawnSpec) -> Result<std::ffi::OsString, JsErrorBox> {
   let child_path = spec
     .env
     .as_ref()
-    .and_then(|env| env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone()))
+    .and_then(|env| {
+      env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+        .map(|(_, v)| v.clone())
+    })
     .or_else(|| std::env::var("PATH").ok());
   let resolved = crate::permissions::check_run(&spec.cmd, spec.cwd.as_deref(), child_path.as_deref())?;
   Ok(resolved.map_or_else(|| spec.cmd.clone().into(), std::path::PathBuf::into_os_string))
@@ -2218,7 +2214,10 @@ pub async fn op_child_stdin_write(
 ) -> Result<(), JsErrorBox> {
   let stdin = {
     let mut st = state.borrow_mut();
-    child_table(&mut st).children.get_mut(&id).and_then(|child| child.stdin.take())
+    child_table(&mut st)
+      .children
+      .get_mut(&id)
+      .and_then(|child| child.stdin.take())
   };
   let Some(mut stdin) = stdin else {
     return Err(JsErrorBox::generic("stdin is closed"));
@@ -2290,9 +2289,7 @@ pub fn op_child_spawn_sync(#[serde] spec: SpawnSpec) -> Result<ChildResult, JsEr
   let stderr_pipe = child.stderr.take();
   let stdout_thread = std::thread::spawn(move || read_pipe_to_end(stdout_pipe));
   let stderr_thread = std::thread::spawn(move || read_pipe_to_end(stderr_pipe));
-  let status = child
-    .wait()
-    .map_err(|e| JsErrorBox::generic(format!("wait: {e}")))?;
+  let status = child.wait().map_err(|e| JsErrorBox::generic(format!("wait: {e}")))?;
   Ok(ChildResult {
     code: status.code(),
     stdout: serde_bytes::ByteBuf::from(stdout_thread.join().unwrap_or_default()),
@@ -2503,6 +2500,8 @@ deno_core::extension!(
     op_udp_close,
     crate::optimizer::op_is_wasm_mode,
     crate::optimizer::op_optimizer_heap_stats,
+    crate::optimizer::op_v8_heap_statistics,
+    crate::optimizer::op_v8_heap_spaces,
     crate::optimizer::op_optimizer_compact_memory,
     crate::optimizer::op_optimizer_stats,
     crate::optimizer::op_wasm_compile_app,

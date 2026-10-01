@@ -26,12 +26,60 @@ const LAZY_CJS_FRAGMENT: &str = "jse-cjs-lazy";
 
 /// Bare specifiers that map to builtin shims.
 const BUILTINS: &[&str] = &[
-  "assert", "assert/strict", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto",
-  "dgram", "diagnostics_channel", "dns", "dns/promises", "domain", "events", "fs", "fs/promises", "http",
-  "http2", "https", "inspector", "module", "net", "os", "path", "path/posix", "path/win32",
-  "perf_hooks", "process", "punycode", "querystring", "readline", "readline/promises", "repl", "stream",
-  "stream/consumers", "stream/promises", "stream/web", "string_decoder", "test", "timers", "timers/promises", "tls",
-  "tty", "url", "util", "util/types", "v8", "vm", "wasi", "worker_threads", "ws", "zlib", "sqlite",
+  "assert",
+  "assert/strict",
+  "async_hooks",
+  "buffer",
+  "child_process",
+  "cluster",
+  "console",
+  "constants",
+  "crypto",
+  "dgram",
+  "diagnostics_channel",
+  "dns",
+  "dns/promises",
+  "domain",
+  "events",
+  "fs",
+  "fs/promises",
+  "http",
+  "http2",
+  "https",
+  "inspector",
+  "module",
+  "net",
+  "os",
+  "path",
+  "path/posix",
+  "path/win32",
+  "perf_hooks",
+  "process",
+  "punycode",
+  "querystring",
+  "readline",
+  "readline/promises",
+  "repl",
+  "stream",
+  "stream/consumers",
+  "stream/promises",
+  "stream/web",
+  "string_decoder",
+  "test",
+  "timers",
+  "timers/promises",
+  "tls",
+  "tty",
+  "url",
+  "util",
+  "util/types",
+  "v8",
+  "vm",
+  "wasi",
+  "worker_threads",
+  "ws",
+  "zlib",
+  "sqlite",
 ];
 
 /// Apply `.` and `..` without touching the filesystem, so one file always
@@ -112,7 +160,6 @@ fn builtin_source(spec: &str) -> Option<&'static str> {
     _ => None,
   }
 }
-
 
 struct PackageJson {
   type_: Option<String>,
@@ -222,12 +269,13 @@ fn resolve_file_or_dir(loader: &JseModuleLoader, path: &Path) -> Result<PathBuf,
   // Directory: package.json "main", then index files.
   if path.is_dir() {
     if let Some(pkg) = loader.read_package_json(path)
-      && let Some(main) = &pkg.main {
-        let main_path = path.join(main);
-        if let Ok(resolved) = resolve_file_only(&main_path) {
-          return Ok(resolved);
-        }
+      && let Some(main) = &pkg.main
+    {
+      let main_path = path.join(main);
+      if let Ok(resolved) = resolve_file_only(&main_path) {
+        return Ok(resolved);
       }
+    }
     for name in [
       "index.js",
       "index.ts",
@@ -250,11 +298,7 @@ fn resolve_file_or_dir(loader: &JseModuleLoader, path: &Path) -> Result<PathBuf,
 
 /// Look up tsconfig.json / jsconfig.json compilerOptions (paths and baseUrl)
 /// to resolve project-level path aliases (e.g. `@/*` -> `./src/*`).
-fn resolve_tsconfig_paths(
-  loader: &JseModuleLoader,
-  referrer_dir: &Path,
-  specifier: &str,
-) -> Option<PathBuf> {
+fn resolve_tsconfig_paths(loader: &JseModuleLoader, referrer_dir: &Path, specifier: &str) -> Option<PathBuf> {
   let mut dir = Some(referrer_dir);
   while let Some(d) = dir {
     // Skip directories already known to have no config files.
@@ -281,9 +325,7 @@ fn resolve_tsconfig_paths(
             for (pattern, targets) in paths {
               let targets_vec: Vec<String> = match targets {
                 serde_json::Value::String(s) => vec![s.clone()],
-                serde_json::Value::Array(arr) => {
-                  arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
-                }
+                serde_json::Value::Array(arr) => arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect(),
                 _ => Vec::new(),
               };
 
@@ -337,9 +379,7 @@ fn resolve_tsconfig_paths(
       {
         found_any_config = true;
         let opts = val.get("compilerOptions");
-        let base_url = opts
-          .and_then(|o| o.get("baseUrl"))
-          .and_then(|b| b.as_str());
+        let base_url = opts.and_then(|o| o.get("baseUrl")).and_then(|b| b.as_str());
         let base_dir = match base_url {
           Some(b) => d.join(b),
           None => d.to_path_buf(),
@@ -446,11 +486,7 @@ fn resolve_exports_target(value: &serde_json::Value, is_require: bool) -> Option
   resolve_exports_target_inner(value, !is_require, true)
 }
 
-fn resolve_exports_target_inner(
-  value: &serde_json::Value,
-  is_require: bool,
-  fallback: bool,
-) -> Option<String> {
+fn resolve_exports_target_inner(value: &serde_json::Value, is_require: bool, fallback: bool) -> Option<String> {
   match value {
     serde_json::Value::String(s) => Some(s.clone()),
     // Array form: first entry that resolves wins (Node semantics).
@@ -505,9 +541,10 @@ fn resolve_exports(exports: &serde_json::Value, subpath: &str, is_require: bool)
       }
       // Exact subpath match.
       if let Some(value) = map.get(subpath)
-        && let Some(target) = resolve_exports_target(value, is_require) {
-          return Some(target);
-        }
+        && let Some(target) = resolve_exports_target(value, is_require)
+      {
+        return Some(target);
+      }
       // Pattern match ("./prefix*" or "./*").
       for (key, value) in map {
         if let Some(star) = key.find('*') {
@@ -546,11 +583,7 @@ impl ModuleLoader for JseModuleLoader {
   }
 
   fn get_source_map(&self, specifier: &str) -> Option<Cow<'_, [u8]>> {
-    self
-      .source_maps
-      .borrow()
-      .get(specifier)
-      .map(|v| v.clone().into())
+    self.source_maps.borrow().get(specifier).map(|v| v.clone().into())
   }
 
   /// V8 produced a fresh code cache for a module: persist it so the next
@@ -647,18 +680,18 @@ impl JseModuleLoader {
       let mut dir = Some(referrer_dir);
       while let Some(d) = dir {
         if let Some(pkg) = self.read_package_json(d)
-          && let Some(imports) = &pkg.imports {
-            if let Some(target) = resolve_exports(imports, specifier, is_require) {
-              let target_path = d.join(target);
-              let resolved = resolve_file_only(&target_path)?;
-              return ModuleSpecifier::from_file_path(&resolved)
-                .map_err(|_| err("Invalid path"));
-            }
-            return Err(err(format!(
-              "Package import '{specifier}' is not defined in '{}'",
-              d.display()
-            )));
+          && let Some(imports) = &pkg.imports
+        {
+          if let Some(target) = resolve_exports(imports, specifier, is_require) {
+            let target_path = d.join(target);
+            let resolved = resolve_file_only(&target_path)?;
+            return ModuleSpecifier::from_file_path(&resolved).map_err(|_| err("Invalid path"));
           }
+          return Err(err(format!(
+            "Package import '{specifier}' is not defined in '{}'",
+            d.display()
+          )));
+        }
         dir = d.parent();
       }
       return Err(err(format!("Cannot resolve package import '{specifier}'")));
@@ -666,8 +699,7 @@ impl JseModuleLoader {
 
     // TSConfig / jsconfig paths and baseUrl alias resolution.
     if let Some(mapped) = resolve_tsconfig_paths(self, referrer_dir, specifier) {
-      return ModuleSpecifier::from_file_path(&mapped)
-        .map_err(|_| err(format!("Invalid path '{}'", mapped.display())));
+      return ModuleSpecifier::from_file_path(&mapped).map_err(|_| err(format!("Invalid path '{}'", mapped.display())));
     }
 
     // Bare specifier: node_modules walk-up.
@@ -679,18 +711,18 @@ impl JseModuleLoader {
         let pkg = self.read_package_json(&pkg_dir);
         // "exports" field takes precedence when present.
         if let Some(pkg) = &pkg
-          && let Some(exports) = &pkg.exports {
-            if let Some(target) = resolve_exports(exports, &subpath, is_require) {
-              let target_path = pkg_dir.join(target);
-              if let Ok(resolved) = resolve_file_only(&target_path) {
-                return ModuleSpecifier::from_file_path(&resolved)
-                  .map_err(|_| err("Invalid path"));
-              }
+          && let Some(exports) = &pkg.exports
+        {
+          if let Some(target) = resolve_exports(exports, &subpath, is_require) {
+            let target_path = pkg_dir.join(target);
+            if let Ok(resolved) = resolve_file_only(&target_path) {
+              return ModuleSpecifier::from_file_path(&resolved).map_err(|_| err("Invalid path"));
             }
-            return Err(err(format!(
-              "Package subpath '{subpath}' is not defined by \"exports\" in '{specifier}'"
-            )));
           }
+          return Err(err(format!(
+            "Package subpath '{subpath}' is not defined by \"exports\" in '{specifier}'"
+          )));
+        }
         let target = if subpath == "." {
           match pkg.and_then(|p| p.module.clone().or_else(|| p.main.clone())) {
             Some(main) => pkg_dir.join(main),
@@ -701,8 +733,7 @@ impl JseModuleLoader {
         };
         match resolve_file_or_dir(self, &target) {
           Ok(resolved) => {
-            return ModuleSpecifier::from_file_path(&resolved)
-              .map_err(|_| err("Invalid path"));
+            return ModuleSpecifier::from_file_path(&resolved).map_err(|_| err("Invalid path"));
           }
           Err(_) => {
             return Err(err(format!(
@@ -737,8 +768,7 @@ impl JseModuleLoader {
               if let Some(target) = resolve_exports(exports, &subpath, is_require) {
                 let target_path = pkg_dir.join(target);
                 if let Ok(resolved) = resolve_file_only(&target_path) {
-                  return ModuleSpecifier::from_file_path(&resolved)
-                    .map_err(|_| err("Invalid path"));
+                  return ModuleSpecifier::from_file_path(&resolved).map_err(|_| err("Invalid path"));
                 }
               }
               return Err(err(format!(
@@ -756,8 +786,7 @@ impl JseModuleLoader {
             };
 
             if let Ok(resolved) = resolve_file_or_dir(self, &target) {
-              return ModuleSpecifier::from_file_path(&resolved)
-                .map_err(|_| err("Invalid path"));
+              return ModuleSpecifier::from_file_path(&resolved).map_err(|_| err("Invalid path"));
             }
           }
         }
@@ -794,6 +823,12 @@ impl JseModuleLoader {
       .to_file_path()
       .map_err(|_| err(format!("Only file:// URLs are supported, got {spec_str}")))?;
 
+    if path.extension().is_some_and(|extension| extension == "node") {
+      return Err(err(
+        "ERR_NATIVE_ADDON_UNSUPPORTED: Malia does not implement the Node native addon ABI",
+      ));
+    }
+
     // JSON modules requested with `with { type: "json" }`.
     if matches!(options.requested_module_type, RequestedModuleType::Json) {
       let code = std::fs::read_to_string(&path).map_err(err)?;
@@ -803,9 +838,7 @@ impl JseModuleLoader {
       return Ok(module_source(ModuleType::Json, code, specifier, None));
     }
     if !matches!(options.requested_module_type, RequestedModuleType::None) {
-      return Err(err(format!(
-        "Unsupported module type attribute for '{spec_str}'"
-      )));
+      return Err(err(format!("Unsupported module type attribute for '{spec_str}'")));
     }
 
     let media_type = MediaType::from_path(&path);
@@ -826,14 +859,9 @@ impl JseModuleLoader {
 
     if media_type == MediaType::Wasm || path.extension().and_then(|e| e.to_str()) == Some("wasm") {
       let bytes = std::fs::read(&path).map_err(err)?;
-      if let Some(bundle) = crate::wasm_compiler::extract_wasm_bundle(&bytes) {
+      if let Some(bundle) = crate::wasm_compiler::extract_wasm_bundle(&bytes).map_err(err)? {
         crate::optimizer::set_wasm_mode(true);
-        return Ok(module_source(
-          ModuleType::JavaScript,
-          bundle.source,
-          specifier,
-          None,
-        ));
+        return Ok(module_source(ModuleType::JavaScript, bundle.source, specifier, None));
       }
       use base64::Engine;
       let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -859,12 +887,7 @@ impl JseModuleLoader {
         ),
         b64 = b64
       );
-      return Ok(module_source(
-        ModuleType::JavaScript,
-        wrapper,
-        specifier,
-        None,
-      ));
+      return Ok(module_source(ModuleType::JavaScript, wrapper, specifier, None));
     }
 
     let (is_cjs, explicit_cjs) = self.cjs_kind(&path, media_type);
@@ -873,10 +896,7 @@ impl JseModuleLoader {
 
     let code = if crate::ts::should_transpile(&media_type) {
       let (js, source_map) = crate::ts::transpile(specifier, media_type, code).map_err(err)?;
-      self
-        .source_maps
-        .borrow_mut()
-        .insert(specifier.to_string(), source_map);
+      self.source_maps.borrow_mut().insert(specifier.to_string(), source_map);
       js
     } else {
       code
@@ -913,7 +933,10 @@ impl JseModuleLoader {
       MediaType::JavaScript => {
         let dir = path.parent().unwrap_or(Path::new("/"));
         match self.nearest_package_json(dir) {
-          Some(pkg) => (pkg.type_.as_deref() != Some("module"), pkg.type_.as_deref() == Some("commonjs")),
+          Some(pkg) => (
+            pkg.type_.as_deref() != Some("module"),
+            pkg.type_.as_deref() == Some("commonjs"),
+          ),
           None => (true, false),
         }
       }
@@ -954,12 +977,7 @@ impl JseModuleLoader {
             && let Ok(file_path) = resolved.to_file_path()
             && let Ok(dep_code) = std::fs::read_to_string(&file_path)
           {
-            let dep_exports = self.collect_reexported_named_exports(
-              &resolved,
-              &dep_code,
-              depth + 1,
-              visited,
-            );
+            let dep_exports = self.collect_reexported_named_exports(&resolved, &dep_code, depth + 1, visited);
             for exp in dep_exports {
               if !exports.contains(&exp) {
                 exports.push(exp);
@@ -978,12 +996,7 @@ impl JseModuleLoader {
   /// becomes a lookup into the hoisted namespace objects.
   /// `lazy`: the variant CommonJS dependents link to; it exports the body
   /// without running it, so require() decides when it executes.
-  fn wrap_cjs(
-    &self,
-    specifier: &ModuleSpecifier,
-    code: &str,
-    lazy: bool,
-  ) -> Result<String, ModuleLoaderError> {
+  fn wrap_cjs(&self, specifier: &ModuleSpecifier, code: &str, lazy: bool) -> Result<String, ModuleLoaderError> {
     let code = code.strip_prefix("#!").map_or(code, |rest| {
       // Strip shebang line.
       rest.find('\n').map_or("", |i| &rest[i + 1..])
@@ -1028,8 +1041,12 @@ impl JseModuleLoader {
       map_entries.push_str(&format!("{key}: __jse_m{i},"));
       url_entries.push_str(&format!("{key}: \"{url}\","));
     }
-    out.push_str(&format!("export function __jse_modules() {{ return {{{map_entries}}}; }}\n"));
-    out.push_str(&format!("export function __jse_urls() {{ return {{{url_entries}}}; }}\n"));
+    out.push_str(&format!(
+      "export function __jse_modules() {{ return {{{map_entries}}}; }}\n"
+    ));
+    out.push_str(&format!(
+      "export function __jse_urls() {{ return {{{url_entries}}}; }}\n"
+    ));
     out.push_str("export function __jse_body(module, exports, require, __filename, __dirname) {\n");
     out.push_str(code);
     out.push_str("\n}\n");
@@ -1070,8 +1087,8 @@ fn module_source(
 /// `data: None` still asks V8 to produce a fresh cache after compiling.
 fn code_cache_for(code: &str) -> Option<deno_core::SourceCodeCacheInfo> {
   let hash = crate::cache::stable_hash(code);
-  let data = crate::cache::cache_dir("v8")
-    .and_then(|dir| crate::cache::read(&dir, format!("{hash:016x}.bin").as_str()));
+  let data =
+    crate::cache::cache_dir("v8").and_then(|dir| crate::cache::read(&dir, format!("{hash:016x}.bin").as_str()));
   Some(deno_core::SourceCodeCacheInfo {
     hash,
     data: data.map(std::borrow::Cow::Owned),
@@ -1086,10 +1103,7 @@ fn scan_requires(code: &str) -> Vec<String> {
   let mut out = Vec::new();
   let mut i = 0;
   while i + 7 < bytes.len() {
-    if &bytes[i..i + 7] == b"require"
-      && (i == 0 || !is_ident_char(bytes[i - 1]))
-      && !is_ident_char(bytes[i + 7])
-    {
+    if &bytes[i..i + 7] == b"require" && (i == 0 || !is_ident_char(bytes[i - 1])) && !is_ident_char(bytes[i + 7]) {
       let mut j = i + 7;
       while j < bytes.len() && (bytes[j] as char).is_whitespace() {
         j += 1;
@@ -1111,9 +1125,11 @@ fn scan_requires(code: &str) -> Vec<String> {
           }
           if k < bytes.len()
             && let Ok(s) = std::str::from_utf8(&bytes[start..k])
-              && !s.is_empty() && !out.iter().any(|e| e == s) {
-                out.push(s.to_string());
-              }
+            && !s.is_empty()
+            && !out.iter().any(|e| e == s)
+          {
+            out.push(s.to_string());
+          }
         }
       }
     }
@@ -1155,8 +1171,26 @@ fn is_regex_start(bytes: &[u8], idx: usize) -> bool {
     }
     return matches!(
       b,
-      b'(' | b'[' | b'=' | b':' | b',' | b'!' | b'&' | b'|' | b'?' | b'~' | b'^' | b'+' | b'-'
-        | b'*' | b'%' | b'<' | b'>' | b';' | b'{' | b'}'
+      b'('
+        | b'['
+        | b'='
+        | b':'
+        | b','
+        | b'!'
+        | b'&'
+        | b'|'
+        | b'?'
+        | b'~'
+        | b'^'
+        | b'+'
+        | b'-'
+        | b'*'
+        | b'%'
+        | b'<'
+        | b'>'
+        | b';'
+        | b'{'
+        | b'}'
     );
   }
   true
@@ -1663,7 +1697,20 @@ mod tests {
     let exports = scan_cjs_exports(code);
     assert_eq!(
       exports,
-      vec!["foo", "bar", "baz", "qux", "prop1", "prop2", "alpha", "beta", "gamma", "delta", "epsilon", "afterRegex"]
+      vec![
+        "foo",
+        "bar",
+        "baz",
+        "qux",
+        "prop1",
+        "prop2",
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "afterRegex"
+      ]
     );
   }
 }
@@ -1673,11 +1720,15 @@ mod tests {
 /// index files). Returns a file path, or "node:<name>" for builtins.
 #[deno_core::op2]
 #[string]
-pub fn op_require_resolve(#[string] specifier: String, #[string] parent: String) -> Result<String, deno_error::JsErrorBox> {
+pub fn op_require_resolve(
+  #[string] specifier: String,
+  #[string] parent: String,
+) -> Result<String, deno_error::JsErrorBox> {
   thread_local! {
     static LOADER: JseModuleLoader = JseModuleLoader::new();
   }
-  let not_found = || deno_error::JsErrorBox::generic(format!("Cannot find module '{specifier}' required from {parent}"));
+  let not_found =
+    || deno_error::JsErrorBox::generic(format!("Cannot find module '{specifier}' required from {parent}"));
   let referrer = ModuleSpecifier::from_file_path(&parent).map_err(|_| not_found())?;
   let resolved = LOADER
     .with(|loader| loader.resolve_internal(&specifier, referrer.as_str(), true))

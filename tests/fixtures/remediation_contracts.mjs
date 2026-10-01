@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import v8 from 'node:v8';
+assert.throws(() => vm.createContext({}), { code: 'ERR_VM_UNSUPPORTED' });
+assert.throws(() => vm.runInThisContext('while (true) {}', { timeout: 1 }), { code: 'ERR_VM_UNSUPPORTED' });
+assert.equal(vm.runInThisContext('21 * 2'), 42);
+assert.throws(() => new vm.Script('42', { timeout: 1 }), { code: 'ERR_VM_UNSUPPORTED' });
+assert.throws(() => new vm.Script('42').createCachedData(), { code: 'ERR_VM_UNSUPPORTED' });
+const stats = v8.getHeapStatistics();
+const native = Deno.core.ops.op_optimizer_heap_stats();
+assert.equal(stats.heap_size_limit, native.limit);
+assert(stats.used_heap_size > 0 && stats.used_heap_size <= stats.total_heap_size);
+const spaces = v8.getHeapSpaceStatistics();
+assert(spaces.length > 0);
+assert(spaces.some(s => s.space_used_size > 0));
+assert.throws(() => v8.setFlagsFromString('--fake'), { code: 'ERR_NOT_SUPPORTED' });
+console.log('MAL_011_012_OK');

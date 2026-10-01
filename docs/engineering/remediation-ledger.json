@@ -1,0 +1,737 @@
+{
+  "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+  "working_base_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+  "candidate": "0.1.0, uncommitted working tree; HEAD alone does not identify these changes",
+  "kluster": "Unavailable: no Kluster tools exposed in session",
+  "requirements": [
+    {
+      "id": "MAL-001",
+      "title": "Asynchronous context isolation",
+      "priority": "P0",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/js/node/async_hooks.js",
+        "src/js/02_timers.js"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "V8 continuation-preserved AsyncVariable replaces shared context stack; timers and explicit AsyncResource capture context.",
+      "test_paths": [
+        "tests/fixtures/remediation_async.mjs",
+        "tests/fixtures/remediation_http_wire.mjs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Native async_hooks lifecycle coverage and long retention soak remain open."
+      ],
+      "next_action": "Native async_hooks lifecycle coverage and long retention soak remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-002",
+      "title": "WorkerPool dispatch and lifecycle",
+      "priority": "P1",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/js/08_pool.js",
+        "src/js/06_worker.js",
+        "src/ops.rs",
+        "src/worker.rs"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Single dispatcher, tagged jobs, bounded queues and streaming; cancellation terminates/replaces workers and native execution.",
+      "test_paths": [
+        "tests/fixtures/remediation_pool.mjs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Legacy stream completion reserves __done; sustained lifecycle and memory soak remain open."
+      ],
+      "next_action": "Legacy stream completion reserves __done; sustained lifecycle and memory soak remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-003",
+      "title": "WebAssembly source containers",
+      "priority": "P1",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/wasm_compiler.rs",
+        "src/loader.rs",
+        "src/main.rs"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Wasm output explicitly identified as a Malia source container; parser validates metadata and section bounds. Independent Wasm invocation does not execute embedded JS.",
+      "test_paths": [
+        "tests/cli.rs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Broader malformed-input/fuzz coverage remains open; portable JS compilation is not provided."
+      ],
+      "next_action": "Broader malformed-input/fuzz coverage remains open; portable JS compilation is not provided.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-004",
+      "title": "Entry embedding and permissions",
+      "priority": "P1",
+      "status": "scope restricted",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/main.rs",
+        "src/permissions.rs"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Host executable embeds entry source and versioned permission manifest; legacy no-manifest trailer rejected.",
+      "test_paths": [
+        "tests/cli.rs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Dependency graphs, assets, worker sources and cross-platform packaging are not bundled."
+      ],
+      "next_action": "Dependency graphs, assets, worker sources and cross-platform packaging are not bundled.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-005",
+      "title": "TLS truthfulness",
+      "priority": "P0",
+      "status": "scope restricted",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/js/node/tls.js",
+        "src/ops_extra.rs"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "TLS client reports actual negotiated protocol, cipher and certificate fingerprint; unverified connections remain unauthorized. Unsupported security options reject.",
+      "test_paths": [
+        "tests/fixtures/remediation_tls_wire.mjs",
+        "tests/fixtures/remediation_tls_client.mjs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "TLS server accept, custom CA/client authentication and socket upgrade unsupported; verified-chain success and database TLS breadth remain open."
+      ],
+      "next_action": "TLS server accept, custom CA/client authentication and socket upgrade unsupported; verified-chain success and database TLS breadth remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-006",
+      "title": "HTTP resource limits",
+      "priority": "P1",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/serve.rs",
+        "src/ops.rs",
+        "src/js/11_serve.js",
+        "src/js/node/http.js"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "HTTP body, admission, connection, header and response buffering limits; deadlines and bounded asynchronous writes.",
+      "test_paths": [
+        "tests/fixtures/remediation_http_wire.mjs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Incoming bodies remain buffered; handler AbortSignal propagation, process-wide budgets and sustained RSS/shutdown soak remain open."
+      ],
+      "next_action": "Incoming bodies remain buffered; handler AbortSignal propagation, process-wide budgets and sustained RSS/shutdown soak remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-007",
+      "title": "Permission validation",
+      "priority": "P0",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/config.rs",
+        "src/main.rs",
+        "src/permissions.rs",
+        "src/ops_extra.rs"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Invalid permission config fails closed; explicit entries use discovered policy; TCP/TLS/UDP endpoints validate concrete ports and addresses.",
+      "test_paths": [
+        "tests/cli.rs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Full native-op authorization matrix and symlink check/use confinement remain open; module graph loading remains exempt."
+      ],
+      "next_action": "Full native-op authorization matrix and symlink check/use confinement remain open; module graph loading remains exempt.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-008",
+      "title": "Tracing context and serialization",
+      "priority": "P1",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [
+        "MAL-001"
+      ],
+      "affected_files": [
+        "src/js/18_trace.js"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Trace context uses continuation state; validates W3C version-00 carriers and produces typed OTLP attributes and decimal nanosecond timestamps.",
+      "test_paths": [
+        "tests/fixtures/remediation_trace.mjs",
+        "tests/fixtures/remediation_http_wire.mjs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Span count bound is not a byte bound; official collector/schema validation and network export remain open."
+      ],
+      "next_action": "Span count bound is not a byte bound; official collector/schema validation and network export remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-009",
+      "title": "Queue lease ownership",
+      "priority": "P1",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/js/19_queue.js"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Transactional lease-token schema migration; ownership/expiry checked for ack, nack and renew; exhausted leases dead-letter and replay resets attempts.",
+      "test_paths": [
+        "tests/fixtures/remediation_queue.mjs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Multiprocess contention, disk failures and populated legacy-schema migration coverage remain open."
+      ],
+      "next_action": "Multiprocess contention, disk failures and populated legacy-schema migration coverage remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-010",
+      "title": "KV expiry and budgets",
+      "priority": "P1",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/kv.rs",
+        "src/js/14_kv.js"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "KV expiry index, bounded background sweeping and storage budgets; checked counters and atomic CAS preserve existing values on rejected writes.",
+      "test_paths": [
+        "src/kv.rs",
+        "tests/fixtures/remediation_contracts.mjs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Logical byte limits exclude allocator overhead; long soak and aggregate worker/process memory coverage remain open."
+      ],
+      "next_action": "Logical byte limits exclude allocator overhead; long soak and aggregate worker/process memory coverage remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-011",
+      "title": "VM supported subset",
+      "priority": "P1",
+      "status": "scope restricted",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/js/node/vm.js"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Fake Proxy contexts removed; unsupported isolated contexts, timeouts and cached-data controls fail explicitly. Global evaluation remains available.",
+      "test_paths": [
+        "tests/fixtures/remediation_contracts.mjs",
+        "tests/fixtures/node_full_compatibility.js"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Real V8 contexts and interruptible evaluation are not implemented; no hostile-code sandbox claim."
+      ],
+      "next_action": "Real V8 contexts and interruptible evaluation are not implemented; no hostile-code sandbox claim.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-012",
+      "title": "Accurate telemetry",
+      "priority": "P2",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/optimizer.rs",
+        "src/js/node/v8.js",
+        "src/production.rs"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "V8 heap/space statistics now come from native isolate measurements; process counters have concurrent zero-safe decrement regression.",
+      "test_paths": [
+        "tests/fixtures/remediation_contracts.mjs",
+        "src/production.rs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Complete inflight/error/budget lifecycle metrics and aggregate worker memory remain open."
+      ],
+      "next_action": "Complete inflight/error/budget lifecycle metrics and aggregate worker memory remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-013",
+      "title": "Compatibility program",
+      "priority": "P2",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "src/loader.rs",
+        "tests/integration.rs",
+        "docs/engineering/compatibility-inventory.json"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "54-module static inventory and 26 package versions recorded; missing framework dependencies fail; native addons explicitly reject. Existing framework fixtures pass.",
+      "test_paths": [
+        "tests/integration.rs",
+        "tests/cli.rs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Inventory is not conformance; broad package/API differential coverage and Express lockfile remain open."
+      ],
+      "next_action": "Inventory is not conformance; broad package/API differential coverage and Express lockfile remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-014",
+      "title": "Database resilience",
+      "priority": "P2",
+      "status": "blocked",
+      "evidence_class": "implementation plus explicitly incomplete acceptance",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [
+        "MAL-005"
+      ],
+      "affected_files": [
+        "tests/db/drivers.mjs"
+      ],
+      "reproduction_command": "JSE_DB_REQUIRE_ALL=1 target/release/malia run --allow-all tests/db/drivers.mjs",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Database suite now requires configured endpoints when requested and adds bounded rollback, timeout, protocol-error and cursor checks.",
+      "test_paths": [
+        "tests/db/drivers.mjs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "node --check tests/db/drivers.mjs",
+          "exit": 0,
+          "scope": "syntax only; live suite not run"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Live dependencies/services unavailable for this run; TLS, reconnect, cancellation and fault-injection matrix not verified."
+      ],
+      "next_action": "Live dependencies/services unavailable for this run; TLS, reconnect, cancellation and fault-injection matrix not verified.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-015",
+      "title": "Benchmark policy",
+      "priority": "P2",
+      "status": "blocked",
+      "evidence_class": "implementation plus explicitly incomplete acceptance",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [
+        "MAL-006"
+      ],
+      "affected_files": [
+        "bench/http_external.mjs",
+        "bench/http_external_server.mjs",
+        "src/js/13_wasm_optimizer.js",
+        "src/serve.rs"
+      ],
+      "reproduction_command": "node bench/http_external.mjs /absolute/path/to/target/release/malia 30 16 3",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "External-client identical-application benchmark harness records correctness, latency histograms and environment; implicit periodic GC removed.",
+      "test_paths": [
+        "docs/engineering/benchmark-smoke.json"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "external harness: 1 second, concurrency 2, one repetition after 2-second warmup, Malia and Node",
+          "exit": 0,
+          "scope": "smoke only; both zero errors"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Owner workload/hardware/p99/error/memory budgets remain unset; 30-minute release soak, offered-rate overload, peak RSS and event-loop-delay evidence absent."
+      ],
+      "next_action": "Owner workload/hardware/p99/error/memory budgets remain unset; 30-minute release soak, offered-rate overload, peak RSS and event-loop-delay evidence absent.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-016",
+      "title": "Toolchain and CI",
+      "priority": "P1",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml"
+      ],
+      "reproduction_command": "rtk cargo test --locked",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Rust 1.97.0 and Node 26.4.0 pinned; locked cargo gates and formatting enabled; full local suite and strict Clippy pass.",
+      "test_paths": [
+        "tests/cli.rs",
+        "tests/integration.rs",
+        "tests/remediation.rs"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk cargo test --locked",
+          "exit": 0,
+          "scope": "96 passed; 1 ignored generated dependency doctest; no live DB suite"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Current candidate Linux/Windows CI, clean-cache rebuild and Express dependency lockfile remain open."
+      ],
+      "next_action": "Current candidate Linux/Windows CI, clean-cache rebuild and Express dependency lockfile remain open.",
+      "last_verification_date": "2026-10-01"
+    },
+    {
+      "id": "MAL-017",
+      "title": "Distribution and governance",
+      "priority": "P2",
+      "status": "in progress",
+      "evidence_class": "local runtime tests plus source inspection",
+      "baseline_sha": "44be6e05623a09d4c5fc7a2dbc07b51bbff97f80",
+      "current_sha": "ede5cb5ee0f0813a27691b4310e5009402a3fd90",
+      "owner": "repository maintainers",
+      "dependencies": [],
+      "affected_files": [
+        "scripts/install.sh",
+        ".github/workflows/release.yml",
+        "docs/engineering/dependency-licenses.json"
+      ],
+      "reproduction_command": "rtk proxy python3 tests/installers.py",
+      "expected_behavior": "See corresponding MAL requirement in malia-remediation.md",
+      "actual_behavior": "Installer stages and validates executable before replacing installation; offline failure/upgrade tests; release dispatch validates tag; declared dependency-license inventory recorded.",
+      "test_paths": [
+        "tests/installers.py"
+      ],
+      "commands_and_exits": [
+        {
+          "command": "rtk proxy python3 tests/installers.py",
+          "exit": 0,
+          "scope": "offline disposable installer tests"
+        },
+        {
+          "command": "MALIA_VERSION=v0.1.0 MALIA_NO_MODIFY_PATH=1 sh scripts/install.sh (disposable MALIA_INSTALL_DIR), followed by both aliases eval console.log(6*7)",
+          "exit": 0,
+          "scope": "Published macOS arm64 release only, not the uncommitted candidate"
+        }
+      ],
+      "platform_coverage": [
+        "macOS arm64; Apple M4; Rust 1.97.0; Node 26.4.0"
+      ],
+      "documentation_changes": [
+        "docs/engineering/compatibility-matrix.md",
+        "docs/engineering/remediation-report.md"
+      ],
+      "commit_or_pr": null,
+      "remaining_limitations": [
+        "Candidate publication, all-platform archive/package installs, PowerShell, uninstall, signing/provenance and complete third-party notices remain open."
+      ],
+      "next_action": "Candidate publication, all-platform archive/package installs, PowerShell, uninstall, signing/provenance and complete third-party notices remain open.",
+      "last_verification_date": "2026-10-01"
+    }
+  ],
+  "initial_working_base_sha": "c5893393be21f42ac5c6a91aa2372f1926c3732a",
+  "release_ready": false
+}

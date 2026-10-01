@@ -7,6 +7,115 @@ use std::time::Duration;
 
 const JSE: &str = env!("CARGO_BIN_EXE_jse");
 
+#[test]
+fn mal_007_invalid_permissions_fail_before_execution() {
+  let dir = scratch("mal007-invalid");
+  write(&dir, "main.js", "console.log('USER_CODE_EXECUTED')");
+  for policy in [
+    r#""strcit""#,
+    r#"{"reed":true}"#,
+    r#"{"read":[""]}"#,
+    r#"{"read":[true]}"#,
+    r#"{"read":42}"#,
+    r#"{"read":""}"#,
+  ] {
+    write(&dir, "malia.json", &format!(r#"{{"permissions":{policy}}}"#));
+    let out = jse(&dir, &["run", "main.js"]);
+    assert!(!out.status.success(), "accepted {policy}: {}", describe(&out));
+    assert!(!stdout(&out).contains("USER_CODE_EXECUTED"));
+  }
+  write(&dir, "malia.json", "{ invalid json");
+  assert!(!jse(&dir, &["run", "main.js"]).status.success());
+}
+
+#[test]
+fn mal_007_explicit_entry_respects_config_permissions() {
+  let dir = scratch("mal007-explicit-entry");
+  write(&dir, "malia.json", r#"{"permissions":"strict"}"#);
+  write(
+    &dir,
+    "main.js",
+    "import fs from 'node:fs'; fs.readFileSync('secret.txt');",
+  );
+  write(&dir, "secret.txt", "secret");
+  let out = jse(&dir, &["run", "main.js"]);
+  assert!(!out.status.success(), "{}", describe(&out));
+  assert!(jse(&dir, &["run", "--allow-read", "main.js"]).status.success());
+}
+
+#[test]
+fn mal_004_entry_embedding_preserves_restrictions() {
+  let dir = scratch("mal004-embed");
+  let clean = scratch("mal004-clean");
+  write(&dir, "malia.json", r#"{"permissions":"strict"}"#);
+  write(
+    &dir,
+    "main.js",
+    "import fs from 'node:fs'; console.log(fs.readFileSync('secret.txt', 'utf8'));",
+  );
+  let build = jse(&dir, &["compile", "main.js", "-o", "app"]);
+  assert!(build.status.success(), "{}", describe(&build));
+  let executable = if cfg!(windows) { "app.exe" } else { "app" };
+  std::fs::copy(dir.join(executable), clean.join(executable)).unwrap();
+  write(&clean, "secret.txt", "SHOULD_NOT_READ");
+  let out = Command::new(clean.join(executable))
+    .current_dir(&clean)
+    .output()
+    .unwrap();
+  assert!(!out.status.success(), "{}", describe(&out));
+  assert!(
+    String::from_utf8_lossy(&out.stderr).contains("PermissionDenied"),
+    "{}",
+    describe(&out)
+  );
+}
+
+#[test]
+fn mal_003_container_requires_malia_for_application_behavior() {
+  let dir = scratch("mal003-container");
+  write(&dir, "main.js", "console.log('APPLICATION_SIDE_EFFECT')");
+  let out = jse(&dir, &["compile", "--wasm", "main.js", "-o", "app.wasm"]);
+  assert!(out.status.success(), "{}", describe(&out));
+  let node = Command::new("node")
+    .args([
+      "-e",
+      r#"
+    const assert = require('node:assert/strict');
+    const bytes = require('node:fs').readFileSync('app.wasm');
+    const module = new WebAssembly.Module(bytes);
+    const metadata = JSON.parse(Buffer.from(WebAssembly.Module.customSections(module, 'jse_bundle')[0]));
+    assert.equal(metadata.mode, 'malia_source_container');
+    new WebAssembly.Instance(module).exports._start();
+    console.log('CONTAINER_ONLY');
+  "#,
+    ])
+    .current_dir(&dir)
+    .output()
+    .expect("Node reference required");
+  assert!(node.status.success(), "{}", describe(&node));
+  assert!(!stdout(&node).contains("APPLICATION_SIDE_EFFECT"));
+  let out = jse(&dir, &["run", "app.wasm"]);
+  assert!(
+    out.status.success() && stdout(&out).contains("APPLICATION_SIDE_EFFECT"),
+    "{}",
+    describe(&out)
+  );
+}
+
+#[test]
+fn mal_013_native_addons_reject_explicitly() {
+  let dir = scratch("mal013-addon");
+  write(&dir, "addon.node", "not a supported native addon");
+  write(&dir, "main.mjs", "import './addon.node';");
+  let out = jse(&dir, &["run", "main.mjs"]);
+  assert!(!out.status.success());
+  assert!(
+    String::from_utf8_lossy(&out.stderr).contains("ERR_NATIVE_ADDON_UNSUPPORTED"),
+    "{}",
+    describe(&out)
+  );
+}
+
 fn scratch(name: &str) -> PathBuf {
   let dir = std::env::temp_dir().join(format!("jse-cli-{name}-{}", std::process::id()));
   let _ = std::fs::remove_dir_all(&dir);
@@ -42,12 +151,20 @@ fn stdout(out: &Output) -> String {
 }
 
 fn describe(out: &Output) -> String {
-  format!("status {:?}\nstdout: {}\nstderr: {}", out.status.code(), stdout(out), String::from_utf8_lossy(&out.stderr))
+  format!(
+    "status {:?}\nstdout: {}\nstderr: {}",
+    out.status.code(),
+    stdout(out),
+    String::from_utf8_lossy(&out.stderr)
+  )
 }
 
 fn npm_available() -> bool {
   let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-  Command::new(npm).arg("--version").output().is_ok_and(|o| o.status.success())
+  Command::new(npm)
+    .arg("--version")
+    .output()
+    .is_ok_and(|o| o.status.success())
 }
 
 /// Start a long-running command. Once `ready` shows up, apply `change`, wait
@@ -86,12 +203,17 @@ fn run_while_changing(dir: &Path, args: &[&str], ready: &str, change: impl FnOnc
 #[test]
 fn repl_and_interactive_support_top_level_await() {
   let dir = scratch("repl");
-  let input = "1+1\nconst x = await Promise.resolve(40); x + 2\nx\nawait new Promise(r => setTimeout(() => r('later'), 10))\n";
+  let input =
+    "1+1\nconst x = await Promise.resolve(40); x + 2\nx\nawait new Promise(r => setTimeout(() => r('later'), 10))\n";
   for args in [&["repl"][..], &["-i"][..]] {
     let out = jse_stdin(&dir, args, input);
     let text = stdout(&out);
     for expected in ["2", "42", "40", "'later'"] {
-      assert!(text.lines().any(|l| l.trim() == expected), "{args:?} missing {expected}: {}", describe(&out));
+      assert!(
+        text.lines().any(|l| l.trim() == expected),
+        "{args:?} missing {expected}: {}",
+        describe(&out)
+      );
     }
   }
 }
@@ -102,7 +224,11 @@ fn check_flag_parses_without_running() {
   write(&dir, "ok.ts", "const n: number = 1; console.log('SHOULD_NOT_RUN', n);");
   write(&dir, "bad.js", "const = ;");
   let ok = jse(&dir, &["--check", "ok.ts"]);
-  assert!(ok.status.success() && !stdout(&ok).contains("SHOULD_NOT_RUN"), "{}", describe(&ok));
+  assert!(
+    ok.status.success() && !stdout(&ok).contains("SHOULD_NOT_RUN"),
+    "{}",
+    describe(&ok)
+  );
   let bad = jse(&dir, &["-c", "bad.js"]);
   assert_eq!(bad.status.code(), Some(1), "{}", describe(&bad));
   assert!(String::from_utf8_lossy(&bad.stderr).contains("SyntaxError"));
@@ -113,7 +239,11 @@ fn bench_reports_wall_clock_time() {
   let dir = scratch("bench");
   write(&dir, "b.js", "let s = 0; for (let i = 0; i < 1e5; i++) s += i;");
   let out = jse(&dir, &["bench", "b.js"]);
-  assert!(out.status.success() && stdout(&out).contains("bench: b.js in"), "{}", describe(&out));
+  assert!(
+    out.status.success() && stdout(&out).contains("bench: b.js in"),
+    "{}",
+    describe(&out)
+  );
 }
 
 #[test]
@@ -131,12 +261,20 @@ fn project_config_entry_env_scripts_start_and_build() {
   "scripts": { "hello": "jse run src/hello.js" },
 }"#,
   );
-  write(&dir, "src/main.ts", "const api: string = process.env.API!; console.log('ENTRY', api, process.env.PORT_OR);");
+  write(
+    &dir,
+    "src/main.ts",
+    "const api: string = process.env.API!; console.log('ENTRY', api, process.env.PORT_OR);",
+  );
   write(&dir, "src/hello.js", "console.log('HELLO_SCRIPT');");
 
   for args in [&[][..], &["start"][..]] {
     let out = jse(&dir, args);
-    assert!(stdout(&out).contains("ENTRY http://x/v1 8080"), "{args:?}: {}", describe(&out));
+    assert!(
+      stdout(&out).contains("ENTRY http://x/v1 8080"),
+      "{args:?}: {}",
+      describe(&out)
+    );
   }
   let script = jse(&dir, &["hello"]);
   assert!(stdout(&script).contains("HELLO_SCRIPT"), "{}", describe(&script));
@@ -168,11 +306,24 @@ test("skips itself", (t) => t.skip("not today"));
   let out = jse(&dir, &["test"]);
   let text = stdout(&out);
   assert!(out.status.success(), "{}", describe(&out));
-  for line in ["TAP version 13", "ok 1 - adds", "ok 2 - sees hook", "ok 3 - later # SKIP", "ok 4 - skips itself # SKIP not today", "1..4", "# pass 2", "# fail 0"] {
+  for line in [
+    "TAP version 13",
+    "ok 1 - adds",
+    "ok 2 - sees hook",
+    "ok 3 - later # SKIP",
+    "ok 4 - skips itself # SKIP not today",
+    "1..4",
+    "# pass 2",
+    "# fail 0",
+  ] {
     assert!(text.contains(line), "missing {line:?}: {text}");
   }
 
-  write(&dir, "test.js", "import { test } from 'node:test'; import assert from 'node:assert'; test('fails', () => assert.equal(1, 2));");
+  write(
+    &dir,
+    "test.js",
+    "import { test } from 'node:test'; import assert from 'node:assert'; test('fails', () => assert.equal(1, 2));",
+  );
   let failing = jse(&dir, &["test"]);
   assert_eq!(failing.status.code(), Some(1), "{}", describe(&failing));
   assert!(stdout(&failing).contains("not ok 1 - fails"));
@@ -182,14 +333,27 @@ test("skips itself", (t) => t.skip("not today"));
 fn watch_and_dev_restart_on_change() {
   let dir = scratch("watch");
   write(&dir, "w.js", "console.log('VERSION_1');");
-  let log = run_while_changing(&dir, &["run", "--watch", "w.js"], "VERSION_1", || {
-    write(&dir, "w.js", "console.log('VERSION_2');")
-  }, "VERSION_2");
-  assert!(log.contains("VERSION_1") && log.contains("VERSION_2"), "run --watch: {log}");
+  let log = run_while_changing(
+    &dir,
+    &["run", "--watch", "w.js"],
+    "VERSION_1",
+    || write(&dir, "w.js", "console.log('VERSION_2');"),
+    "VERSION_2",
+  );
+  assert!(
+    log.contains("VERSION_1") && log.contains("VERSION_2"),
+    "run --watch: {log}"
+  );
 
   write(&dir, "jse.json", r#"{ "entry": "app.js" }"#);
   write(&dir, "app.js", "console.log('DEV_1');");
-  let log = run_while_changing(&dir, &["dev"], "DEV_1", || write(&dir, "app.js", "console.log('DEV_2');"), "DEV_2");
+  let log = run_while_changing(
+    &dir,
+    &["dev"],
+    "DEV_1",
+    || write(&dir, "app.js", "console.log('DEV_2');"),
+    "DEV_2",
+  );
   assert!(log.contains("DEV_1") && log.contains("DEV_2"), "dev: {log}");
 }
 
@@ -206,7 +370,11 @@ fn typescript_module_kinds_mts_and_cts() {
   let dir = scratch("tskinds");
   write(&dir, "a.mts", "export const m: string = 'MTS_OK';");
   write(&dir, "b.cts", "const x: string = 'CTS_OK'; module.exports = { c: x };");
-  write(&dir, "main.mts", "import { m } from './a.mts'; import b from './b.cts'; console.log(m, b.c);");
+  write(
+    &dir,
+    "main.mts",
+    "import { m } from './a.mts'; import b from './b.cts'; console.log(m, b.c);",
+  );
   let out = jse(&dir, &["run", "main.mts"]);
   assert!(stdout(&out).contains("MTS_OK CTS_OK"), "{}", describe(&out));
 }
@@ -254,7 +422,12 @@ fn transpile_and_code_caches_are_written() {
   write(&dir, "c.ts", "const n: number = 42; console.log(n);");
   let cache = dir.join("cache");
   for _ in 0..2 {
-    let out = Command::new(JSE).args(["run", "c.ts"]).current_dir(&dir).env("JSE_CACHE_DIR", &cache).output().unwrap();
+    let out = Command::new(JSE)
+      .args(["run", "c.ts"])
+      .current_dir(&dir)
+      .env("JSE_CACHE_DIR", &cache)
+      .output()
+      .unwrap();
     assert!(stdout(&out).contains("42"), "{}", describe(&out));
   }
   let count = |sub: &str| std::fs::read_dir(cache.join(sub)).map(|d| d.count()).unwrap_or(0);
@@ -265,9 +438,18 @@ fn transpile_and_code_caches_are_written() {
 #[test]
 fn console_time_and_dir() {
   let dir = scratch("console");
-  let out = jse(&dir, &["eval", "console.time('t'); console.timeEnd('t'); console.dir({ a: { b: 1 } }, { depth: 0 })"]);
+  let out = jse(
+    &dir,
+    &[
+      "eval",
+      "console.time('t'); console.timeEnd('t'); console.dir({ a: { b: 1 } }, { depth: 0 })",
+    ],
+  );
   let text = stdout(&out);
-  assert!(text.lines().any(|l| l.starts_with("t: ") && l.ends_with("ms")), "{text}");
+  assert!(
+    text.lines().any(|l| l.starts_with("t: ") && l.ends_with("ms")),
+    "{text}"
+  );
   assert!(text.contains("{ a: [Object] }"), "{text}");
 }
 
@@ -282,7 +464,11 @@ fn npm_and_package_bins_receive_flags_verbatim() {
     #[cfg(unix)]
     {
       use std::os::unix::fs::PermissionsExt;
-      std::fs::set_permissions(dir.join("node_modules/.bin/echo-args"), std::fs::Permissions::from_mode(0o755)).unwrap();
+      std::fs::set_permissions(
+        dir.join("node_modules/.bin/echo-args"),
+        std::fs::Permissions::from_mode(0o755),
+      )
+      .unwrap();
     }
   }
   let out = jse(&dir, &["x", "echo-args", "--version", "-p"]);
@@ -293,11 +479,19 @@ fn npm_and_package_bins_receive_flags_verbatim() {
     return;
   }
   let npm = jse(&dir, &["npm", "--version"]);
-  assert!(npm.status.success() && stdout(&npm).trim().starts_with(|c: char| c.is_ascii_digit()), "{}", describe(&npm));
+  assert!(
+    npm.status.success() && stdout(&npm).trim().starts_with(|c: char| c.is_ascii_digit()),
+    "{}",
+    describe(&npm)
+  );
 
   // `add` installs a local package (offline) and records it.
   write(&dir, "package.json", r#"{ "name": "host", "version": "1.0.0" }"#);
-  write(&dir, "localpkg/package.json", r#"{ "name": "localpkg", "version": "1.0.0", "main": "index.js" }"#);
+  write(
+    &dir,
+    "localpkg/package.json",
+    r#"{ "name": "localpkg", "version": "1.0.0", "main": "index.js" }"#,
+  );
   write(&dir, "localpkg/index.js", "module.exports = 'LOCAL_PKG_OK';");
   let add = jse(&dir, &["add", "./localpkg"]);
   assert!(add.status.success(), "{}", describe(&add));
@@ -311,7 +505,11 @@ fn npm_and_package_bins_receive_flags_verbatim() {
 #[test]
 fn log_level_and_format_from_env() {
   let dir = scratch("log");
-  write(&dir, "l.js", "jse.log.info('HIDDEN_INFO'); jse.log.warn('SHOWN_WARN', 'detail');");
+  write(
+    &dir,
+    "l.js",
+    "jse.log.info('HIDDEN_INFO'); jse.log.warn('SHOWN_WARN', 'detail');",
+  );
   let out = Command::new(JSE)
     .args(["run", "l.js"])
     .current_dir(&dir)
@@ -321,7 +519,11 @@ fn log_level_and_format_from_env() {
     .unwrap();
   let text = format!("{}{}", stdout(&out), String::from_utf8_lossy(&out.stderr));
   assert!(!text.contains("HIDDEN_INFO"), "{}", describe(&out));
-  assert!(text.contains(r#""level":"WARN","target":"SHOWN_WARN","message":"detail""#), "{}", describe(&out));
+  assert!(
+    text.contains(r#""level":"WARN","target":"SHOWN_WARN","message":"detail""#),
+    "{}",
+    describe(&out)
+  );
 }
 
 #[test]
@@ -331,5 +533,11 @@ fn node_alias_version_matches_process_version() {
   std::fs::copy(JSE, &node).unwrap();
   let alias = Command::new(&node).arg("--version").current_dir(&dir).output().unwrap();
   let inside = jse(&dir, &["eval", "console.log(process.version)"]);
-  assert_eq!(stdout(&alias).trim(), stdout(&inside).trim(), "{}\n{}", describe(&alias), describe(&inside));
+  assert_eq!(
+    stdout(&alias).trim(),
+    stdout(&inside).trim(),
+    "{}\n{}",
+    describe(&alias),
+    describe(&inside)
+  );
 }

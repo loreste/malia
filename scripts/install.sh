@@ -116,20 +116,35 @@ fi
 
 # -- Install -------------------------------------------------------------------
 
+# Extract only executable names into a disposable staging directory. Validate
+# both aliases before touching an existing installation.
+mkdir -p "$TMP/staged"
+tar -xzf "$TMP/malia.tar.gz" -C "$TMP/staged" malia || {
+  echo "Error: archive is missing malia." >&2; exit 1;
+}
+if [ ! -f "$TMP/staged/malia" ] || [ -L "$TMP/staged/malia" ]; then
+  echo "Error: archive malia must be a regular executable." >&2; exit 1
+fi
+if tar -tzf "$TMP/malia.tar.gz" | grep -qx 'jse'; then
+  tar -xzf "$TMP/malia.tar.gz" -C "$TMP/staged" jse
+  if [ ! -f "$TMP/staged/jse" ] || [ -L "$TMP/staged/jse" ]; then
+    echo "Error: archive jse must be a regular executable." >&2; exit 1
+  fi
+else
+  cp "$TMP/staged/malia" "$TMP/staged/jse"
+fi
+chmod 755 "$TMP/staged/malia" "$TMP/staged/jse"
+for binary in malia jse; do
+  if ! "$TMP/staged/$binary" --version >/dev/null 2>&1; then
+    echo "Error: downloaded $binary cannot run on this system." >&2; exit 1
+  fi
+done
 mkdir -p "$BIN_DIR"
-tar -xzf "$TMP/malia.tar.gz" -C "$BIN_DIR"
-chmod 755 "$BIN_DIR/malia" 2>/dev/null || true
-chmod 755 "$BIN_DIR/jse" 2>/dev/null || true
-
-# Ensure jse alias exists.
-if [ ! -f "$BIN_DIR/jse" ]; then
-  ln -sf "$BIN_DIR/malia" "$BIN_DIR/jse"
-fi
-
-# Verify the binary runs.
-if ! "$BIN_DIR/malia" --version >/dev/null 2>&1; then
-  echo "Warning: installed binary does not appear to run on this system."
-fi
+for binary in malia jse; do
+  cp "$TMP/staged/$binary" "$BIN_DIR/.$binary-new"
+  chmod 755 "$BIN_DIR/.$binary-new"
+  mv -f "$BIN_DIR/.$binary-new" "$BIN_DIR/$binary"
+done
 
 # -- PATH ----------------------------------------------------------------------
 
@@ -157,7 +172,7 @@ case ":$PATH:" in
   *) NEED_PATH=1 ;;
 esac
 
-if [ "$NEED_PATH" -eq 1 ] && [ -n "$PROFILE" ]; then
+if [ "${MALIA_NO_MODIFY_PATH:-0}" != "1" ] && [ "$NEED_PATH" -eq 1 ] && [ -n "$PROFILE" ]; then
   if ! grep -q "$BIN_DIR" "$PROFILE" 2>/dev/null; then
     mkdir -p "$(dirname "$PROFILE")"
     printf "\n# Malia\n%s\n" "$PATH_LINE" >> "$PROFILE"

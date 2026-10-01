@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 // Stub modules so src/ops.rs compiles inside the build script.
 mod worker {
-  pub fn spawn_worker_thread(_specifier: String, _host: crate::ops::WorkerHost) {}
+  pub fn spawn_worker_thread(_specifier: String, _host: crate::ops::WorkerHost) -> std::io::Result<()> {
+    Ok(())
+  }
 }
 
 #[allow(dead_code)]
@@ -99,7 +101,10 @@ mod production {
 mod loader {
   #[deno_core::op2]
   #[string]
-  pub fn op_require_resolve(#[string] _specifier: String, #[string] _parent: String) -> Result<String, deno_error::JsErrorBox> {
+  pub fn op_require_resolve(
+    #[string] _specifier: String,
+    #[string] _parent: String,
+  ) -> Result<String, deno_error::JsErrorBox> {
     Err(deno_error::JsErrorBox::generic("unavailable during snapshot build"))
   }
 }
@@ -149,8 +154,7 @@ mod sql {
 mod config {
   use std::collections::HashMap;
   use std::sync::{LazyLock, RwLock};
-  pub static CONFIG_ENV: LazyLock<RwLock<HashMap<String, String>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+  pub static CONFIG_ENV: LazyLock<RwLock<HashMap<String, String>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
 }
 
 #[allow(dead_code)]
@@ -184,8 +188,5 @@ fn main() {
 
   let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
   std::fs::write(out_dir.join("jse_snapshot.bin"), &snapshot).expect("write snapshot");
-  println!(
-    "cargo::warning=jse startup snapshot: {} bytes",
-    snapshot.len()
-  );
+  println!("cargo::warning=jse startup snapshot: {} bytes", snapshot.len());
 }

@@ -69,7 +69,7 @@
     ops.op_serve_respond_start(listenerId, reqId, resp.status ?? 200, headers);
     try {
       for await (const chunk of iter) {
-        ops.op_serve_respond_chunk(reqId, toBytes(chunk));
+        await ops.op_serve_respond_chunk(reqId, toBytes(chunk));
       }
     } finally {
       ops.op_serve_respond_end(reqId);
@@ -106,7 +106,7 @@
         key: readPem(options.key, "key"),
       };
     }
-    const [id, boundPort] = ops.op_serve_listen(hostname, port, tls);
+    const [id, boundPort] = ops.op_serve_listen(hostname, port, tls, options?.limits);
 
     const server = {
       port: boundPort,
@@ -169,9 +169,6 @@
         if (blob.length === 0) break;
         for (const raw of unpackServeRequests(blob)) {
           serveReqCount++;
-          if (serveReqCount % 500 === 0 && globalThis.jse?.optimizer) {
-            globalThis.jse.optimizer.optimize();
-          }
           handle(raw);
         }
       }

@@ -15,23 +15,25 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.4.0
       - name: Install example and fixture dependencies
         run: |
           npm install --no-audit --no-fund --prefix examples/express_demo
-          npm install --no-audit --no-fund --prefix examples/cjs_demo
-          npm install --no-audit --no-fund --prefix tests/fixtures/frameworks
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+          npm ci --no-audit --no-fund --prefix examples/cjs_demo
+          npm ci --no-audit --no-fund --prefix tests/fixtures/frameworks
+      - run: python3 tests/installers.py
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
       - name: Installer (latest release)
         run: |
-          MALIA_INSTALL_DIR="$RUNNER_TEMP/malia" sh scripts/install.sh
+          MALIA_NO_MODIFY_PATH=1 MALIA_INSTALL_DIR="$RUNNER_TEMP/malia" sh scripts/install.sh
           "$RUNNER_TEMP/malia/bin/jse" eval "console.log(process.version, navigator.userAgent)"
 
   windows:
@@ -39,15 +41,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --bins
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.4.0
+      - name: Install required fixtures
+        run: |
+          npm install --no-audit --no-fund --prefix examples/express_demo
+          npm ci --no-audit --no-fund --prefix examples/cjs_demo
+          npm ci --no-audit --no-fund --prefix tests/fixtures/frameworks
+      - run: cargo build --locked --bins
       - name: Smoke test
         shell: bash
         run: |
           ./target/debug/malia run examples/hello.ts
           ./target/debug/malia eval --allow-all "const fs = await import('node:fs'); const os = await import('node:os'); const p = await import('node:path'); const f = p.join(os.tmpdir(), 'jse-ci.txt'); fs.writeFileSync(f, 'ok'); console.log(fs.readFileSync(f, 'utf8'), p.sep, os.platform(), fs.statSync(f).isFile());"
-      - run: cargo test
+      - run: cargo test --locked
       - name: Installer (latest release)
         shell: pwsh
         run: |
@@ -106,13 +116,13 @@ jobs:
         options: --health-cmd "cqlsh -e 'describe keyspaces'" --health-interval 10s --health-retries 40
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.4.0
       - run: npm ci --no-audit --no-fund --prefix tests/db
-      - run: cargo build --bin jse
+      - run: cargo build --locked --bin jse
       - name: Run drivers against live servers
         working-directory: tests/db
         env:

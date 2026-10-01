@@ -1,6 +1,6 @@
 // Global panic hook and panic isolation for jse.
-use std::panic;
 use crate::logger::{self, LogLevel};
+use std::panic;
 
 pub fn init() {
   panic::set_hook(Box::new(|info| {
@@ -27,10 +27,7 @@ pub fn init() {
     );
 
     // If RUST_BACKTRACE is set, log the backtrace as well
-    if std::env::var("RUST_BACKTRACE")
-      .map(|v| v != "0")
-      .unwrap_or(false)
-    {
+    if std::env::var("RUST_BACKTRACE").map(|v| v != "0").unwrap_or(false) {
       let backtrace = std::backtrace::Backtrace::capture();
       eprintln!("{backtrace}");
     }

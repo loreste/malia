@@ -61,7 +61,7 @@ files are searched in this order: `malia.json`, `malia.toml`,
 | `jse install` | Install npm dependencies (detects npm, pnpm, or yarn lockfiles) |
 | `jse add <pkg>` | Add an npm package |
 | `jse x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
-| `jse compile <file>` | Compile to a standalone executable |
+| `jse compile <file>` | Embed entry source and permissions in the host runtime |
 | `jse config show` | Print the resolved configuration |
 | `jse <script>` | Run a script from the config file or `package.json` |
 
@@ -403,9 +403,9 @@ const job = q.pop("emails", 30000);
 if (job) {
   try {
     await sendEmail(job.payload);
-    q.ack(job.id);
+    q.ack(job.id, job.token);
   } catch {
-    q.nack(job.id, 5000); // retry after 5 s; moved to dead-letter after maxRetries
+    q.nack(job.id, job.token, 5000); // retry after 5 s; moved to dead-letter after maxRetries
   }
 }
 
@@ -521,7 +521,7 @@ console.log(math.add(40, 2));
 ```
 
 ```bash
-jse run --wasm app.ts                 # run the program through WebAssembly
+jse run --wasm app.ts                 # select Wasm options; JavaScript still runs in V8
 jse compile --wasm app.ts -o app.wasm # compile to a .wasm file
 jse run app.wasm
 ```
@@ -700,3 +700,15 @@ client.on("message", (msg) => {
 `send()` auto-binds if the socket is not yet bound. The `message` event
 delivers a `Buffer` and an `rinfo` object with `address`, `port`, `family`,
 and `size`.
+
+## Current engineering limits
+
+See [the compatibility matrix](engineering/compatibility-matrix.md) before deployment. Entry-source executables are not complete application bundles. Wasm source containers execute JavaScript only through Malia. TLS server accept, TLS socket upgrades, custom roots, VM contexts and VM timeouts are currently unsupported and rejected.
+
+HTTP incoming bodies are buffered with configurable `jse.serve({ limits: { maxBodyBytes, maxRequests, maxConnections, bodyTimeoutMs, requestTimeoutMs } }, handler)` limits. Defaults are 1 MiB, 128 requests, 256 connections, 30 seconds to read a body and 30 seconds for response initiation. Full responses are capped at 8 MiB; stream larger output. Await streaming writes; a stream has eight 64 KiB native chunks of capacity, and each submitted chunk may be at most 1 MiB. Node HTTP response writers must respect `write()` returning false and wait for `drain`; queuing more than 1 MiB rejects. These are per-listener limits, not a whole-process RSS guarantee.
+
+WorkerPool defaults: 1024 queued jobs, 64 buffered replies per stream and 30-second active job deadline. Options are `maxQueue`, `maxBuffered`, `timeoutMs`, and `size` (maximum 256). `run(value, { signal })` and `stream(value, { signal })` support cancellation; cancellation terminates and replaces the worker. Worker channels each hold at most 64 messages of at most 1 MiB. The legacy stream completion value `{ __done: true }` remains reserved.
+
+KV defaults are 100000 keys and 64 MiB of logical key, value, entry and expiry-index storage. Capacity errors preserve existing values. Expiry sweeps remove at most 128 keys per 100 ms and per operation; allocator and hash-table overhead are not RSS-accounted by this budget. It is process-local and nonpersistent.
+
+Set `MALIA_NO_MODIFY_PATH=1` when installing into a disposable destination to keep shell profiles untouched.

@@ -10,12 +10,22 @@
     return hex;
   }
 
+  function attributeValue(value) {
+    if (typeof value === "boolean") return { boolValue: value };
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Number.isSafeInteger(value) ? { intValue: String(value) } : { doubleValue: value };
+    }
+    if (Array.isArray(value)) return { arrayValue: { values: value.map(attributeValue) } };
+    return { stringValue: String(value) };
+  }
+
   class Span {
     constructor(name, options = {}) {
       this.name = String(name);
       this.traceId = options.traceId || randomHex(16);
       this.spanId = options.spanId || randomHex(8);
       this.parentSpanId = options.parentSpanId || null;
+      this.flags = options.flags ?? "01";
       this.startTime = options.startTime || Date.now();
       this.endTime = null;
       this.durationMs = null;
@@ -68,13 +78,13 @@
     }
 
     toTraceparent() {
-      return `00-${this.traceId}-${this.spanId}-01`;
+      return `00-${this.traceId}-${this.spanId}-${this.flags}`;
     }
   }
 
   const completedSpans = [];
   const MAX_SPANS = 2000;
-  let activeSpan = null;
+  const context = new Deno.core.AsyncVariable();
 
   const traceEngine = {
     _recordCompletedSpan(span) {
@@ -88,13 +98,15 @@
       let options = {};
       let callback = fnOrOptions;
       if (typeof fnOrOptions === "object" && fnOrOptions !== null) {
-        options = fnOrOptions;
+        options = { ...fnOrOptions };
         callback = fn;
       }
 
-      if (!options.parentSpanId && activeSpan) {
+      const activeSpan = context.get();
+      if (!options.root && !options.traceId && !options.parentSpanId && activeSpan) {
         options.parentSpanId = activeSpan.spanId;
         options.traceId = activeSpan.traceId;
+        options.flags = activeSpan.flags;
       }
 
       const span = new Span(name, options);
@@ -102,8 +114,7 @@
         return span;
       }
 
-      const prev = activeSpan;
-      activeSpan = span;
+      const prev = context.enter(span);
       try {
         const result = callback(span);
         if (result && typeof result.then === "function") {
@@ -111,37 +122,35 @@
             .then((val) => {
               span.setStatus("OK");
               span.end();
-              activeSpan = prev;
               return val;
             })
             .catch((err) => {
               span.recordException(err);
               span.end();
-              activeSpan = prev;
               throw err;
             });
         }
         span.setStatus("OK");
         span.end();
-        activeSpan = prev;
         return result;
       } catch (err) {
         span.recordException(err);
         span.end();
-        activeSpan = prev;
         throw err;
+      } finally {
+        Deno.core.setAsyncContext(prev);
       }
     },
 
     activeSpan() {
-      return activeSpan;
+      return context.get() ?? null;
     },
 
     extract(headers) {
-      const tp = headers?.traceparent || headers?.["traceparent"] || "";
-      if (!tp || typeof tp !== "string") return null;
+      const tp = typeof headers?.get === "function" ? headers.get("traceparent") : headers?.traceparent;
+      if (typeof tp !== "string" || !/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/.test(tp)) return null;
       const parts = tp.split("-");
-      if (parts.length < 4 || parts[0] !== "00") return null;
+      if (/^0+$/.test(parts[1]) || /^0+$/.test(parts[2])) return null;
       return {
         traceId: parts[1],
         parentSpanId: parts[2],
@@ -151,7 +160,8 @@
 
     inject(span, headers = {}) {
       if (span && typeof span.toTraceparent === "function") {
-        headers["traceparent"] = span.toTraceparent();
+        if (typeof headers.set === "function") headers.set("traceparent", span.toTraceparent());
+        else headers["traceparent"] = span.toTraceparent();
       }
       return headers;
     },
@@ -184,13 +194,13 @@
                     spanId: s.spanId,
                     parentSpanId: s.parentSpanId || undefined,
                     name: s.name,
-                    startTimeUnixNano: s.startTime * 1_000_000,
-                    endTimeUnixNano: (s.endTime || s.startTime) * 1_000_000,
+                    startTimeUnixNano: (BigInt(Math.trunc(s.startTime)) * 1_000_000n).toString(),
+                    endTimeUnixNano: (BigInt(Math.trunc(s.endTime ?? s.startTime)) * 1_000_000n).toString(),
                     attributes: Object.entries(s.attributes).map(([k, v]) => ({
                       key: k,
-                      value: typeof v === "number" ? { intValue: v } : { stringValue: String(v) },
+                      value: attributeValue(v),
                     })),
-                    status: s.status,
+                    status: { code: ({ UNSET: 0, OK: 1, ERROR: 2 })[s.status.code] ?? 0, message: s.status.message },
                   })),
                 },
               ],

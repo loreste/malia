@@ -17,8 +17,7 @@ fn grant_all() {
 
 fn run_fixture(name: &str) {
   grant_all();
-  js_engine::runtime::run_file_blocking(&fixture(name))
-    .unwrap_or_else(|e| panic!("fixture {name} failed: {e:#}"));
+  js_engine::runtime::run_file_blocking(&fixture(name)).unwrap_or_else(|e| panic!("fixture {name} failed: {e:#}"));
 }
 
 #[test]
@@ -133,7 +132,11 @@ fn config_file_system_cli() {
     .args(["init"])
     .output()
     .unwrap();
-  assert!(init_out.status.success(), "jse init failed: {}", String::from_utf8_lossy(&init_out.stderr));
+  assert!(
+    init_out.status.success(),
+    "jse init failed: {}",
+    String::from_utf8_lossy(&init_out.stderr)
+  );
   let config_path = tmp_dir.join("jse.json");
   assert!(config_path.exists(), "jse.json must be created");
 
@@ -145,7 +148,10 @@ fn config_file_system_cli() {
     .unwrap();
   assert!(cfg_show.status.success());
   let show_stdout = String::from_utf8_lossy(&cfg_show.stdout);
-  assert!(show_stdout.contains("my-app") || show_stdout.contains("my-jse-app"), "Config show must include app name: {show_stdout}");
+  assert!(
+    show_stdout.contains("my-app") || show_stdout.contains("my-jse-app"),
+    "Config show must include app name: {show_stdout}"
+  );
 
   let cfg_get = std::process::Command::new(jse)
     .current_dir(&tmp_dir)
@@ -193,7 +199,11 @@ fn config_file_system_cli() {
   // Helper module in src/utils/math.ts
   let utils_dir = src_dir.join("utils");
   std::fs::create_dir_all(&utils_dir).unwrap();
-  std::fs::write(utils_dir.join("math.ts"), "export function add(a: number, b: number): number { return a + b; }").unwrap();
+  std::fs::write(
+    utils_dir.join("math.ts"),
+    "export function add(a: number, b: number): number { return a + b; }",
+  )
+  .unwrap();
 
   // Main entry src/index.ts importing via path alias `@/utils/math`
   std::fs::write(
@@ -202,19 +212,31 @@ fn config_file_system_cli() {
   ).unwrap();
 
   // Custom script src/greet.ts
-  std::fs::write(src_dir.join("greet.ts"), "console.log('GREET_OK: hello from custom script!');").unwrap();
+  std::fs::write(
+    src_dir.join("greet.ts"),
+    "console.log('GREET_OK: hello from custom script!');",
+  )
+  .unwrap();
 
   // Test script src/test_runner.ts
-  std::fs::write(src_dir.join("test_runner.ts"), "console.log('TEST_RUNNER_OK: all tests passed');").unwrap();
+  std::fs::write(
+    src_dir.join("test_runner.ts"),
+    "console.log('TEST_RUNNER_OK: all tests passed');",
+  )
+  .unwrap();
 
   // 4. Test running bare jse (auto-resolves jse.json, path aliases, comments, and env)
-  let run_out = std::process::Command::new(jse)
-    .current_dir(&tmp_dir)
-    .output()
-    .unwrap();
-  assert!(run_out.status.success(), "bare jse run failed: {}", String::from_utf8_lossy(&run_out.stderr));
+  let run_out = std::process::Command::new(jse).current_dir(&tmp_dir).output().unwrap();
+  assert!(
+    run_out.status.success(),
+    "bare jse run failed: {}",
+    String::from_utf8_lossy(&run_out.stderr)
+  );
   let stdout = String::from_utf8_lossy(&run_out.stdout);
-  assert!(stdout.contains("INDEX_BOOTSTRAP_OK: 42 PORT=4000 URL=http://localhost:4000/v1"), "Path alias and env expansion must succeed: {stdout}");
+  assert!(
+    stdout.contains("INDEX_BOOTSTRAP_OK: 42 PORT=4000 URL=http://localhost:4000/v1"),
+    "Path alias and env expansion must succeed: {stdout}"
+  );
 
   // 5. Test running custom script via `jse greet`
   let greet_out = std::process::Command::new(jse)
@@ -222,7 +244,11 @@ fn config_file_system_cli() {
     .args(["greet"])
     .output()
     .unwrap();
-  assert!(greet_out.status.success(), "jse greet failed: {}", String::from_utf8_lossy(&greet_out.stderr));
+  assert!(
+    greet_out.status.success(),
+    "jse greet failed: {}",
+    String::from_utf8_lossy(&greet_out.stderr)
+  );
   assert!(String::from_utf8_lossy(&greet_out.stdout).contains("GREET_OK: hello from custom script!"));
 
   // 6. Test running test suite via `jse test`
@@ -231,7 +257,11 @@ fn config_file_system_cli() {
     .args(["test"])
     .output()
     .unwrap();
-  assert!(test_out.status.success(), "jse test failed: {}", String::from_utf8_lossy(&test_out.stderr));
+  assert!(
+    test_out.status.success(),
+    "jse test failed: {}",
+    String::from_utf8_lossy(&test_out.stderr)
+  );
   assert!(String::from_utf8_lossy(&test_out.stdout).contains("TEST_RUNNER_OK: all tests passed"));
 
   // 7. Test TOML format: `jse init --toml --force`
@@ -269,10 +299,20 @@ fn wasm_cli_one_flag() {
 
   // 1. Test compile --wasm
   let compile_out = std::process::Command::new(jse)
-    .args(["compile", "--wasm", src_file.to_str().unwrap(), "-o", wasm_file.to_str().unwrap()])
+    .args([
+      "compile",
+      "--wasm",
+      src_file.to_str().unwrap(),
+      "-o",
+      wasm_file.to_str().unwrap(),
+    ])
     .output()
     .unwrap();
-  assert!(compile_out.status.success(), "jse compile --wasm failed: {}", String::from_utf8_lossy(&compile_out.stderr));
+  assert!(
+    compile_out.status.success(),
+    "jse compile --wasm failed: {}",
+    String::from_utf8_lossy(&compile_out.stderr)
+  );
   assert!(wasm_file.exists(), "compiled .wasm file must exist");
 
   // 2. Test run --wasm <js_file>
@@ -281,7 +321,10 @@ fn wasm_cli_one_flag() {
     .output()
     .unwrap();
   let stdout = String::from_utf8_lossy(&run_wasm_out.stdout);
-  assert!(run_wasm_out.status.success() && stdout.contains("CLI_WASM_MAGIC_42"), "run --wasm failed: {stdout}");
+  assert!(
+    run_wasm_out.status.success() && stdout.contains("CLI_WASM_MAGIC_42"),
+    "run --wasm failed: {stdout}"
+  );
 
   // 3. Test running the compiled .wasm file directly: jse run <wasm_file>
   let run_direct_out = std::process::Command::new(jse)
@@ -289,11 +332,13 @@ fn wasm_cli_one_flag() {
     .output()
     .unwrap();
   let direct_stdout = String::from_utf8_lossy(&run_direct_out.stdout);
-  assert!(run_direct_out.status.success() && direct_stdout.contains("CLI_WASM_MAGIC_42"), "run <file.wasm> failed: {direct_stdout}");
+  assert!(
+    run_direct_out.status.success() && direct_stdout.contains("CLI_WASM_MAGIC_42"),
+    "run <file.wasm> failed: {direct_stdout}"
+  );
 
   let _ = std::fs::remove_dir_all(&tmp_dir);
 }
-
 
 #[test]
 fn bugfix_regression() {
@@ -502,8 +547,7 @@ fn npm_packages() {
   }
   grant_all();
   let main = demo.join("main.js").to_string_lossy().into_owned();
-  js_engine::runtime::run_file_blocking(&main)
-    .unwrap_or_else(|e| panic!("npm demo failed: {e:#}"));
+  js_engine::runtime::run_file_blocking(&main).unwrap_or_else(|e| panic!("npm demo failed: {e:#}"));
 }
 
 /// Permission model, end-to-end through the CLI binary: default deny,
@@ -557,10 +601,7 @@ fn permissions_cli() {
   let out = run(&["run", "--allow-net", &fixture("perm_net.js")]);
   assert!(out.status.success());
   let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-  assert!(
-    !stdout.contains("PermissionDenied"),
-    "unexpected stdout: {stdout}"
-  );
+  assert!(!stdout.contains("PermissionDenied"), "unexpected stdout: {stdout}");
 }
 
 /// Allowlisted permissions must not be escapable via `..`, dangling
@@ -606,7 +647,12 @@ fn permissions_cannot_be_bypassed() {
 
   assert_eq!(result("write-inside"), "ALLOWED");
   assert_eq!(result("run-allowed"), "ALLOWED");
-  for probe in ["write-traversal", "write-dangling-symlink", "sqlite-outside", "run-path-override"] {
+  for probe in [
+    "write-traversal",
+    "write-dangling-symlink",
+    "sqlite-outside",
+    "run-path-override",
+  ] {
     assert_eq!(result(probe), "DENIED", "{probe}");
   }
   assert_ne!(result("fetch-redirect"), "ALLOWED");
@@ -656,12 +702,7 @@ fn node_compat() {
 #[test]
 fn eval_cli() {
   let jse = env!("CARGO_BIN_EXE_jse");
-  let run = |args: &[&str]| {
-    std::process::Command::new(jse)
-      .args(args)
-      .output()
-      .unwrap()
-  };
+  let run = |args: &[&str]| std::process::Command::new(jse).args(args).output().unwrap();
 
   let out = run(&["eval", "--allow-all", "console.log(6*7)"]);
   let stdout = String::from_utf8_lossy(&out.stdout);
@@ -671,12 +712,7 @@ fn eval_cli() {
     String::from_utf8_lossy(&out.stderr)
   );
 
-  let out = run(&[
-    "eval",
-    "--allow-all",
-    "console.log(process.argv.join(' '))",
-    "user-arg",
-  ]);
+  let out = run(&["eval", "--allow-all", "console.log(process.argv.join(' '))", "user-arg"]);
   let stdout = String::from_utf8_lossy(&out.stdout);
   assert!(
     out.status.success() && stdout.contains("jse -e user-arg"),
@@ -716,17 +752,20 @@ fn npm_compatibility_and_portability() {
   std::fs::write(
     ext_pkg_dir.join("package.json"),
     r#"{"name": "global-helper", "type": "module", "main": "index.js"}"#,
-  ).unwrap();
+  )
+  .unwrap();
   std::fs::write(
     ext_pkg_dir.join("index.js"),
     r#"export const info = "GLOBAL_NODE_PATH_OK";"#,
-  ).unwrap();
+  )
+  .unwrap();
 
   let test_script = tmp_dir.join("test_node_path.mjs");
   std::fs::write(
     &test_script,
     r#"import { info } from "global-helper"; console.log(info);"#,
-  ).unwrap();
+  )
+  .unwrap();
 
   let out = std::process::Command::new(jse)
     .args(["run", "--allow-all", test_script.to_str().unwrap()])
@@ -734,9 +773,16 @@ fn npm_compatibility_and_portability() {
     .current_dir(&tmp_dir)
     .output()
     .unwrap();
-  assert!(out.status.success(), "NODE_PATH test failed: {}", String::from_utf8_lossy(&out.stderr));
+  assert!(
+    out.status.success(),
+    "NODE_PATH test failed: {}",
+    String::from_utf8_lossy(&out.stderr)
+  );
   let stdout = String::from_utf8_lossy(&out.stdout);
-  assert!(stdout.contains("GLOBAL_NODE_PATH_OK"), "Must resolve via NODE_PATH: {stdout}");
+  assert!(
+    stdout.contains("GLOBAL_NODE_PATH_OK"),
+    "Must resolve via NODE_PATH: {stdout}"
+  );
 
   // 2. Test package.json "module" field resolution
   let local_nm = tmp_dir.join("node_modules");
@@ -745,34 +791,38 @@ fn npm_compatibility_and_portability() {
   std::fs::write(
     esm_pkg.join("package.json"),
     r#"{"name": "esm-pkg", "type": "module", "module": "esm_entry.mjs"}"#,
-  ).unwrap();
+  )
+  .unwrap();
   std::fs::write(
     esm_pkg.join("esm_entry.mjs"),
     r#"export function ping() { return "ESM_MODULE_FIELD_OK"; }"#,
-  ).unwrap();
+  )
+  .unwrap();
 
   let test_module_script = tmp_dir.join("test_module.mjs");
   std::fs::write(
     &test_module_script,
     r#"import { ping } from "esm-pkg"; console.log(ping());"#,
-  ).unwrap();
+  )
+  .unwrap();
 
   let out_module = std::process::Command::new(jse)
     .args(["run", "--allow-all", test_module_script.to_str().unwrap()])
     .current_dir(&tmp_dir)
     .output()
     .unwrap();
-  assert!(out_module.status.success(), "module field test failed: {}", String::from_utf8_lossy(&out_module.stderr));
+  assert!(
+    out_module.status.success(),
+    "module field test failed: {}",
+    String::from_utf8_lossy(&out_module.stderr)
+  );
   assert!(String::from_utf8_lossy(&out_module.stdout).contains("ESM_MODULE_FIELD_OK"));
 
   // 3. Test node_modules/.bin binary execution via `jse x` and `jse <tool>`
   let bin_dir = local_nm.join(".bin");
   std::fs::create_dir_all(&bin_dir).unwrap();
   let mock_bin = bin_dir.join("mock-tool");
-  std::fs::write(
-    &mock_bin,
-    "#!/bin/sh\necho \"MOCK_TOOL_RUN: $1 $2\"\n",
-  ).unwrap();
+  std::fs::write(&mock_bin, "#!/bin/sh\necho \"MOCK_TOOL_RUN: $1 $2\"\n").unwrap();
 
   #[cfg(unix)]
   {
@@ -789,7 +839,11 @@ fn npm_compatibility_and_portability() {
     .current_dir(&tmp_dir)
     .output()
     .unwrap();
-  assert!(x_out.status.success(), "jse x failed: {}", String::from_utf8_lossy(&x_out.stderr));
+  assert!(
+    x_out.status.success(),
+    "jse x failed: {}",
+    String::from_utf8_lossy(&x_out.stderr)
+  );
   assert!(String::from_utf8_lossy(&x_out.stdout).contains("MOCK_TOOL_RUN: foo bar"));
 
   // Direct invocation: `jse mock-tool alpha beta`
@@ -798,7 +852,11 @@ fn npm_compatibility_and_portability() {
     .current_dir(&tmp_dir)
     .output()
     .unwrap();
-  assert!(direct_out.status.success(), "jse <bin> failed: {}", String::from_utf8_lossy(&direct_out.stderr));
+  assert!(
+    direct_out.status.success(),
+    "jse <bin> failed: {}",
+    String::from_utf8_lossy(&direct_out.stderr)
+  );
   assert!(String::from_utf8_lossy(&direct_out.stdout).contains("MOCK_TOOL_RUN: alpha beta"));
 
   // 4. Test npm wrapper package launcher (npm/jse/bin/jse.js) using node
@@ -810,11 +868,18 @@ fn npm_compatibility_and_portability() {
   if npm_launcher.exists() {
     let node_out = std::process::Command::new("node")
       .arg(&npm_launcher)
-      .args(["eval", "--allow-all", "console.log('NPM_WRAPPER_EXEC_OK: ' + (21 * 2));"])
+      .args([
+        "eval",
+        "--allow-all",
+        "console.log('NPM_WRAPPER_EXEC_OK: ' + (21 * 2));",
+      ])
       .output();
     if let Ok(node_res) = node_out {
       let out_str = String::from_utf8_lossy(&node_res.stdout);
-      assert!(out_str.contains("NPM_WRAPPER_EXEC_OK: 42"), "npm wrapper launcher must succeed: {out_str}");
+      assert!(
+        out_str.contains("NPM_WRAPPER_EXEC_OK: 42"),
+        "npm wrapper launcher must succeed: {out_str}"
+      );
     }
   }
 
@@ -944,7 +1009,12 @@ fn node_cli_emulation_flags() {
 
   // 4. Compatibility flags: --no-warnings and --max-old-space-size
   let out_flags = std::process::Command::new(jse)
-    .args(["--no-warnings", "--max-old-space-size=4096", "-e", "console.log('FLAGS_OK');"])
+    .args([
+      "--no-warnings",
+      "--max-old-space-size=4096",
+      "-e",
+      "console.log('FLAGS_OK');",
+    ])
     .current_dir(&root)
     .output()
     .expect("failed to execute with flags");
@@ -962,8 +1032,14 @@ fn node_cli_emulation_flags() {
 
   // 6. NODE_OPTIONS environment variable
   let out_node_options = std::process::Command::new(jse)
-    .env("NODE_OPTIONS", format!("-r {} --no-warnings", preload_fixture.display()))
-    .args(["-e", "if (!globalThis.PRELOADED) throw new Error('fail'); console.log('NODE_OPTIONS_OK');"])
+    .env(
+      "NODE_OPTIONS",
+      format!("-r {} --no-warnings", preload_fixture.display()),
+    )
+    .args([
+      "-e",
+      "if (!globalThis.PRELOADED) throw new Error('fail'); console.log('NODE_OPTIONS_OK');",
+    ])
     .current_dir(&root)
     .output()
     .expect("failed to execute with NODE_OPTIONS");
@@ -978,7 +1054,10 @@ fn node_cli_emulation_flags() {
   let out_import = std::process::Command::new(jse)
     .arg("--import")
     .arg(&preload_fixture)
-    .args(["-e", "if (!globalThis.PRELOADED) throw new Error('fail'); console.log('IMPORT_FLAG_OK');"])
+    .args([
+      "-e",
+      "if (!globalThis.PRELOADED) throw new Error('fail'); console.log('IMPORT_FLAG_OK');",
+    ])
     .current_dir(&root)
     .output()
     .expect("failed to execute with --import");
@@ -1137,24 +1216,10 @@ fn run_framework_test(script_name: &str) {
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let frameworks_dir = manifest_dir.join("tests/fixtures/frameworks");
 
-  // If node_modules does not exist in tests/fixtures/frameworks, run npm install
-  if !frameworks_dir.join("node_modules").exists() {
-    let npm_status = std::process::Command::new("npm")
-      .args(["install", "--no-audit", "--no-fund"])
-      .current_dir(&frameworks_dir)
-      .status();
-    match npm_status {
-      Ok(st) if !st.success() => {
-        eprintln!("npm install in tests/fixtures/frameworks failed, skipping framework test {script_name}");
-        return;
-      }
-      Err(e) => {
-        eprintln!("npm command not available ({e}), skipping framework test {script_name}");
-        return;
-      }
-      _ => {}
-    }
-  }
+  assert!(
+    frameworks_dir.join("node_modules").exists(),
+    "Required framework dependencies missing: run npm ci --prefix tests/fixtures/frameworks"
+  );
 
   let script_path = frameworks_dir.join(script_name);
   let output = std::process::Command::new(malia)

@@ -1,19 +1,30 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
-use serde::{Deserialize, Serialize};
 
-pub static CONFIG_ENV: LazyLock<RwLock<HashMap<String, String>>> =
-  LazyLock::new(|| RwLock::new(HashMap::new()));
+pub static CONFIG_ENV: LazyLock<RwLock<HashMap<String, String>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+fn non_null_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+  deserializer: D,
+) -> Result<Option<T>, D::Error> {
+  T::deserialize(deserializer).map(Some)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigPermissions {
+  #[serde(default, deserialize_with = "non_null_option")]
   pub all: Option<bool>,
+  #[serde(default, deserialize_with = "non_null_option")]
   pub net: Option<serde_json::Value>, // bool or array of strings
+  #[serde(default, deserialize_with = "non_null_option")]
   pub read: Option<serde_json::Value>, // bool or array of strings
+  #[serde(default, deserialize_with = "non_null_option")]
   pub write: Option<serde_json::Value>, // bool or array of strings
+  #[serde(default, deserialize_with = "non_null_option")]
   pub run: Option<serde_json::Value>, // bool or array of strings
+  #[serde(default, deserialize_with = "non_null_option")]
   pub env: Option<bool>,
 }
 
@@ -60,6 +71,7 @@ pub struct JseConfig {
   pub entry: Option<String>,
   pub env: Option<HashMap<String, serde_json::Value>>,
   pub env_file: Option<String>,
+  #[serde(default, deserialize_with = "non_null_option")]
   pub permissions: Option<ConfigPermissionsField>,
   pub watch: Option<ConfigWatch>,
   pub cluster: Option<ConfigCluster>,
@@ -221,85 +233,54 @@ impl JseConfig {
 
   /// Discover and load a config file starting in `start_dir` and traversing up.
   /// Checks in order: malia.json, malia.toml, malia.config.json, jse.json, jse.toml, jse.config.json, and package.json fallback.
-  pub fn discover(start_dir: &Path) -> Option<(PathBuf, Self)> {
+  pub fn discover(start_dir: &Path) -> anyhow::Result<Option<(PathBuf, Self)>> {
+    use anyhow::Context;
     let mut current = start_dir.to_path_buf();
     loop {
-      // 1. malia.json (supports comments and trailing commas)
-      let malia_json = current.join("malia.json");
-      if malia_json.is_file()
-        && let Ok(content) = std::fs::read_to_string(&malia_json)
-        && let Ok(config) = Self::parse_json(&content)
-      {
-        return Some((malia_json, config));
-      }
-
-      // 2. malia.toml
-      let malia_toml = current.join("malia.toml");
-      if malia_toml.is_file()
-        && let Ok(content) = std::fs::read_to_string(&malia_toml)
-        && let Ok(config) = toml::from_str::<Self>(&content)
-      {
-        return Some((malia_toml, config));
-      }
-
-      // 3. malia.config.json
-      let malia_config_json = current.join("malia.config.json");
-      if malia_config_json.is_file()
-        && let Ok(content) = std::fs::read_to_string(&malia_config_json)
-        && let Ok(config) = Self::parse_json(&content)
-      {
-        return Some((malia_config_json, config));
-      }
-
-      // 4. jse.json (supports comments and trailing commas)
-      let jse_json = current.join("jse.json");
-      if jse_json.is_file()
-        && let Ok(content) = std::fs::read_to_string(&jse_json)
-        && let Ok(config) = Self::parse_json(&content)
-      {
-        return Some((jse_json, config));
-      }
-
-      // 5. jse.toml
-      let jse_toml = current.join("jse.toml");
-      if jse_toml.is_file()
-        && let Ok(content) = std::fs::read_to_string(&jse_toml)
-        && let Ok(config) = toml::from_str::<Self>(&content)
-      {
-        return Some((jse_toml, config));
-      }
-
-      // 6. jse.config.json
-      let jse_config_json = current.join("jse.config.json");
-      if jse_config_json.is_file()
-        && let Ok(content) = std::fs::read_to_string(&jse_config_json)
-        && let Ok(config) = Self::parse_json(&content)
-      {
-        return Some((jse_config_json, config));
-      }
-
-      // 4. package.json fallback (seamless Node.js compatibility)
-      let pkg_json = current.join("package.json");
-      if pkg_json.is_file()
-        && let Ok(content) = std::fs::read_to_string(&pkg_json)
-        && let Ok(pkg) = serde_json::from_str::<PackageJsonFallback>(&content)
-      {
-        let entry = pkg.main.or(pkg.module);
-        let config = Self {
-          name: pkg.name,
-          version: pkg.version,
-          entry,
-          scripts: pkg.scripts,
-          ..Default::default()
+      for name in [
+        "malia.json",
+        "malia.toml",
+        "malia.config.json",
+        "jse.json",
+        "jse.toml",
+        "jse.config.json",
+      ] {
+        let path = current.join(name);
+        if !path.exists() {
+          continue;
+        }
+        let content = std::fs::read_to_string(&path).with_context(|| format!("read config {}", path.display()))?;
+        let config: Self = if name.ends_with(".toml") {
+          toml::from_str(&content).with_context(|| format!("invalid config {}", path.display()))?
+        } else {
+          Self::parse_json(&content).with_context(|| format!("invalid config {}", path.display()))?
         };
-        return Some((pkg_json, config));
+        config
+          .build_permissions()
+          .with_context(|| format!("invalid permissions in {}", path.display()))?;
+        return Ok(Some((path, config)));
       }
-
+      let path = current.join("package.json");
+      if path.is_file() {
+        let content = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let pkg: PackageJsonFallback =
+          serde_json::from_str(&content).with_context(|| format!("invalid {}", path.display()))?;
+        return Ok(Some((
+          path,
+          Self {
+            name: pkg.name,
+            version: pkg.version,
+            entry: pkg.main.or(pkg.module),
+            scripts: pkg.scripts,
+            ..Default::default()
+          },
+        )));
+      }
       if !current.pop() {
         break;
       }
     }
-    None
+    Ok(None)
   }
 
   /// Load environment variables defined in inline `env` or `.env` files.
@@ -349,8 +330,7 @@ impl JseConfig {
       if let Some((key, val)) = trimmed.split_once('=') {
         let key = key.trim();
         let mut val = val.trim();
-        if ((val.starts_with('"') && val.ends_with('"'))
-          || (val.starts_with('\'') && val.ends_with('\'')))
+        if ((val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')))
           && val.len() >= 2
         {
           val = &val[1..val.len() - 1];
@@ -398,64 +378,69 @@ impl JseConfig {
   }
 
   /// Build permissions from configuration file
-  pub fn build_permissions(&self) -> Option<crate::permissions::Permissions> {
-    let perms_field = self.permissions.as_ref()?;
+  pub fn build_permissions(&self) -> anyhow::Result<Option<crate::permissions::Permissions>> {
     use crate::permissions::{PermFlag, Permissions};
-
-    match perms_field {
-      ConfigPermissionsField::Preset(p) => match p.to_lowercase().as_str() {
-        "all" | "allow-all" | "permissive" | "true" => Some(Permissions::allow_all()),
-        "none" | "strict" | "false" => Some(Permissions::default()),
-        _ => Some(Permissions::allow_all()),
+    let Some(field) = &self.permissions else {
+      return Ok(None);
+    };
+    let permissions = match field {
+      ConfigPermissionsField::Preset(p) => match p.as_str() {
+        "all" | "allow-all" | "permissive" | "true" => Permissions::allow_all(),
+        "none" | "strict" | "false" => Permissions::default(),
+        _ => anyhow::bail!("unknown permission preset {p:?}"),
       },
       ConfigPermissionsField::Detailed(perms) => {
-        if perms.all == Some(true) {
-          return Some(Permissions::allow_all());
-        }
-
         let mut flags = Vec::new();
-
-        let parse_flag_val = |name: &str, val: &Option<serde_json::Value>, out: &mut Vec<PermFlag>| {
-          if let Some(v) = val {
-            match v {
-              serde_json::Value::Bool(true) => {
-                if let Some(f) = crate::permissions::parse_flag(name, None) {
-                  out.push(f);
-                }
+        for (name, value) in [
+          ("allow-read", &perms.read),
+          ("allow-write", &perms.write),
+          ("allow-net", &perms.net),
+          ("allow-run", &perms.run),
+        ] {
+          let Some(value) = value else {
+            continue;
+          };
+          let scope = match value {
+            serde_json::Value::Bool(false) => continue,
+            serde_json::Value::Bool(true) => None,
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Array(items) => {
+              anyhow::ensure!(!items.is_empty(), "{name}: empty allowlist; use false to deny");
+              let mut strings = Vec::new();
+              for item in items {
+                let item = item
+                  .as_str()
+                  .ok_or_else(|| anyhow::anyhow!("{name}: entries must be strings"))?;
+                anyhow::ensure!(
+                  !item.trim().is_empty() && !item.contains(','),
+                  "{name}: invalid allowlist entry"
+                );
+                strings.push(item);
               }
-              serde_json::Value::Array(arr) => {
-                let list: Vec<String> = arr
-                  .iter()
-                  .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                  .collect();
-                if !list.is_empty()
-                  && let Some(f) = crate::permissions::parse_flag(name, Some(&list.join(",")))
-                {
-                  out.push(f);
-                }
-              }
-              serde_json::Value::String(s) => {
-                if let Some(f) = crate::permissions::parse_flag(name, Some(s)) {
-                  out.push(f);
-                }
-              }
-              _ => {}
+              Some(strings.join(","))
             }
+            _ => anyhow::bail!("{name}: expected boolean, string or string array"),
+          };
+          if let Some(scope) = &scope {
+            anyhow::ensure!(
+              scope.split(',').all(|s| !s.trim().is_empty()),
+              "{name}: empty allowlist entry"
+            );
           }
-        };
-
-        parse_flag_val("allow-read", &perms.read, &mut flags);
-        parse_flag_val("allow-write", &perms.write, &mut flags);
-        parse_flag_val("allow-net", &perms.net, &mut flags);
-        parse_flag_val("allow-run", &perms.run, &mut flags);
-
+          flags.push(crate::permissions::parse_flag(name, scope.as_deref()).expect("known permission flag"));
+        }
         if perms.env == Some(true) {
           flags.push(PermFlag::Env);
         }
-
-        Some(crate::permissions::from_flags(flags))
+        // Validate every granular rule even when all is explicit.
+        if perms.all == Some(true) {
+          Permissions::allow_all()
+        } else {
+          crate::permissions::from_flags(flags)
+        }
       }
-    }
+    };
+    Ok(Some(permissions))
   }
 
   /// Get specific value by key path (e.g., "entry", "name", "env.PORT")

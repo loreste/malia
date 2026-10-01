@@ -82,7 +82,7 @@ malia run --allow-net examples/server.js        # HTTP server
 malia eval --allow-all 'console.log(6*7)'       # evaluate a snippet as an ES module
 malia                                           # REPL (supports top-level await)
 
-malia compile examples/hello.ts -o dist/hello   # standalone native executable
+malia compile examples/hello.ts -o dist/hello   # host-platform entry-source embedding
 malia compile --wasm examples/hello.ts -o app.wasm
 malia run app.wasm
 ```
@@ -92,7 +92,7 @@ malia run app.wasm
 | Command | Description |
 |---|---|
 | `malia` | Run the entry point from the project config (see [Configuration](#configuration)); opens the REPL if none is found |
-| `malia run <file\|dir>` | Run a `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.tsx`, `.jsx`, or `.wasm` file. `--watch` restarts on file changes; `--wasm` runs the program through WebAssembly |
+| `malia run <file\|dir>` | Run a `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.tsx`, `.jsx`, or `.wasm` file. `--watch` restarts on file changes; `--wasm` selects Wasm-related runtime options; JavaScript still runs in V8 |
 | `malia eval <code>` | Evaluate a snippet as an ES module |
 | `malia repl` | Start the REPL |
 | `malia init [--toml]` | Create a project config file |
@@ -103,8 +103,8 @@ malia run app.wasm
 | `malia x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
 | `malia npm <args>` | Pass arguments through to npm |
 | `malia config [show\|get <key>]` | Print the resolved configuration |
-| `malia compile <file>` | Compile to a standalone executable, or to `.wasm` with `--wasm` |
-| `malia build` | Build a standalone executable from the configured entry point |
+| `malia compile <file>` | Embed entry source in the host runtime, or create a Malia source container with `--wasm` |
+| `malia build` | Embed the configured entry source in the host runtime |
 | `malia bench <file>` | Run a file and print its wall-clock time |
 | `malia <script>` | Run a script defined in the config file or `package.json` |
 
@@ -338,7 +338,7 @@ with an `AbortSignal`.
 | `http2` | Server and client; ALPN `h2` and cleartext `h2c` with prior knowledge |
 | `inspector` | `Session` (connects to the running V8 inspector over WebSocket), `open`, `close`, `url`. See [Debugging](#debugging) |
 | `module` | `createRequire`, `builtinModules`, `isBuiltin`, `Module` |
-| `net`, `tls` | TCP, Unix domain sockets, and Windows named pipes; `Socket`, `Server`, `isIP`, `SocketAddress`, `BlockList` |
+| `net`, `tls` | TCP, Unix domain sockets and Windows named pipes; rustls TLS clients. TLS servers, socket upgrades and unimplemented security options reject explicitly; see the compatibility matrix. |
 | `os` | `cpus` (real brand/frequency/times), `loadavg`, `uptime`, `totalmem`, `freemem`, `networkInterfaces` (MAC addresses), `userInfo`, `hostname`, `platform`, `arch`, `type`, `release`, `version`, `machine`, `availableParallelism`, `tmpdir`, `homedir`, `endianness`. Reports cgroup limits inside containers |
 | `path` | Port of Node's implementation; `posix` and `win32`, with the platform's variant as the default |
 | `perf_hooks` | `performance.mark`, `performance.measure`, `performance.getEntries`, `PerformanceObserver` (fires callbacks on entries), `monitorEventLoopDelay` |
@@ -466,3 +466,7 @@ src/js/internal/  CJS wrapper helpers
 examples/         example programs
 tests/            integration tests and fixtures
 ```
+
+## Engineering status and support boundaries
+
+The [remediation specification](docs/engineering/malia-remediation.md), [evidence ledger](docs/engineering/remediation-ledger.json), and [compatibility matrix](docs/engineering/compatibility-matrix.md) define current support. Open P0 requirements block a production-ready designation. TypeScript is transpile-only. JavaScript source containers in `.wasm` files require Malia; `_start` does not execute their embedded application in an independent engine. `WebAssembly.compileStreaming` and `instantiateStreaming` currently buffer input. Native `build` and `compile` embed only entry source and a permission manifest in the host runtime; they do not bundle dependencies, assets, workers or source maps and do not cross-compile.

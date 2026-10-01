@@ -74,15 +74,12 @@ assert(Buffer.isBuffer(serialized), "serialized is buffer");
 const deserialized = v8.deserialize(serialized);
 assert.strictEqual(deserialized.hello, "v8");
 
-// 6. vm
-const context = vm.createContext({ count: 5 });
-assert(vm.isContext(context), "isContext");
-const vmRes = vm.runInContext("count += 10; count * 2", context);
-assert.strictEqual(vmRes, 30);
-assert.strictEqual(context.count, 15);
-
-const script = new vm.Script("count + 1");
-assert.strictEqual(script.runInContext(context), 16);
+// 6. vm: explicitly restricted until real V8 contexts are implemented.
+assert.throws(() => vm.createContext({ count: 5 }), { code: 'ERR_VM_UNSUPPORTED' });
+assert.throws(() => vm.runInThisContext('while (true) {}', { timeout: 1 }), { code: 'ERR_VM_UNSUPPORTED' });
+const script = new vm.Script('40 + 2');
+assert.strictEqual(script.runInThisContext(), 42);
+assert.throws(() => script.createCachedData(), { code: 'ERR_VM_UNSUPPORTED' });
 
 // 7. diagnostics_channel
 let dcMessage = null;

@@ -24,13 +24,7 @@ fn cache_root() -> Option<PathBuf> {
   // The V8 code cache is only valid for one V8 build; the transpile cache
   // does not care but shares the directory for simplicity.
   let v8_version = deno_core::v8::V8::get_version();
-  Some(
-    std::env::temp_dir().join(format!(
-      "jse-cache-v{}-{}",
-      env!("CARGO_PKG_VERSION"),
-      v8_version
-    )),
-  )
+  Some(std::env::temp_dir().join(format!("jse-cache-v{}-{}", env!("CARGO_PKG_VERSION"), v8_version)))
 }
 
 pub fn cache_dir(subdir: &str) -> Option<PathBuf> {

@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 use deno_error::JsErrorBox;
 
 /// Per-category grant: bare flag => All, `--flag=a,b` => Only([a, b]).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum Allow<T> {
   #[default]
   Deny,
@@ -26,7 +26,7 @@ pub enum Allow<T> {
   Only(Vec<T>),
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Permissions {
   pub allow_all: bool,
   pub read: Allow<PathBuf>,
@@ -100,13 +100,7 @@ fn resolve_abs(abs: &Path, depth: u32) -> PathBuf {
   out
 }
 
-fn check_path(
-  allowed: &Allow<PathBuf>,
-  allow_all: bool,
-  path: &str,
-  kind: &str,
-  flag: &str,
-) -> Result<(), JsErrorBox> {
+fn check_path(allowed: &Allow<PathBuf>, allow_all: bool, path: &str, kind: &str, flag: &str) -> Result<(), JsErrorBox> {
   if allow_all {
     return Ok(());
   }
@@ -154,16 +148,25 @@ pub fn check_net(host: &str) -> Result<(), JsErrorBox> {
   }
 }
 
+/// Check a concrete network endpoint without dropping its port or IPv6 brackets.
+pub fn check_net_addr(host: &str, port: u32) -> Result<(), JsErrorBox> {
+  if port > 65535 {
+    return Err(JsErrorBox::range_error("network port exceeds 65535"));
+  }
+  let endpoint = if host.contains(':') && !host.starts_with('[') {
+    format!("[{host}]:{port}")
+  } else {
+    format!("{host}:{port}")
+  };
+  check_net(&endpoint)
+}
+
 /// Check `--allow-run` for spawning `binary` with the child's `cwd` and
 /// `PATH`. With an allowlist, returns the resolved executable, which the
 /// caller must spawn instead of `binary`: a bare name is looked up in the
 /// child's PATH, so checking the name alone would let `env.PATH` or a file
 /// named like an allowed binary slip through.
-pub fn check_run(
-  binary: &str,
-  cwd: Option<&str>,
-  path_env: Option<&str>,
-) -> Result<Option<PathBuf>, JsErrorBox> {
+pub fn check_run(binary: &str, cwd: Option<&str>, path_env: Option<&str>) -> Result<Option<PathBuf>, JsErrorBox> {
   let p = permissions();
   if p.allow_all {
     return Ok(None);
@@ -194,7 +197,11 @@ fn locate_program(program: &str, cwd: Option<&str>, path_env: Option<&str>) -> O
   if program.contains('/') || (cfg!(windows) && program.contains('\\')) {
     return std::fs::canonicalize(base().join(program)).ok();
   }
-  let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+  let exts: &[&str] = if cfg!(windows) {
+    &["", ".exe", ".cmd", ".bat"]
+  } else {
+    &[""]
+  };
   std::env::split_paths(path_env?)
     .flat_map(|dir| exts.iter().map(move |ext| dir.join(format!("{program}{ext}"))))
     .find(|cand| cand.is_file())
@@ -295,7 +302,10 @@ mod tests {
     let link = dir.join("link");
     let _ = std::fs::remove_file(&link);
     std::os::unix::fs::symlink("/nonexistent-target/file", &link).unwrap();
-    assert_eq!(resolve(link.to_str().unwrap()), PathBuf::from("/nonexistent-target/file"));
+    assert_eq!(
+      resolve(link.to_str().unwrap()),
+      PathBuf::from("/nonexistent-target/file")
+    );
     let _ = std::fs::remove_dir_all(&dir);
   }
 }

@@ -1,108 +1,83 @@
-// node:tls — TLS client and server module powered by rustls.
-import { EventEmitter } from "node:events";
+// rustls clients. Server accept and socket upgrades are explicitly unsupported.
 import net from "node:net";
-
+import { createHash } from "node:crypto";
 const ops = Deno.core.ops;
-
 export const DEFAULT_ECDH_CURVE = "auto";
 export const rootCertificates = [];
-
+function unsupported(name) {
+  const error = new Error(`node:tls does not support ${name}`);
+  error.code = 'ERR_TLS_UNSUPPORTED_OPTION';
+  throw error;
+}
+function validate(options) {
+  for (const key of ['socket', 'ca', 'cert', 'key', 'pfx', 'secureContext', 'checkServerIdentity',
+    'minVersion', 'maxVersion', 'ALPNProtocols', 'ciphers', 'secureProtocol', 'secureOptions',
+    'session', 'requestCert', 'pskCallback', 'ecdhCurve', 'sigalgs', 'clientCertEngine']) {
+    if (options[key] !== undefined) unsupported(key);
+  }
+}
 export class TLSSocket extends net.Socket {
   constructor(socket, options = {}) {
+    if (socket != null) unsupported('socket upgrades');
+    validate(options);
     super(options);
     this.encrypted = true;
-    this.authorized = true;
+    this.authorized = false;
     this.authorizationError = null;
-    this.alpnProtocol = "http/1.1";
-    this.servername = options.servername || "localhost";
+    this.alpnProtocol = false;
+    this.servername = options.servername;
+    this._tlsInfo = null;
   }
-
-  getPeerCertificate(detailed) {
-    return {
-      subject: { CN: this.servername },
-      issuer: { CN: this.servername },
-      valid_from: new Date().toISOString(),
-      valid_to: new Date(Date.now() + 31536000000).toISOString(),
-      fingerprint: "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00",
-    };
+  getPeerCertificate() {
+    const bytes = this._tlsInfo?.peer_certificate;
+    if (!bytes) return {};
+    const raw = Buffer.from(bytes);
+    const fingerprint = createHash('sha256').update(raw).digest('hex').toUpperCase().match(/../g).join(':');
+    return { raw, fingerprint256: fingerprint };
   }
-
   getCipher() {
-    return {
-      name: "TLS_AES_256_GCM_SHA384",
-      standardName: "TLS_AES_256_GCM_SHA384",
-      version: "TLSv1.3",
-    };
+    const info = this._tlsInfo;
+    return info?.cipher ? { name: info.cipher, standardName: info.cipher, version: info.protocol } : null;
   }
-
-  getProtocol() {
-    return "TLSv1.3";
-  }
+  getProtocol() { return this._tlsInfo?.protocol ?? null; }
 }
-
-export function createSecureContext(options = {}) {
-  return {
-    context: options,
-  };
-}
-
+export function createSecureContext() { unsupported('secure contexts'); }
 export function connect(...args) {
-  let options = {};
-  let cb = null;
-
-  if (typeof args[0] === "number") {
-    options.port = args[0];
-    if (typeof args[1] === "string") {
-      options.host = args[1];
-      if (typeof args[2] === "function") cb = args[2];
-    } else if (typeof args[1] === "function") {
-      cb = args[1];
-    }
-  } else if (typeof args[0] === "object") {
-    options = { ...args[0] };
-    if (typeof args[1] === "function") cb = args[1];
+  let options;
+  let cb;
+  if (typeof args[0] === 'object') { options = { ...args[0] }; cb = args[1]; }
+  else {
+    options = { port: args[0] };
+    if (typeof args[1] === 'string') { options.host = args[1]; options = { ...options, ...(typeof args[2] === 'object' ? args[2] : {}) }; }
+    else if (typeof args[1] === 'object') options = { ...options, ...args[1] };
+    cb = args.find(a => typeof a === 'function');
   }
-
-  const host = options.host || "127.0.0.1";
+  validate(options);
+  const host = options.host || 'localhost';
   const port = Number(options.port);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    const error = new RangeError('Invalid TLS port'); error.code = 'ERR_SOCKET_BAD_PORT'; throw error;
+  }
   const servername = options.servername || host;
-
   const socket = new TLSSocket(null, { ...options, servername });
-  if (cb) socket.once("secureConnect", cb);
-
-  (async () => {
-    try {
-      const id = await ops.op_tls_connect(host, port, servername);
-      socket._id = id;
-      socket._bindSocket(id);
-      socket.emit("connect");
-      socket.emit("secureConnect");
-    } catch (err) {
-      socket.emit("error", err);
-      socket.destroy();
-    }
-  })();
-
+  socket.connecting = true;
+  if (typeof cb === 'function') socket.once('secureConnect', cb);
+  ops.op_tls_connect(String(host), port, String(servername), options.rejectUnauthorized === false).then(info => {
+    if (socket.destroyed) { ops.op_net_close(info.id); return; }
+    socket._tlsInfo = info;
+    socket.authorized = info.authorized;
+    socket.authorizationError = info.authorized ? null : 'CERTIFICATE_VERIFICATION_DISABLED';
+    socket.alpnProtocol = info.alpn || false;
+    socket._onConnect(info);
+    socket.emit('secureConnect');
+  }, error => {
+    socket.authorizationError = error.message;
+    socket.destroy(error);
+  });
   return socket;
 }
-
 export class Server extends net.Server {
-  constructor(options = {}, listener) {
-    super(options, listener);
-    this._tlsOptions = options;
-  }
+  constructor() { unsupported('TLS server accept'); }
 }
-
-export function createServer(options, listener) {
-  return new Server(options, listener);
-}
-
-export default {
-  TLSSocket,
-  Server,
-  connect,
-  createServer,
-  createSecureContext,
-  DEFAULT_ECDH_CURVE,
-  rootCertificates,
-};
+export function createServer() { unsupported('TLS server accept'); }
+export default { TLSSocket, Server, connect, createServer, createSecureContext, DEFAULT_ECDH_CURVE, rootCertificates };

@@ -2,9 +2,9 @@
 // Provides out-of-the-box Prometheus/JSON metrics, RSS tracking, and graceful
 // drain hooks for containerized (Kubernetes/Docker/systemd) deployments.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use deno_core::op2;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct ProductionTelemetry {
   pub requests_total: AtomicU64,
@@ -38,7 +38,10 @@ impl ProductionTelemetry {
     // (renamed try_update) on newer toolchains but try_update is not on older ones.
     let mut current = self.active_conns.load(Ordering::Relaxed);
     while current > 0 {
-      match self.active_conns.compare_exchange_weak(current, current - 1, Ordering::Relaxed, Ordering::Relaxed) {
+      match self
+        .active_conns
+        .compare_exchange_weak(current, current - 1, Ordering::Relaxed, Ordering::Relaxed)
+      {
         Ok(_) => break,
         Err(actual) => current = actual,
       }
@@ -48,6 +51,32 @@ impl ProductionTelemetry {
 
 pub static GLOBAL_TELEMETRY: std::sync::LazyLock<ProductionTelemetry> =
   std::sync::LazyLock::new(ProductionTelemetry::new);
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  #[test]
+  fn mal_016_connection_decrement_saturates_under_contention() {
+    let metrics = std::sync::Arc::new(ProductionTelemetry::new());
+    metrics.dec_conns();
+    assert_eq!(metrics.active_conns.load(Ordering::Relaxed), 0);
+    let threads: Vec<_> = (0..8)
+      .map(|_| {
+        let metrics = metrics.clone();
+        std::thread::spawn(move || {
+          for _ in 0..10000 {
+            metrics.inc_conns();
+            metrics.dec_conns();
+          }
+        })
+      })
+      .collect();
+    for thread in threads {
+      thread.join().unwrap();
+    }
+    assert_eq!(metrics.active_conns.load(Ordering::Relaxed), 0);
+  }
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct ProductionMetrics {
@@ -70,4 +99,3 @@ pub fn op_production_metrics() -> ProductionMetrics {
     active_connections: conns,
   }
 }
-

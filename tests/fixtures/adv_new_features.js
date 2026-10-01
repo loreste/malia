@@ -178,7 +178,7 @@ assert(Array.isArray(otlp.resourceSpans) && otlp.resourceSpans.length > 0, "otlp
 const recordedSpans = otlp.resourceSpans[0].scopeSpans[0].spans;
 assert(recordedSpans.length >= 4, "all spans recorded");
 const failedSpan = recordedSpans.find((s) => s.name === "failing_span");
-assert.strictEqual(failedSpan?.status?.code, "ERROR", "failing_span status code is ERROR");
+assert.strictEqual(failedSpan?.status?.code, 2, "OTLP numeric status code is ERROR (2)");
 console.log("   jse.trace Distributed Tracing: PASS");
 
 // ---------------------------------------------------------------------------
@@ -208,18 +208,18 @@ try {
   assert.strictEqual(job2.id, id2);
 
   // Ack job 1
-  q.ack(job1.id);
+  q.ack(job1.id, job1.token);
 
   // Nack job 2 with max retries 1 -> goes to dead-letter queue
   const idDead = q.push("dead_topic", { critical: true }, { maxRetries: 1 });
   const jobDead = q.pop("dead_topic", 5000);
-  q.nack(jobDead.id, 0); // attempts reaches maxRetries 1 -> marks dead
+  q.nack(jobDead.id, jobDead.token, 0); // attempts reaches maxRetries 1 -> marks dead
   const deadList = q.dead("dead_topic");
   assert.strictEqual(deadList.length, 1, "dead letter queue has 1 job");
   assert.strictEqual(deadList[0].id, idDead);
 
   // Ack job 2
-  q.ack(job2.id);
+  q.ack(job2.id, job2.token);
   assert.strictEqual(q.size("email_topic"), 0, "email queue empty after acks");
 } finally {
   q.close();

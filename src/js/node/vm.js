@@ -1,82 +1,34 @@
-// node:vm shim
-const CONTEXT_SYMBOL = Symbol("vm.context");
-
-export function createContext(contextObject = {}) {
-  if (isContext(contextObject)) return contextObject;
-  Object.defineProperty(contextObject, CONTEXT_SYMBOL, {
-    value: true,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-  return contextObject;
+// Deliberately limited: no proxy-eval impersonation of isolated V8 contexts.
+function unsupported(feature) {
+  const error = new Error(`node:vm ${feature} is not supported by Malia`);
+  error.code = 'ERR_VM_UNSUPPORTED'; throw error;
 }
-
-export function isContext(sandbox) {
-  return Boolean(sandbox && sandbox[CONTEXT_SYMBOL]);
-}
-
-export function runInContext(code, contextifiedObject, _options = {}) {
-  if (!isContext(contextifiedObject)) {
-    throw new TypeError("contextifiedObject must be a context created by createContext");
+function optionsSupported(options = {}) {
+  for (const key of Object.keys(options)) {
+    if (key !== 'filename') unsupported(`option ${key}`);
   }
-  const sandbox = new Proxy(contextifiedObject, {
-    has() {
-      return true;
-    },
-    get(target, prop, receiver) {
-      if (prop === Symbol.unscopables) return undefined;
-      if (prop in target) {
-        return Reflect.get(target, prop, receiver);
-      }
-      return Reflect.get(globalThis, prop, receiver);
-    },
-    set(target, prop, value) {
-      return Reflect.set(target, prop, value);
-    },
-  });
-  const fn = new Function("sandbox", "with(sandbox) { return eval(" + JSON.stringify(String(code)) + "); }");
-  return fn.call(contextifiedObject, sandbox);
 }
-
-export function runInNewContext(code, contextObject = {}, options = {}) {
-  const context = createContext(contextObject);
-  return runInContext(code, context, options);
-}
-
-export function runInThisContext(code, _options = {}) {
+export function createContext() { unsupported('isolated contexts'); }
+export function isContext() { return false; }
+export function runInContext() { unsupported('isolated contexts'); }
+export function runInNewContext() { unsupported('isolated contexts'); }
+export function runInThisContext(code, options = {}) {
+  optionsSupported(options);
   return (0, eval)(String(code));
 }
-
-export function compileFunction(code, params = [], _options = {}) {
-  return new Function(...params, code);
+export function compileFunction(code, params = [], options = {}) {
+  optionsSupported(options);
+  return new Function(...params, String(code));
 }
-
 export class Script {
   constructor(code, options = {}) {
+    optionsSupported(options);
     this.code = String(code);
-    this.options = options;
+    this.options = { ...options };
   }
-  runInContext(contextifiedObject, options) {
-    return runInContext(this.code, contextifiedObject, options);
-  }
-  runInNewContext(contextObject, options) {
-    return runInNewContext(this.code, contextObject, options);
-  }
-  runInThisContext(options) {
-    return runInThisContext(this.code, options);
-  }
-  createCachedData() {
-    return Buffer.alloc(0);
-  }
+  runInContext() { unsupported('isolated contexts'); }
+  runInNewContext() { unsupported('isolated contexts'); }
+  runInThisContext(options = {}) { return runInThisContext(this.code, { ...this.options, ...options }); }
+  createCachedData() { unsupported('cached data'); }
 }
-
-export default {
-  createContext,
-  isContext,
-  runInContext,
-  runInNewContext,
-  runInThisContext,
-  compileFunction,
-  Script,
-};
+export default { createContext, isContext, runInContext, runInNewContext, runInThisContext, compileFunction, Script };

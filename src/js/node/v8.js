@@ -1,40 +1,11 @@
 // node:v8 shim
 const ops = Deno.core.ops;
 
-export function getHeapStatistics() {
-  const mem = process.memoryUsage();
-  return {
-    total_heap_size: mem.heapTotal || 32 * 1024 * 1024,
-    total_heap_size_executable: 4 * 1024 * 1024,
-    total_physical_size: mem.rss || 64 * 1024 * 1024,
-    total_available_size: 1024 * 1024 * 1024,
-    used_heap_size: mem.heapUsed || 16 * 1024 * 1024,
-    heap_size_limit: 2 * 1024 * 1024 * 1024,
-    malloced_memory: mem.external || 1024 * 1024,
-    peak_malloced_memory: (mem.external || 1024 * 1024) * 2,
-    does_zap_garbage: 0,
-    number_of_native_contexts: 1,
-    number_of_detached_contexts: 0,
-    total_global_handles_size: 1024 * 1024,
-    used_global_handles_size: 512 * 1024,
-    external_memory: mem.external || 0,
-  };
-}
-
-export function getHeapSpaceStatistics() {
-  const stats = getHeapStatistics();
-  return [
-    { space_name: "read_only_space", space_size: 0, space_used_size: 0, space_available_size: 0, physical_space_size: 0 },
-    { space_name: "new_space", space_size: 16 * 1024 * 1024, space_used_size: 8 * 1024 * 1024, space_available_size: 8 * 1024 * 1024, physical_space_size: 16 * 1024 * 1024 },
-    { space_name: "old_space", space_size: stats.total_heap_size, space_used_size: stats.used_heap_size, space_available_size: stats.total_available_size, physical_space_size: stats.total_heap_size },
-    { space_name: "code_space", space_size: 4 * 1024 * 1024, space_used_size: 2 * 1024 * 1024, space_available_size: 2 * 1024 * 1024, physical_space_size: 4 * 1024 * 1024 },
-    { space_name: "map_space", space_size: 2 * 1024 * 1024, space_used_size: 1 * 1024 * 1024, space_available_size: 1 * 1024 * 1024, physical_space_size: 2 * 1024 * 1024 },
-    { space_name: "large_object_space", space_size: 0, space_used_size: 0, space_available_size: 0, physical_space_size: 0 },
-  ];
-}
-
-export function setFlagsFromString(_flags) {
-  // Accepted as no-op or handled by engine optimizer
+export function getHeapStatistics() { return ops.op_v8_heap_statistics(); }
+export function getHeapSpaceStatistics() { return ops.op_v8_heap_spaces(); }
+export function setFlagsFromString() {
+  const error = new Error('V8 flags must be configured before isolate startup');
+  error.code = 'ERR_NOT_SUPPORTED'; throw error;
 }
 
 export function serialize(value) {
@@ -76,7 +47,8 @@ export class Deserializer {
 }
 
 export function cachedDataVersionTag() {
-  return 1;
+  const error = new Error('V8 cached-data version tags are not exposed');
+  error.code = 'ERR_NOT_SUPPORTED'; throw error;
 }
 
 export default {

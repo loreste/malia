@@ -1,4 +1,4 @@
-// src/js/14_kv.js - JavaScript API for Off-Heap Zero-GC Shared Key-Value Store
+// src/js/14_kv.js - JavaScript API for Process-local native shared key-value store
 ((globalThis) => {
   const { core } = globalThis.__bootstrap;
   const { ops } = core;

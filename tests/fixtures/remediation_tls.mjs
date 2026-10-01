@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import tls from 'node:tls';
+const socket = new tls.TLSSocket();
+assert.equal(socket.authorized, false);
+assert.deepEqual(socket.getPeerCertificate(), {});
+assert.equal(socket.getProtocol(), null);
+assert.equal(socket.getCipher(), null);
+assert.throws(() => tls.createServer(), { code: 'ERR_TLS_UNSUPPORTED_OPTION' });
+assert.throws(() => tls.connect({ host: 'localhost', port: 443, ca: 'ignored?' }), { code: 'ERR_TLS_UNSUPPORTED_OPTION' });
+assert.throws(() => tls.connect({ host: 'localhost', port: 65536 }), { code: 'ERR_SOCKET_BAD_PORT' });
+console.log('MAL_005_CONTRACT_OK');

@@ -7,5 +7,4 @@
 // - Never read per-runtime state (argv/env/OpState) at bootstrap top level;
 //   defer to first use. See 03_process.js (lazy env/argv) and 06_worker.js
 //   (__jseInitWorkerChild, invoked by the worker host after startup).
-pub const STARTUP_SNAPSHOT: &[u8] =
-  include_bytes!(concat!(env!("OUT_DIR"), "/jse_snapshot.bin"));
+pub const STARTUP_SNAPSHOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/jse_snapshot.bin"));

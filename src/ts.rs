@@ -88,8 +88,8 @@ pub fn should_transpile(media_type: &MediaType) -> bool {
 pub fn check_syntax(path: &std::path::Path) -> Result<(), String> {
   let code = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
   let absolute = std::path::absolute(path).map_err(|e| e.to_string())?;
-  let specifier = deno_ast::ModuleSpecifier::from_file_path(&absolute)
-    .map_err(|_| format!("invalid path: {}", path.display()))?;
+  let specifier =
+    deno_ast::ModuleSpecifier::from_file_path(&absolute).map_err(|_| format!("invalid path: {}", path.display()))?;
   let media_type = MediaType::from_specifier(&specifier);
   deno_ast::parse_program(ParseParams {
     specifier,

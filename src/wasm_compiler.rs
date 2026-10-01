@@ -1,12 +1,10 @@
-// src/wasm_compiler.rs - Standalone WebAssembly compiler for JS/TS applications.
-// Compiles any JavaScript/TypeScript application into a 100% compliant .wasm binary
-// with WASI preview-1 exports, embedded application bundle, and execution hooks.
+// Malia source container in a Wasm custom section. The Wasm exports do not
+// execute the embedded JavaScript; application execution requires Malia.
 
-use std::path::Path;
 use anyhow::{Context, Result};
 use deno_ast::MediaType;
 use serde::{Deserialize, Serialize};
-
+use std::path::Path;
 
 /// Metadata stored in the `jse_bundle` custom section of the .wasm binary.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -71,11 +69,7 @@ pub fn compile_file_to_wasm(file_path: &Path) -> Result<Vec<u8>> {
   // Transpile if TypeScript / JSX
   let media_type = MediaType::from_path(file_path);
   let js_source = match media_type {
-    MediaType::TypeScript
-    | MediaType::Mts
-    | MediaType::Cts
-    | MediaType::Jsx
-    | MediaType::Tsx => {
+    MediaType::TypeScript | MediaType::Mts | MediaType::Cts | MediaType::Jsx | MediaType::Tsx => {
       let specifier = deno_core::resolve_path(
         &file_path.to_string_lossy(),
         &std::env::current_dir().unwrap_or_default(),
@@ -86,8 +80,6 @@ pub fn compile_file_to_wasm(file_path: &Path) -> Result<Vec<u8>> {
     }
     _ => raw_source,
   };
-
-
 
   let file_name = file_path
     .file_name()
@@ -111,13 +103,17 @@ pub fn build_wasm_application(entry_name: &str, js_source: &str) -> Result<Vec<u
     entry: entry_name.to_string(),
     source: js_source.to_string(),
     compiler: format!("jse-wasm-{}", env!("CARGO_PKG_VERSION")),
-    mode: "wasm_optimized".to_string(),
+    mode: "malia_source_container".to_string(),
     timestamp: std::time::SystemTime::now()
       .duration_since(std::time::UNIX_EPOCH)
       .map(|d| d.as_secs())
       .unwrap_or(0),
   };
   let metadata_json = serde_json::to_string(&metadata)?;
+  anyhow::ensure!(
+    metadata_json.len() <= MAX_CONTAINER_BYTES,
+    "source container exceeds 16 MiB"
+  );
 
   let mut custom_payload = Vec::new();
   write_name(&mut custom_payload, "jse_bundle");
@@ -220,7 +216,6 @@ pub fn build_wasm_application(entry_name: &str, js_source: &str) -> Result<Vec<u
 
   write_section(&mut wasm, 7, &export_payload);
 
-
   // 7. Code Section (Section 10)
   let mut code_payload = Vec::new();
   write_u32_leb128(&mut code_payload, 4); // 4 function bodies
@@ -278,61 +273,59 @@ pub fn build_wasm_application(entry_name: &str, js_source: &str) -> Result<Vec<u
 }
 
 /// Extract the bundled JavaScript/TypeScript source from a compiled WebAssembly binary.
-pub fn extract_wasm_bundle(bytes: &[u8]) -> Option<WasmBundleMetadata> {
-  if bytes.len() < 8 || &bytes[0..4] != b"\0asm" {
-    return None;
-  }
+pub const MAX_CONTAINER_BYTES: usize = 16 * 1024 * 1024;
 
+pub fn extract_wasm_bundle(bytes: &[u8]) -> Result<Option<WasmBundleMetadata>> {
+  anyhow::ensure!(bytes.len() >= 8 && &bytes[..4] == b"\0asm", "invalid Wasm header");
+  anyhow::ensure!(bytes[4..8] == [1, 0, 0, 0], "unsupported Wasm version");
   let mut offset = 8;
+  let mut bundle = None;
   while offset < bytes.len() {
-    if offset >= bytes.len() {
-      break;
-    }
     let section_id = bytes[offset];
     offset += 1;
-
-    // Read section length LEB128
-    let (section_len, leb_len) = read_u32_leb128(&bytes[offset..])?;
-    offset += leb_len;
-
-    if offset + section_len as usize > bytes.len() {
-      break;
-    }
-
+    anyhow::ensure!(section_id <= 13, "invalid Wasm section id");
+    let (length, encoded) = read_u32_leb128(&bytes[offset..]).context("invalid section length")?;
+    offset += encoded;
+    let end = offset.checked_add(length as usize).context("section length overflow")?;
+    let section = bytes.get(offset..end).context("truncated Wasm section")?;
     if section_id == 0 {
-      // Custom section
-      let section_data = &bytes[offset..offset + section_len as usize];
-      let (name_len, name_leb_len) = read_u32_leb128(section_data)?;
-      let name_start = name_leb_len;
-      let name_end = name_start + name_len as usize;
-
-      if name_end <= section_data.len() {
-        let name = std::str::from_utf8(&section_data[name_start..name_end]).ok()?;
-        if name == "jse_bundle" {
-          let payload_bytes = &section_data[name_end..];
-          let json_str = std::str::from_utf8(payload_bytes).ok()?;
-          return serde_json::from_str(json_str).ok();
-        }
+      let (name_len, name_encoded) = read_u32_leb128(section).context("invalid custom section name length")?;
+      let name_end = name_encoded
+        .checked_add(name_len as usize)
+        .context("name length overflow")?;
+      let name = std::str::from_utf8(
+        section
+          .get(name_encoded..name_end)
+          .context("truncated custom section name")?,
+      )?;
+      if name == "jse_bundle" {
+        anyhow::ensure!(bundle.is_none(), "duplicate Malia source container");
+        let payload = &section[name_end..];
+        anyhow::ensure!(payload.len() <= MAX_CONTAINER_BYTES, "source container exceeds 16 MiB");
+        let metadata: WasmBundleMetadata =
+          serde_json::from_slice(payload).context("invalid source container metadata")?;
+        anyhow::ensure!(metadata.version == 1, "unsupported source container version");
+        anyhow::ensure!(
+          matches!(metadata.mode.as_str(), "malia_source_container" | "wasm_optimized"),
+          "unsupported source container mode"
+        );
+        bundle = Some(metadata);
       }
     }
-
-    offset += section_len as usize;
+    offset = end;
   }
-
-  None
+  Ok(bundle)
 }
 
 fn read_u32_leb128(bytes: &[u8]) -> Option<(u32, usize)> {
   let mut result = 0u32;
-  let mut shift = 0;
-  for (i, &byte) in bytes.iter().enumerate() {
-    result |= ((byte & 0x7f) as u32) << shift;
-    if (byte & 0x80) == 0 {
-      return Some((result, i + 1));
-    }
-    shift += 7;
-    if shift >= 35 {
+  for (i, &byte) in bytes.iter().take(5).enumerate() {
+    if i == 4 && byte & 0xf0 != 0 {
       return None;
+    }
+    result |= ((byte & 0x7f) as u32) << (i * 7);
+    if byte & 0x80 == 0 {
+      return Some((result, i + 1));
     }
   }
   None
@@ -343,6 +336,38 @@ mod tests {
   use super::*;
 
   #[test]
+  fn mal_003_rejects_invalid_sections_and_metadata() {
+    let header = b"\0asm\x01\0\0\0";
+    for tail in [&[0, 128][..], &[0, 255, 255, 255, 255, 31], &[0, 10, 1, b'x']] {
+      let mut bytes = header.to_vec();
+      bytes.extend_from_slice(tail);
+      assert!(extract_wasm_bundle(&bytes).is_err());
+    }
+    let mut bytes = header.to_vec();
+    let mut custom = Vec::new();
+    write_name(&mut custom, "jse_bundle");
+    custom.extend_from_slice(b"invalid json");
+    write_section(&mut bytes, 0, &custom);
+    assert!(extract_wasm_bundle(&bytes).is_err());
+    let valid = build_wasm_application("main.js", "42").unwrap();
+    let mut meta = extract_wasm_bundle(&valid).unwrap().unwrap();
+    meta.version = 99;
+    let mut bytes = header.to_vec();
+    let mut custom = Vec::new();
+    write_name(&mut custom, "jse_bundle");
+    custom.extend_from_slice(&serde_json::to_vec(&meta).unwrap());
+    write_section(&mut bytes, 0, &custom);
+    assert!(extract_wasm_bundle(&bytes).is_err());
+  }
+
+  #[test]
+  fn mal_003_rejects_unknown_wasm_version() {
+    let mut bytes = build_wasm_application("x.js", "globalThis.sideEffect = true").unwrap();
+    bytes[4] = 2;
+    assert!(extract_wasm_bundle(&bytes).is_err());
+  }
+
+  #[test]
   fn test_wasm_compilation_and_extraction() {
     let source = "console.log('hello from wasm application'); const x = 40 + 2;";
     let wasm_bytes = build_wasm_application("test_app.js", source).expect("build wasm");
@@ -350,9 +375,11 @@ mod tests {
     assert_eq!(&wasm_bytes[0..4], b"\0asm");
     assert_eq!(&wasm_bytes[4..8], &[1, 0, 0, 0]);
 
-    let meta = extract_wasm_bundle(&wasm_bytes).expect("extract bundle");
+    let meta = extract_wasm_bundle(&wasm_bytes)
+      .expect("valid container")
+      .expect("extract bundle");
     assert_eq!(meta.entry, "test_app.js");
     assert_eq!(meta.source, source);
-    assert_eq!(meta.mode, "wasm_optimized");
+    assert_eq!(meta.mode, "malia_source_container");
   }
 }

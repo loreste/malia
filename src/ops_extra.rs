@@ -922,7 +922,7 @@ pub async fn op_net_listen(
     return Ok(ListenInfo { id, port: 0, host });
   }
 
-  crate::permissions::check_net(&host)?;
+  crate::permissions::check_net_addr(&host, port)?;
   let std_listener = bind_reuse_tcp(host.as_str(), port as u16)
     .map_err(|e| JsErrorBox::generic(format!("listen {host}:{port}: {e}")))?;
   let listener = tokio::net::TcpListener::from_std(std_listener)
@@ -1062,7 +1062,7 @@ pub async fn op_net_connect(
     return Ok(insert_conn_unix(&inner, reader, writer, &host));
   }
 
-  crate::permissions::check_net(&host)?;
+  crate::permissions::check_net_addr(&host, port)?;
   let stream = tokio::net::TcpStream::connect((host.as_str(), port as u16))
     .await
     .map_err(|e| JsErrorBox::generic(format!("connect {host}:{port}: {e}")))?;
@@ -1151,6 +1151,17 @@ fn tls_client_config(insecure: bool) -> Arc<rustls::ClientConfig> {
     .clone()
 }
 
+#[derive(serde::Serialize)]
+pub struct TlsConnInfo {
+  #[serde(flatten)]
+  connection: ConnInfo,
+  protocol: Option<String>,
+  cipher: Option<String>,
+  alpn: Option<String>,
+  peer_certificate: Option<Vec<u8>>,
+  authorized: bool,
+}
+
 #[op2]
 #[serde]
 pub async fn op_tls_connect(
@@ -1159,8 +1170,9 @@ pub async fn op_tls_connect(
   port: u32,
   #[string] servername: String,
   insecure: bool,
-) -> Result<ConnInfo, JsErrorBox> {
-  crate::permissions::check_net(&host)?;
+) -> Result<TlsConnInfo, JsErrorBox> {
+  if port > u16::MAX as u32 { return Err(JsErrorBox::range_error("invalid TLS port")); }
+  crate::permissions::check_net_addr(&host, port)?;
   let stream = tokio::net::TcpStream::connect((host.as_str(), port as u16))
     .await
     .map_err(|e| JsErrorBox::generic(format!("connect {host}:{port}: {e}")))?;
@@ -1176,12 +1188,22 @@ pub async fn op_tls_connect(
     .connect(name, stream)
     .await
     .map_err(|e| JsErrorBox::generic(format!("tls handshake {servername}: {e}")))?;
+  let session = tls.get_ref().1;
+  let protocol = session.protocol_version().map(|p| match p {
+    rustls::ProtocolVersion::TLSv1_2 => "TLSv1.2".to_string(),
+    rustls::ProtocolVersion::TLSv1_3 => "TLSv1.3".to_string(),
+    other => format!("{other:?}"),
+  });
+  let cipher = session.negotiated_cipher_suite().map(|c| format!("{:?}", c.suite()).replace("TLS13_", "TLS_"));
+  let alpn = session.alpn_protocol().map(|p| String::from_utf8_lossy(p).into_owned());
+  let peer_certificate = session.peer_certificates().and_then(|certs| certs.first()).map(|c| c.as_ref().to_vec());
   let (reader, writer) = tokio::io::split(tls);
   let inner = {
     let mut st = state.borrow_mut();
     net_inner(&mut st)
   };
-  Ok(insert_conn(&inner, NetReader::Tls(reader), NetWriter::Tls(writer), peer, local))
+  Ok(TlsConnInfo { connection: insert_conn(&inner, NetReader::Tls(reader), NetWriter::Tls(writer), peer, local),
+    protocol, cipher, alpn, peer_certificate, authorized: !insecure })
 }
 
 async fn read_some(reader: &mut NetReader) -> std::io::Result<Vec<u8>> {
@@ -3466,7 +3488,7 @@ pub async fn op_udp_bind(
   port: u32,
   #[string] kind: String,
 ) -> Result<u32, JsErrorBox> {
-  crate::permissions::check_net(&address)?;
+  crate::permissions::check_net_addr(&address, port)?;
   let addr = if kind == "udp6" {
     format!("[{address}]:{port}")
   } else {
@@ -3505,6 +3527,7 @@ pub async fn op_udp_send(
   #[string] address: String,
   port: u32,
 ) -> Result<u32, JsErrorBox> {
+  crate::permissions::check_net_addr(&address, port)?;
   let socket = {
     let st = state.borrow();
     st.try_borrow::<UdpTable>()

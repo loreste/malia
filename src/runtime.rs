@@ -126,7 +126,7 @@ pub fn resolve_target_path(path: &std::path::Path) -> Option<std::path::PathBuf>
     }
 
     // 2. jse.json or jse.toml
-    if let Some((_, cfg)) = crate::config::JseConfig::discover(path)
+    if let Ok(Some((_, cfg))) = crate::config::JseConfig::discover(path)
       && let Some(entry) = cfg.resolve_entry(path)
     {
       return Some(entry);
@@ -164,17 +164,13 @@ pub fn resolve_target_path(path: &std::path::Path) -> Option<std::path::PathBuf>
 
 /// Resolve a user-supplied file argument (path or file:// URL) to a module
 /// specifier, relative to `base_dir` when relative.
-pub fn resolve_main_specifier(
-  file: &str,
-  base_dir: &std::path::Path,
-) -> anyhow::Result<ModuleSpecifier> {
+pub fn resolve_main_specifier(file: &str, base_dir: &std::path::Path) -> anyhow::Result<ModuleSpecifier> {
   if file.starts_with("file:") {
     let url = ModuleSpecifier::parse(file)?;
     if let Ok(p) = url.to_file_path()
       && let Some(resolved) = resolve_target_path(&p)
     {
-      return ModuleSpecifier::from_file_path(resolved)
-        .map_err(|_| anyhow::anyhow!("invalid path from file URL"));
+      return ModuleSpecifier::from_file_path(resolved).map_err(|_| anyhow::anyhow!("invalid path from file URL"));
     }
     return Ok(url);
   }
@@ -186,8 +182,7 @@ pub fn resolve_main_specifier(
   };
 
   if let Some(resolved) = resolve_target_path(&raw_path) {
-    return ModuleSpecifier::from_file_path(resolved)
-      .map_err(|_| anyhow::anyhow!("invalid path"));
+    return ModuleSpecifier::from_file_path(resolved).map_err(|_| anyhow::anyhow!("invalid path"));
   }
 
   Ok(resolve_path(file, base_dir)?)
@@ -195,8 +190,7 @@ pub fn resolve_main_specifier(
 
 use std::sync::{LazyLock, RwLock};
 
-pub static PRELOAD_MODULES: LazyLock<RwLock<Vec<String>>> =
-  LazyLock::new(|| RwLock::new(Vec::new()));
+pub static PRELOAD_MODULES: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
 pub fn add_preload_module(mod_name: String) {
   if let Ok(mut list) = PRELOAD_MODULES.write() {
@@ -402,9 +396,7 @@ pub fn run_file_blocking(file: &str) -> anyhow::Result<()> {
   crate::panic::init();
   let cwd = std::env::current_dir().context("Unable to get current working directory")?;
   let specifier = resolve_main_specifier(file, &cwd)?;
-  let tokio_rt = tokio::runtime::Builder::new_current_thread()
-    .enable_all()
-    .build()?;
+  let tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
   tokio_rt.block_on(run_module(&specifier))
 }
 
@@ -592,12 +584,19 @@ fn split_statements(src: &str) -> Vec<String> {
     i += 1;
   }
   out.push(current);
-  out.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+  out
+    .into_iter()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .collect()
 }
 
 /// `const|let|var <identifier> = <value>` -> (identifier, value).
 fn simple_declaration(stmt: &str) -> Option<(&str, &str)> {
-  let rest = ["const ", "let ", "var "].iter().find_map(|kw| stmt.strip_prefix(kw))?.trim_start();
+  let rest = ["const ", "let ", "var "]
+    .iter()
+    .find_map(|kw| stmt.strip_prefix(kw))?
+    .trim_start();
   let name_len = rest.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))?;
   let (name, after) = rest.split_at(name_len);
   let value = after.trim_start().strip_prefix('=')?;
@@ -614,7 +613,10 @@ fn is_expression_statement(stmt: &str) -> bool {
   ];
   !KEYWORDS.iter().any(|kw| {
     stmt.starts_with(kw)
-      && stmt[kw.len()..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '$'))
+      && stmt[kw.len()..]
+        .chars()
+        .next()
+        .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '$'))
   })
 }
 
@@ -625,8 +627,14 @@ mod repl_tests {
   #[test]
   fn wraps_declarations_and_returns_last_expression() {
     let wrapped = wrap_top_level_await("const x = await f(1, \"a;b\"); x + 2");
-    assert_eq!(wrapped, "(async () => { globalThis.x = (await f(1, \"a;b\"));\nreturn (x + 2); })()");
-    assert_eq!(wrap_top_level_await("await g()"), "(async () => { return (await g()); })()");
+    assert_eq!(
+      wrapped,
+      "(async () => { globalThis.x = (await f(1, \"a;b\"));\nreturn (x + 2); })()"
+    );
+    assert_eq!(
+      wrap_top_level_await("await g()"),
+      "(async () => { return (await g()); })()"
+    );
     assert!(wrap_top_level_await("for (const a of await xs()) {}").contains("for (const a of await xs()) {};"));
   }
 }

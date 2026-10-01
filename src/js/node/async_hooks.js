@@ -1,174 +1,67 @@
-// node:async_hooks - AsyncLocalStorage with cross-await propagation via
-// Promise.prototype.then patching. AsyncResource is a pass-through.
-
-// -- Global context slot: a stack of (AsyncLocalStorage, store) pairs --
-// Each ALS instance registers its current store here. The Promise.then
-// patch snapshots the whole stack before yielding and restores it when
-// the continuation runs.
-let _ctxStack = [];
-
-function _snapshot() {
-  return _ctxStack.slice();
+// Context propagation is owned by V8/deno_core, including native await.
+const core = Deno.core;
+const resourceContext = new core.AsyncVariable();
+let nextResourceId = 1;
+function scoped(context, callback, thisArg, args) {
+  const previous = core.getAsyncContext();
+  core.setAsyncContext(context);
+  try { return Reflect.apply(callback, thisArg, args); }
+  finally { core.setAsyncContext(previous); }
 }
-
-function _restore(snap) {
-  _ctxStack = snap;
-  // Push stores back into each ALS instance.
-  for (const [als, store] of snap) {
-    als._store = store;
+export class AsyncLocalStorage {
+  #variable = new core.AsyncVariable();
+  #defaultValue;
+  constructor(options = {}) {
+    this.#defaultValue = options.defaultValue;
+    this.name = options.name ?? '';
   }
-}
-
-// Patch Promise.prototype.then once to propagate context across awaits.
-// On each .then(), capture the current ALS context. When the callback fires,
-// restore that context so the continuation sees the same stores as the code
-// that created the promise chain.
-const _origThen = Promise.prototype.then;
-Promise.prototype.then = function (onFulfilled, onRejected) {
-  if (_ctxStack.length === 0) {
-    // Fast path: no ALS active, skip wrapping entirely.
-    return _origThen.call(this, onFulfilled, onRejected);
-  }
-  const snap = _snapshot();
-  const wrapFn = (fn) => {
-    if (typeof fn !== "function") return fn;
-    return function (...args) {
-      _restore(snap);
-      return fn.apply(this, args);
-    };
-  };
-  return _origThen.call(this, wrapFn(onFulfilled), wrapFn(onRejected));
-};
-
-class AsyncResource {
-  constructor(type, _options) {
-    this.type = type;
-    this._snap = _snapshot();
-  }
-
-  runInAsyncScope(fn, thisArg, ...args) {
-    const prev = _snapshot();
-    _restore(this._snap);
-    try {
-      return fn.apply(thisArg, args);
-    } finally {
-      _restore(prev);
-    }
-  }
-
-  bind(fn, thisArg) {
-    return (...args) => this.runInAsyncScope(fn, thisArg, ...args);
-  }
-
-  static bind(fn, type, thisArg) {
-    const res = new AsyncResource(type || "BOUND");
-    return res.bind(fn, thisArg);
-  }
-
-  emitInit() {}
-  emitDestroy() {}
-  asyncId() { return 0; }
-  triggerAsyncId() { return 0; }
-}
-
-class AsyncLocalStorage {
-  _store = undefined;
-
   getStore() {
-    return this._store;
+    const entry = this.#variable.get();
+    return entry === undefined ? this.#defaultValue : entry.value;
   }
-
-  enterWith(store) {
-    // Remove any existing entry for this ALS, then push.
-    _ctxStack = _ctxStack.filter(([als]) => als !== this);
-    _ctxStack.push([this, store]);
-    this._store = store;
-  }
-
+  enterWith(store) { this.#variable.enter({ value: store }); }
   run(store, callback, ...args) {
-    const previous = this._store;
-    const prevStack = _snapshot();
+    const previous = core.getAsyncContext();
     this.enterWith(store);
-    let result;
-    try {
-      result = callback(...args);
-    } catch (err) {
-      _restore(prevStack);
-      this._store = previous;
-      throw err;
-    }
-    // If the callback returned a promise, defer context restoration to
-    // after it settles. The Promise.then patch keeps the store alive
-    // across intermediate awaits.
-    if (result != null && typeof result === "object" && typeof result.then === "function") {
-      return result.then(
-        (val) => { _restore(prevStack); this._store = previous; return val; },
-        (err) => { _restore(prevStack); this._store = previous; throw err; },
-      );
-    }
-    _restore(prevStack);
-    this._store = previous;
-    return result;
+    try { return Reflect.apply(callback, undefined, args); }
+    finally { core.setAsyncContext(previous); }
   }
-
-  exit(callback, ...args) {
-    const previous = this._store;
-    const prevStack = _snapshot();
-    _ctxStack = _ctxStack.filter(([als]) => als !== this);
-    this._store = undefined;
-    let result;
-    try {
-      result = callback(...args);
-    } catch (err) {
-      _restore(prevStack);
-      this._store = previous;
-      throw err;
-    }
-    if (result != null && typeof result === "object" && typeof result.then === "function") {
-      return result.then(
-        (val) => { _restore(prevStack); this._store = previous; return val; },
-        (err) => { _restore(prevStack); this._store = previous; throw err; },
-      );
-    }
-    _restore(prevStack);
-    this._store = previous;
-    return result;
-  }
-
-  disable() {
-    _ctxStack = _ctxStack.filter(([als]) => als !== this);
-    this._store = undefined;
-  }
-
-  static bind(fn) {
-    const snap = _snapshot();
-    return (...args) => {
-      const prev = _snapshot();
-      _restore(snap);
-      try {
-        return fn(...args);
-      } finally {
-        _restore(prev);
-      }
-    };
-  }
-
+  exit(callback, ...args) { return this.run(undefined, callback, ...args); }
+  // Node 26: existing snapshots and async descendants retain their context.
+  disable() { this.#variable.enter(undefined); }
   static snapshot() {
-    const snap = _snapshot();
-    return (fn, ...args) => {
-      const prev = _snapshot();
-      _restore(snap);
-      try {
-        return fn(...args);
-      } finally {
-        _restore(prev);
-      }
-    };
+    const context = core.getAsyncContext();
+    return (callback, ...args) => scoped(context, callback, undefined, args);
+  }
+  static bind(callback) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    const context = core.getAsyncContext();
+    return function (...args) { return scoped(context, callback, this, args); };
   }
 }
-
-function executionAsyncId() { return 0; }
-function triggerAsyncId() { return 0; }
-
-export { AsyncLocalStorage, AsyncResource, executionAsyncId, triggerAsyncId };
+export class AsyncResource {
+  #context;
+  #id = nextResourceId++;
+  #trigger;
+  constructor(type, options = {}) {
+    if (typeof type !== 'string') throw new TypeError('type must be a string');
+    this.type = type;
+    this.#trigger = typeof options === 'number' ? options : (options.triggerAsyncId ?? executionAsyncId());
+    const previous = resourceContext.enter(this);
+    this.#context = core.getAsyncContext();
+    core.setAsyncContext(previous);
+  }
+  runInAsyncScope(callback, thisArg, ...args) { return scoped(this.#context, callback, thisArg, args); }
+  bind(callback, thisArg) {
+    const resource = this;
+    return function (...args) { return resource.runInAsyncScope(callback, thisArg ?? this, ...args); };
+  }
+  static bind(callback, type = 'bound', thisArg) { return new AsyncResource(type).bind(callback, thisArg); }
+  emitDestroy() { return this; }
+  asyncId() { return this.#id; }
+  triggerAsyncId() { return this.#trigger; }
+}
+// IDs describe explicit AsyncResources only; native async_hooks lifecycle hooks are unsupported.
+export function executionAsyncId() { return resourceContext.get()?.asyncId() ?? 0; }
+export function triggerAsyncId() { return resourceContext.get()?.triggerAsyncId() ?? 0; }
 export default { AsyncLocalStorage, AsyncResource, executionAsyncId, triggerAsyncId };

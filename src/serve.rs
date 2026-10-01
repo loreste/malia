@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
+use futures_util::FutureExt;
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use http_body_util::StreamBody;
@@ -26,9 +27,60 @@ use rustls_pki_types::pem::PemObject;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use futures_util::FutureExt;
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
+
+static NEXT_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServeLimits {
+  pub max_body_bytes: usize,
+  pub max_requests: usize,
+  pub max_connections: usize,
+  pub body_timeout_ms: u64,
+  pub request_timeout_ms: u64,
+}
+impl Default for ServeLimits {
+  fn default() -> Self {
+    Self {
+      max_body_bytes: 1024 * 1024,
+      max_requests: 128,
+      max_connections: 256,
+      body_timeout_ms: 30000,
+      request_timeout_ms: 30000,
+    }
+  }
+}
+impl ServeLimits {
+  pub fn validate(&self) -> Result<(), String> {
+    if self.max_body_bytes == 0
+      || self.max_body_bytes > 16 * 1024 * 1024
+      || self.max_requests == 0
+      || self.max_requests > 1024
+      || self.max_connections == 0
+      || self.max_connections > 4096
+      || self.body_timeout_ms == 0
+      || self.body_timeout_ms > 300000
+      || self.request_timeout_ms == 0
+      || self.request_timeout_ms > 300000
+    {
+      return Err("invalid HTTP resource limits".into());
+    }
+    Ok(())
+  }
+}
+struct PendingRequest {
+  id: u32,
+  pending: PendingMap,
+  upgrades: UpgradeMap,
+}
+impl Drop for PendingRequest {
+  fn drop(&mut self) {
+    self.pending.lock().unwrap().remove(&self.id);
+    self.upgrades.lock().unwrap().remove(&self.id);
+  }
+}
 
 #[derive(serde::Serialize)]
 pub struct ServeRequest {
@@ -44,7 +96,7 @@ pub struct ServeRequest {
 pub enum ServeBody {
   Full(Vec<u8>),
   /// Chunks from JS; the stream ends when the sender is dropped.
-  Stream(mpsc::UnboundedReceiver<Vec<u8>>),
+  Stream(mpsc::Receiver<Vec<u8>>),
 }
 
 pub struct ServeResponse {
@@ -56,15 +108,14 @@ pub struct ServeResponse {
 type PendingMap = Arc<StdMutex<HashMap<u32, oneshot::Sender<ServeResponse>>>>;
 
 /// WebSocket upgrades waiting for JS acceptance (req_id -> OnUpgrade + key).
-pub type UpgradeMap =
-  Arc<StdMutex<HashMap<u32, (hyper::upgrade::OnUpgrade, String)>>>;
+pub type UpgradeMap = Arc<StdMutex<HashMap<u32, (hyper::upgrade::OnUpgrade, String)>>>;
 
 /// One bound listener: the request queue the JS side drains, the pending
 /// response map, and task handles (aborted on close). Connection tasks are
 /// tracked because idle keep-alive connections hold request-queue senders;
 /// without aborting them the JS pull loop would never observe end-of-queue.
 pub struct Listener {
-  pub req_rx: Arc<TokioMutex<mpsc::UnboundedReceiver<ServeRequest>>>,
+  pub req_rx: Arc<TokioMutex<mpsc::Receiver<ServeRequest>>>,
   pub pending: PendingMap,
   pub upgrades: UpgradeMap,
   pub accept_task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
@@ -122,9 +173,7 @@ pub fn split_headers(blob: &str) -> Vec<(String, String)> {
 }
 
 fn full_body(bytes: Vec<u8>) -> BoxBody<Bytes, hyper::Error> {
-  Full::new(Bytes::from(bytes))
-    .map_err(|e| match e {})
-    .boxed()
+  Full::new(Bytes::from(bytes)).map_err(|e| match e {}).boxed()
 }
 
 fn error_response(status: u16, message: &'static str) -> Response<BoxBody<Bytes, hyper::Error>> {
@@ -154,11 +203,21 @@ impl Drop for ConnCount {
 async fn handle_request(
   mut req: Request<Incoming>,
   id: u32,
-  req_tx: mpsc::UnboundedSender<ServeRequest>,
+  req_tx: mpsc::Sender<ServeRequest>,
   pending: PendingMap,
   upgrades: UpgradeMap,
   remote: &str,
+  budget: (ServeLimits, Arc<tokio::sync::Semaphore>),
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+  let (limits, admission) = budget;
+  let Ok(permit) = admission.try_acquire_owned() else {
+    return Ok(error_response(503, "request capacity exceeded"));
+  };
+  let _pending_guard = PendingRequest {
+    id,
+    pending: pending.clone(),
+    upgrades: upgrades.clone(),
+  };
   let start = std::time::Instant::now();
   crate::production::GLOBAL_TELEMETRY.inc_requests();
   // WebSocket upgrade? Capture the OnUpgrade handle and the client key
@@ -179,16 +238,30 @@ async fn handle_request(
   let (parts, body) = req.into_parts();
   let method = parts.method.to_string();
   let url = parts.uri.to_string();
-  let body_bytes = body.collect().await?.to_bytes().to_vec();
+  let collected = tokio::time::timeout(std::time::Duration::from_millis(limits.body_timeout_ms), async {
+    let mut body = body;
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+      let frame = frame.map_err(|_| 400u16)?;
+      if let Ok(chunk) = frame.into_data() {
+        if chunk.len() > limits.max_body_bytes.saturating_sub(bytes.len()) {
+          return Err(413u16);
+        }
+        bytes.extend_from_slice(&chunk);
+      }
+    }
+    Ok(bytes)
+  })
+  .await;
+  let body_bytes = match collected {
+    Ok(Ok(bytes)) => bytes,
+    Ok(Err(status)) => return Ok(error_response(status, "request body rejected")),
+    Err(_) => return Ok(error_response(408, "request body deadline exceeded")),
+  };
   let headers: Vec<(String, String)> = parts
     .headers
     .iter()
-    .map(|(name, value)| {
-      (
-        name.as_str().to_owned(),
-        value.to_str().unwrap_or("").to_owned(),
-      )
-    })
+    .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap_or("").to_owned()))
     .collect();
   let (tx, rx) = oneshot::channel();
   pending.lock().unwrap().insert(id, tx);
@@ -200,33 +273,44 @@ async fn handle_request(
     body: body_bytes,
     is_websocket,
   };
-  if req_tx.send(served).is_err() {
+  if req_tx.try_send(served).is_err() {
     pending.lock().unwrap().remove(&id);
     let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
     crate::logger::log_http(&method, &url, 500, duration_ms, remote, 24);
-    return Ok(error_response(500, "server is shutting down"));
+    return Ok(error_response(503, "server unavailable or request queue full"));
   }
-  let (status, body_len, res) = match rx.await {
-    Ok(resp) => {
-      let status = resp.status;
-      let body_len = match &resp.body {
-        ServeBody::Full(b) => b.len(),
-        ServeBody::Stream(_) => 0,
-      };
-      (status, body_len, Ok(build_response(resp)))
-    }
-    Err(_) => {
-      crate::logger::log(
-        crate::logger::LogLevel::Error,
-        "http",
-        &format!("Request {id} ({method} {url}) failed: handler went away or threw unhandled error"),
-      );
-      (500, 24, Ok(error_response(500, "Internal Server Error\n")))
-    }
-  };
+  let (status, body_len, res) =
+    match tokio::time::timeout(std::time::Duration::from_millis(limits.request_timeout_ms), rx).await {
+      Ok(Ok(resp)) => {
+        let status = resp.status;
+        let body_len = match &resp.body {
+          ServeBody::Full(b) => b.len(),
+          ServeBody::Stream(_) => 0,
+        };
+        (status, body_len, Ok(build_response(resp)))
+      }
+      Ok(Err(_)) => {
+        crate::logger::log(
+          crate::logger::LogLevel::Error,
+          "http",
+          &format!("Request {id} ({method} {url}) failed: handler went away or threw unhandled error"),
+        );
+        (500, 24, Ok(error_response(500, "Internal Server Error\n")))
+      }
+      Err(_) => (504, 0, Ok(error_response(504, "handler response deadline exceeded"))),
+    };
   let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
   crate::logger::log_http(&method, &url, status, duration_ms, remote, body_len);
-  res
+  res.map(|response| {
+    response.map(|body| {
+      body
+        .map_frame(move |frame| {
+          let _keep_admission_until_body_drop = &permit;
+          frame
+        })
+        .boxed()
+    })
+  })
 }
 
 fn build_response(resp: ServeResponse) -> Response<BoxBody<Bytes, hyper::Error>> {
@@ -237,12 +321,13 @@ fn build_response(resp: ServeResponse) -> Response<BoxBody<Bytes, hyper::Error>>
   let body = match resp.body {
     ServeBody::Full(bytes) => full_body(bytes),
     ServeBody::Stream(rx) => {
-      let stream = UnboundedReceiverStream::new(rx)
-        .map(|chunk| Ok::<_, hyper::Error>(Frame::data(Bytes::from(chunk))));
+      let stream = ReceiverStream::new(rx).map(|chunk| Ok::<_, hyper::Error>(Frame::data(Bytes::from(chunk))));
       StreamBody::new(stream).boxed()
     }
   };
-  builder.body(body).unwrap()
+  builder
+    .body(body)
+    .unwrap_or_else(|_| error_response(500, "invalid response status or headers"))
 }
 
 /// Dedicated multi-thread runtime for all hyper accept/connection work.
@@ -268,8 +353,7 @@ pub fn tls_config(cert_pem: &str, key_pem: &str) -> Result<Arc<rustls::ServerCon
   if certs.is_empty() {
     return Err("no certificates found in PEM".to_string());
   }
-  let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
-    .map_err(|e| format!("invalid private key PEM: {e}"))?;
+  let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).map_err(|e| format!("invalid private key PEM: {e}"))?;
   // Both aws-lc-rs and ring are in the tree (via reqwest), so rustls
   // cannot pick a process-level provider automatically: be explicit.
   let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
@@ -289,12 +373,14 @@ pub fn tls_config(cert_pem: &str, key_pem: &str) -> Result<Arc<rustls::ServerCon
 pub fn start_listener(
   std_listener: std::net::TcpListener,
   tls: Option<Arc<rustls::ServerConfig>>,
+  limits: ServeLimits,
 ) -> Listener {
-  let (req_tx, req_rx) = mpsc::unbounded_channel::<ServeRequest>();
+  let (req_tx, req_rx) = mpsc::channel::<ServeRequest>(limits.max_requests);
+  let admission = Arc::new(tokio::sync::Semaphore::new(limits.max_requests));
+  let connections = Arc::new(tokio::sync::Semaphore::new(limits.max_connections));
   let pending: PendingMap = Arc::new(StdMutex::new(HashMap::new()));
   let upgrades: UpgradeMap = Arc::new(StdMutex::new(HashMap::new()));
-  let conn_tasks: Arc<StdMutex<Vec<tokio::task::JoinHandle<()>>>> =
-    Arc::new(StdMutex::new(Vec::new()));
+  let conn_tasks: Arc<StdMutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::new(StdMutex::new(Vec::new()));
   let accept_task = serve_runtime().spawn({
     let pending = pending.clone();
     let upgrades = upgrades.clone();
@@ -304,7 +390,7 @@ pub fn start_listener(
       let listener = tokio::net::TcpListener::from_std(std_listener)?;
       // Request ids are unique per request, not per connection (keep-alive
       // connections serve many requests).
-      let next_id = Arc::new(AtomicU32::new(1));
+
       #[allow(unused_variables)]
       let upgrades = upgrades;
       loop {
@@ -319,46 +405,60 @@ pub fn start_listener(
             break;
           }
         };
+        let Ok(connection_permit) = connections.clone().try_acquire_owned() else {
+          continue;
+        };
+        let limits = limits.clone();
+        let admission = admission.clone();
         let remote_str = peer.to_string();
         let req_tx = req_tx.clone();
         let pending = pending.clone();
-        let next_id = next_id.clone();
         let upgrades = upgrades.clone();
         let tls_acceptor = tls_acceptor.clone();
         let task = tokio::spawn(async move {
           // Counts the connection for jse.metrics until the task ends or is
           // aborted (dropped).
+          let _connection_permit = connection_permit;
           let _conn = ConnCount::new();
           let remote_for_svc = remote_str.clone();
           let service = hyper::service::service_fn(move |req: Request<Incoming>| {
             let req_tx = req_tx.clone();
             let pending = pending.clone();
             let upgrades = upgrades.clone();
-            let id = next_id.fetch_add(1, Ordering::SeqCst);
+            let id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+            let limits = limits.clone();
+            let admission = admission.clone();
             let remote = remote_for_svc.clone();
-            async move { handle_request(req, id, req_tx, pending, upgrades, &remote).await }
+            async move { handle_request(req, id, req_tx, pending, upgrades, &remote, (limits, admission)).await }
           });
           let remote_for_err = remote_str.clone();
           let conn_fut = async move {
             if let Some(acceptor) = tls_acceptor {
-              let tls_stream = match acceptor.accept(stream).await {
-                Ok(stream) => stream,
-                Err(err) => {
-                  crate::logger::log(
-                    crate::logger::LogLevel::Warn,
-                    "http",
-                    &format!("TLS handshake failed for {remote_for_err}: {err}"),
-                  );
-                  return;
-                }
-              };
+              let tls_stream =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(stream)).await {
+                  Ok(Ok(stream)) => stream,
+                  error => {
+                    crate::logger::log(
+                      crate::logger::LogLevel::Warn,
+                      "http",
+                      &format!("TLS handshake failed or timed out for {remote_for_err}: {error:?}"),
+                    );
+                    return;
+                  }
+                };
               let is_h2 = tls_stream.get_ref().1.alpn_protocol() == Some(b"h2");
               if is_h2 {
                 let _ = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                  .max_header_list_size(32768)
+                  .max_concurrent_streams(128)
                   .serve_connection(TokioIo::new(tls_stream), service)
                   .await;
               } else {
                 let _ = hyper::server::conn::http1::Builder::new()
+                  .timer(hyper_util::rt::TokioTimer::new())
+                  .header_read_timeout(std::time::Duration::from_secs(10))
+                  .max_headers(100)
+                  .max_buf_size(32768)
                   .keep_alive(true)
                   .pipeline_flush(true)
                   .serve_connection(TokioIo::new(tls_stream), service)
@@ -367,17 +467,26 @@ pub fn start_listener(
               }
             } else {
               let mut preface = [0u8; 24];
-              let is_h2 = stream
-                .peek(&mut preface)
-                .await
+              let Ok(peeked) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), stream.peek(&mut preface)).await
+              else {
+                return;
+              };
+              let is_h2 = peeked
                 .map(|n| n == 24 && &preface == b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
                 .unwrap_or(false);
               if is_h2 {
                 let _ = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                  .max_header_list_size(32768)
+                  .max_concurrent_streams(128)
                   .serve_connection(TokioIo::new(stream), service)
                   .await;
               } else {
                 let _ = hyper::server::conn::http1::Builder::new()
+                  .timer(hyper_util::rt::TokioTimer::new())
+                  .header_read_timeout(std::time::Duration::from_secs(10))
+                  .max_headers(100)
+                  .max_buf_size(32768)
                   .keep_alive(true)
                   // Buffer response writes and flush once per pipeline step
                   // instead of per message.

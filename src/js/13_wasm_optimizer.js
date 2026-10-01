@@ -131,9 +131,9 @@
   globalThis.jse.optimizer = optimizer;
   globalThis.jse.wasm = wasm;
 
-  // Enable continuous optimization in Wasm mode or when requested via env
+  // Explicit opt-in only; low_memory_notification requests GC, not JS-to-Wasm compilation.
   try {
-    if (isWasmMode || (typeof process !== "undefined" && process.env && process.env.JSE_OPTIMIZE === "1")) {
+    if (typeof process !== "undefined" && process.env && process.env.JSE_OPTIMIZE === "1") {
       optimizer.start(1000);
     }
   } catch (_) {}

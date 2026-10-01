@@ -2,11 +2,11 @@
 // Delivers sub-microsecond route dispatch, parameter extraction, and secure
 // static file streaming with ETag caching, Range support, and SPA fallback.
 
-use std::collections::HashMap;
-use std::path::Path;
 use deno_core::op2;
 use deno_error::JsErrorBox;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteMatch {
@@ -86,7 +86,9 @@ impl RouteNode {
 
     // 1. Try exact match first
     for child in &self.children {
-      if !child.is_param && !child.is_wildcard && child.part == segment
+      if !child.is_param
+        && !child.is_wildcard
+        && child.part == segment
         && let Some(id) = child.find(&segments[1..], params)
       {
         return Some(id);
@@ -135,18 +137,12 @@ impl MethodRouter {
   }
 
   pub fn add(&mut self, path: &str, route_id: u32) {
-    let segments: Vec<&str> = path
-      .split('/')
-      .filter(|s| !s.is_empty())
-      .collect();
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     self.root.insert(&segments, route_id);
   }
 
   pub fn matches(&self, path: &str) -> Option<(u32, HashMap<String, String>)> {
-    let segments: Vec<&str> = path
-      .split('/')
-      .filter(|s| !s.is_empty())
-      .collect();
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let mut params = HashMap::new();
     let id = self.root.find(&segments, &mut params)?;
     Some((id, params))
@@ -195,9 +191,9 @@ pub fn serve_static_file(
   req_path: &str,
   spa_fallback: Option<&str>,
 ) -> Result<StaticFileInfo, JsErrorBox> {
-  let base = Path::new(base_dir).canonicalize().map_err(|e| {
-    JsErrorBox::generic(format!("Invalid base directory {base_dir}: {e}"))
-  })?;
+  let base = Path::new(base_dir)
+    .canonicalize()
+    .map_err(|e| JsErrorBox::generic(format!("Invalid base directory {base_dir}: {e}")))?;
 
   // Sanitize requested relative path
   let clean_req = req_path.trim_start_matches('/');
@@ -230,9 +226,9 @@ pub fn serve_static_file(
   }
 
   // Path traversal check: must stay within base directory
-  let canonical_target = target.canonicalize().map_err(|e| {
-    JsErrorBox::generic(format!("Path resolution failed: {e}"))
-  })?;
+  let canonical_target = target
+    .canonicalize()
+    .map_err(|e| JsErrorBox::generic(format!("Path resolution failed: {e}")))?;
 
   if !canonical_target.starts_with(&base) {
     return Err(JsErrorBox::generic(
@@ -240,9 +236,7 @@ pub fn serve_static_file(
     ));
   }
 
-  let metadata = std::fs::metadata(&canonical_target).map_err(|e| {
-    JsErrorBox::generic(format!("stat failed: {e}"))
-  })?;
+  let metadata = std::fs::metadata(&canonical_target).map_err(|e| JsErrorBox::generic(format!("stat failed: {e}")))?;
 
   if !metadata.is_file() {
     return Ok(StaticFileInfo {

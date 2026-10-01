@@ -12,6 +12,13 @@ import assert from "node:assert/strict";
 
 const env = process.env;
 const ran = [];
+const requiredVariables = ['JSE_PG_URL', 'JSE_MYSQL_URL', 'JSE_REDIS_URL', 'JSE_MONGO_URL', 'JSE_DYNAMO_URL', 'JSE_ES_URL', 'JSE_CASSANDRA'];
+if (env.JSE_DB_REQUIRE_ALL === '1') {
+  const missing = requiredVariables.filter(key => !env[key]);
+  assert.equal(missing.length, 0, `Required database endpoints missing: ${missing.join(', ')}`);
+}
+const suiteDeadline = setTimeout(() => { console.error('Database suite exceeded 180 seconds'); process.exit(1); }, 180000);
+suiteDeadline.unref?.();
 const id = `${process.pid}_${Date.now()}`;
 
 async function check(name, variable, fn) {
@@ -35,6 +42,18 @@ await check("pg", "JSE_PG_URL", async (url) => {
   const row = (await pool.query(`SELECT data, bin FROM t_${id}`)).rows[0];
   assert.deepEqual(row.data, { a: [1, 2] });
   assert.deepEqual([...row.bin], [0, 255]);
+  // MAL-014: rollback, Unicode/large binary values, server cancellation and reuse.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`INSERT INTO t_${id} (data, bin) VALUES ($1, $2)`, [{ text: '雪🙂' }, Buffer.alloc(32768, 255)]);
+    await client.query('ROLLBACK');
+    assert.equal((await client.query(`SELECT count(*)::int AS n FROM t_${id}`)).rows[0].n, 1);
+    await client.query('SET statement_timeout = 50');
+    await assert.rejects(client.query('SELECT pg_sleep(1)'), error => error.code === '57014');
+    await client.query('SET statement_timeout = 0');
+    assert.equal((await client.query('SELECT 42 AS n')).rows[0].n, 42);
+  } finally { client.release(); }
   await pool.query(`DROP TABLE t_${id}`);
   await pool.end();
 });
@@ -86,6 +105,12 @@ await check("mysql2", "JSE_MYSQL_URL", async (url) => {
   const [[row]] = await conn.execute(`SELECT name, b FROM m_${id}`);
   assert.equal(row.name, "x");
   assert.deepEqual([...row.b], [1, 2]);
+  await conn.beginTransaction();
+  await conn.execute(`INSERT INTO m_${id} (name, b) VALUES (?, ?)`, ['rollback', Buffer.alloc(32768, 255)]);
+  await conn.rollback();
+  const [[count]] = await conn.query(`SELECT COUNT(*) AS n FROM m_${id}`);
+  assert.equal(count.n, 1);
+  await assert.rejects(conn.query('SELECT FROM'), error => error.code === 'ER_PARSE_ERROR');
   await conn.query(`DROP TABLE m_${id}`);
   await conn.end();
 });
@@ -102,6 +127,8 @@ await check("ioredis", "JSE_REDIS_URL", async (url) => {
   await sub.subscribe(`ch:${id}`);
   await redis.publish(`ch:${id}`, "pubsub");
   assert.equal(await message, "pubsub");
+  await assert.rejects(redis.lpush(`k:${id}`, 'wrong-type'), /WRONGTYPE/);
+  assert.equal(await redis.ping(), 'PONG');
   await redis.del(`k:${id}`, `c:${id}`);
   sub.disconnect();
   redis.disconnect();
@@ -126,6 +153,10 @@ await check("mongodb", "JSE_MONGO_URL", async (url) => {
   const docs = await col.find({}, { useBigInt64: true }).sort({ n: 1 }).toArray();
   assert.deepEqual(docs.map((d) => d.n), [1, 2]);
   assert.equal(docs[0].big, 2n ** 40n);
+  await col.insertOne({ _id: 'duplicate-key' });
+  await assert.rejects(col.insertOne({ _id: 'duplicate-key' }), error => error.code === 11000);
+  await col.deleteOne({ _id: 'duplicate-key' });
+  assert.equal((await col.find({}).batchSize(1).toArray()).length, 2);
   await col.drop();
   await client.close();
 });
@@ -157,6 +188,7 @@ await check("@aws-sdk/client-dynamodb", "JSE_DYNAMO_URL", async (url) => {
   await client.send(new PutItemCommand({ TableName, Item: { pk: { S: "k" }, v: { N: "7" } } }));
   const { Item } = await client.send(new GetItemCommand({ TableName, Key: { pk: { S: "k" } } }));
   assert.equal(Item.v.N, "7");
+  await assert.rejects(client.send(new GetItemCommand({ TableName: `missing_${id}`, Key: { pk: { S: 'k' } } })), error => error.name === 'ResourceNotFoundException');
   await client.send(new DeleteTableCommand({ TableName }));
   client.destroy();
 });
@@ -192,3 +224,5 @@ if (env.JSE_DB_REQUIRE_ALL === "1") {
   assert.equal(ran.length, 12, `only ran: ${ran.join(", ")}`);
 }
 console.log(`database drivers: ${ran.length} checked`);
+
+clearTimeout(suiteDeadline);

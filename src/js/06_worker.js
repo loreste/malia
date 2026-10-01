@@ -94,10 +94,13 @@
       },
       configurable: true,
     });
+    const poolContext = new Deno.core.AsyncVariable();
     globalThis.postMessage = (value) => {
-      ops.op_host_send(
-        __jse.serialize({ type: "message", data: value === undefined ? null : value }),
-      );
+      const job = poolContext.get();
+      const data = job ? { __maliaPoolId: job.id, kind: job.stream && value?.__done === true ? 'done' : 'data', data: value } : value;
+      if (!ops.op_host_send(__jse.serialize({ type: 'message', data: data === undefined ? null : data }))) {
+        throw new Error('worker reply channel is closed or full');
+      }
     };
     // Driven by the host after the worker's main module has been evaluated.
     globalThis.__jseWorkerHostLoop = async () => {
@@ -107,7 +110,17 @@
         try {
           const msg = __jse.deserialize(bytes);
           if (msg.type === "message" && messageHandler) {
-            messageHandler({ data: msg.data });
+            const job = msg.data?.__maliaPoolJob;
+            if (!job) { messageHandler({ data: msg.data }); continue; }
+            const previous = poolContext.enter(job);
+            const report = error => ops.op_host_send(__jse.serialize({ type: 'message', data: {
+              __maliaPoolId: job.id, kind: 'error', error: String(error?.message ?? error)
+            } }));
+            try {
+              const result = messageHandler({ data: msg.data.data });
+              if (result && typeof result.then === 'function') result.catch(report);
+            } catch (error) { report(error); }
+            finally { Deno.core.setAsyncContext(previous); }
           }
         } catch (err) {
           console.error("worker onmessage error:", err);

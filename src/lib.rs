@@ -3,8 +3,8 @@
 // OS-thread workers and channel-based async messaging.
 pub mod cache;
 pub mod config;
-pub mod inspector_server;
 pub mod crypto;
+pub mod inspector_server;
 pub mod kv;
 pub mod loader;
 pub mod logger;
@@ -22,5 +22,3 @@ pub mod sql;
 pub mod ts;
 pub mod wasm_compiler;
 pub mod worker;
-
-

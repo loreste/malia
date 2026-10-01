@@ -251,11 +251,26 @@ Object.assign(ServerResponse.prototype, {
         ops.op_serve_respond_start(this._listenerId, this._reqId, this.statusCode, this._headerPairs());
       }
     }
-    if (this._reqId !== null) {
-      ops.op_serve_respond_chunk(this._reqId, toChunkBytes(chunk, encoding));
+    const bytes = toChunkBytes(chunk, encoding);
+    if (bytes.length > 1024 * 1024 || (this._pendingBytes ?? 0) + bytes.length > 1024 * 1024) {
+      const error = new Error('HTTP response writable capacity exceeded');
+      if (this._reqId !== null) ops.op_serve_respond_end(this._reqId);
+      if (cb) queueMicrotask(() => cb(error));
+      else this.emit('error', error);
+      return false;
     }
-    if (cb) cb();
-    return true;
+    this._pendingBytes = (this._pendingBytes ?? 0) + bytes.length;
+    this._writePromise = (this._writePromise ?? Promise.resolve()).then(async () => {
+      if (this._reqId !== null) await ops.op_serve_respond_chunk(this._reqId, bytes);
+      this._pendingBytes -= bytes.length;
+      if (cb) cb();
+      if (!this._pendingBytes && !this._ended) this.emit('drain');
+    });
+    this._writePromise.catch(error => {
+      if (cb) cb(error);
+      else this.emit('error', error);
+    });
+    return false;
   },
 
   end(chunk, encoding, cb) {
@@ -279,12 +294,17 @@ Object.assign(ServerResponse.prototype, {
         ops.op_serve_respond(this._listenerId, this._reqId, this.statusCode, this._headerPairs(), body);
       }
     } else {
-      if (chunk !== undefined && chunk !== null && this._reqId !== null) {
-        ops.op_serve_respond_chunk(this._reqId, toChunkBytes(chunk, encoding));
-      }
-      if (this._reqId !== null) {
-        ops.op_serve_respond_end(this._reqId);
-      }
+      if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+      this._ended = true;
+      (this._writePromise ?? Promise.resolve()).then(() => {
+        if (this._reqId !== null) ops.op_serve_respond_end(this._reqId);
+        if (cb) cb();
+        this.emit('finish');
+      }, error => {
+        if (this._reqId !== null) ops.op_serve_respond_end(this._reqId);
+        if (cb) cb(error);
+      });
+      return this;
     }
     this._ended = true;
     if (cb) cb();
@@ -343,9 +363,6 @@ class Server extends EventEmitter {
       if (blob.length === 0) break;
       for (const raw of __jse.unpackServeRequests(blob)) {
         this.#httpReqCount++;
-        if (this.#httpReqCount % 500 === 0 && globalThis.jse?.optimizer) {
-          globalThis.jse.optimizer.optimize();
-        }
 
         try {
           const req = new IncomingMessage(raw);

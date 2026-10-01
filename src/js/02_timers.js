@@ -227,6 +227,14 @@
   // clearTimeout(+timer) and timers used as map keys keep working.
   class Timeout {
     constructor(callback, ms, args, repeat) {
+      const context = core.getAsyncContext();
+      const original = callback;
+      callback = (...values) => {
+        const previous = core.getAsyncContext();
+        core.setAsyncContext(context);
+        try { return original(...values); }
+        finally { core.setAsyncContext(previous); }
+      };
       this._id = nextId++;
       this._idleTimeout = ms;
       this._onTimeout = callback;
@@ -329,7 +337,13 @@
 
   class Immediate {
     constructor(fn, args) {
-      this._onImmediate = fn;
+      const context = core.getAsyncContext();
+      this._onImmediate = (...values) => {
+        const previous = core.getAsyncContext();
+        core.setAsyncContext(context);
+        try { return fn(...values); }
+        finally { core.setAsyncContext(previous); }
+      };
       this._args = args;
       this._cleared = false;
       this._refed = true;

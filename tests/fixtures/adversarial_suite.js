@@ -41,8 +41,10 @@ assert(typeof constants.Z_OK === "number", "zlib Z_OK");
 console.log("3. Testing tls module...");
 assert(typeof tls.connect === "function", "tls.connect function");
 assert(typeof tls.TLSSocket === "function", "tls.TLSSocket class");
-const ctx = tls.createSecureContext();
-assert(ctx && typeof ctx === "object", "tls.createSecureContext");
+let unsupportedContext = false;
+try { tls.createSecureContext(); }
+catch (error) { unsupportedContext = error.code === "ERR_TLS_UNSUPPORTED_OPTION"; }
+assert(unsupportedContext, "TLS secure contexts must reject explicitly until implemented");
 
 // ---------------------------------------------------------------------------
 // 4. Standards-Compliant WebSockets & ws Compatibility

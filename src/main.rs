@@ -1,19 +1,24 @@
 // jse CLI: `jse run <file>`, `jse init`, `jse start`, `jse dev`, `jse test`, `jse config`, `jse build`, bare `jse` = auto-run/REPL.
-use std::path::{Path, PathBuf};
 use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
+use std::path::{Path, PathBuf};
 
-const STANDALONE_MAGIC: &[u8; 17] = b"__JSE_BUNDLE_V1__";
+const STANDALONE_MAGIC: &[u8; 17] = b"__JSE_BUNDLE_V2__";
 
 #[derive(Parser)]
-#[command(name = "malia", alias = "jse", disable_version_flag = true, about = "A JavaScript/TypeScript and WebAssembly runtime built in Rust")]
+#[command(
+  name = "malia",
+  alias = "jse",
+  disable_version_flag = true,
+  about = "A JavaScript/TypeScript and WebAssembly runtime built in Rust"
+)]
 struct Cli {
   /// Print version (-v, -V, --version).
   #[arg(short = 'v', short_alias = 'V', long = "version", action = clap::ArgAction::SetTrue, global = true)]
   version: bool,
 
-  /// Execute application via WebAssembly.
+  /// Select Wasm-related runtime options; JavaScript remains V8-executed source.
   #[arg(long, global = true)]
   wasm: bool,
 
@@ -249,25 +254,25 @@ enum Command {
     #[command(subcommand)]
     action: Option<ConfigAction>,
   },
-  /// Build a standalone single-binary executable or bundle.
+  /// Embed entry source in a host-platform runtime executable (dependencies and assets are not bundled).
   Build {
     /// Path to the main module (default: entry from jse.json).
     file: Option<String>,
     /// Output executable binary path.
     #[arg(short, long)]
     output: Option<String>,
-    /// Build standalone self-contained executable binary (default: true).
+    /// Embed entry source in the current runtime executable (default: true).
     #[arg(long, default_value_t = true)]
     standalone: bool,
   },
-  /// Compile a JavaScript or TypeScript file into a standalone executable or WebAssembly (.wasm) binary.
+  /// Embed entry source in a host runtime executable or Malia-specific Wasm source container.
   Compile {
     /// Path to the main module (.js, .ts, .mjs, .cjs).
     file: String,
-    /// Target WebAssembly binary format (default: false unless output ends with .wasm).
+    /// Create a Malia source container, not portable JS-to-Wasm compilation.
     #[arg(long)]
     wasm: bool,
-    /// Build a standalone self-contained native executable binary (default: true unless --wasm).
+    /// Embed entry source for the host platform; dependencies and assets remain external.
     #[arg(long)]
     standalone: bool,
     /// Output file path (default: dist/<file> or <file>.wasm).
@@ -313,21 +318,42 @@ where
   Ok(())
 }
 
-fn check_standalone_binary() -> Option<String> {
-  let exe = std::env::current_exe().ok()?;
-  let bytes = std::fs::read(&exe).ok()?;
-  if bytes.len() < 25 {
-    return None;
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddedApplication {
+  version: u32,
+  source: String,
+  permissions: js_engine::permissions::Permissions,
+}
+
+fn check_standalone_binary() -> anyhow::Result<Option<EmbeddedApplication>> {
+  use std::io::{Read, Seek, SeekFrom};
+  let mut file = std::fs::File::open(std::env::current_exe()?)?;
+  let length = file.metadata()?.len();
+  if length < 25 {
+    return Ok(None);
   }
-  let len = bytes.len();
-  if &bytes[len - 17..] == STANDALONE_MAGIC {
-    let code_len = u64::from_le_bytes(bytes[len - 25..len - 17].try_into().ok()?) as usize;
-    if len >= 25 + code_len {
-      let code_bytes = &bytes[len - 25 - code_len..len - 25];
-      return String::from_utf8(code_bytes.to_vec()).ok();
-    }
+  file.seek(SeekFrom::End(-25))?;
+  let mut trailer = [0u8; 25];
+  file.read_exact(&mut trailer)?;
+  anyhow::ensure!(
+    &trailer[8..] != b"__JSE_BUNDLE_V1__",
+    "legacy entry embedding has no permission manifest; rebuild it"
+  );
+  if &trailer[8..] != STANDALONE_MAGIC {
+    return Ok(None);
   }
-  None
+  let payload_len = u64::from_le_bytes(trailer[..8].try_into()?);
+  anyhow::ensure!(
+    payload_len <= 16 * 1024 * 1024 && payload_len <= length - 25,
+    "invalid embedded payload length"
+  );
+  file.seek(SeekFrom::Start(length - 25 - payload_len))?;
+  let mut bytes = vec![0; payload_len as usize];
+  file.read_exact(&mut bytes)?;
+  let app: EmbeddedApplication = serde_json::from_slice(&bytes)?;
+  anyhow::ensure!(app.version == 2, "unsupported embedded application version");
+  Ok(Some(app))
 }
 
 fn create_standalone_binary(entry_path: &Path, output_path: &Path) -> anyhow::Result<()> {
@@ -345,8 +371,10 @@ fn create_standalone_binary(entry_path: &Path, output_path: &Path) -> anyhow::Re
   let raw_code = std::fs::read_to_string(entry_path)?;
   let media_type = deno_ast::MediaType::from_path(entry_path);
   let code = if js_engine::ts::should_transpile(&media_type) {
-    let spec = deno_core::ModuleSpecifier::from_file_path(entry_path.canonicalize().unwrap_or_else(|_| entry_path.to_path_buf()))
-      .unwrap_or_else(|_| deno_core::ModuleSpecifier::parse("file:///app.ts").unwrap());
+    let spec = deno_core::ModuleSpecifier::from_file_path(
+      entry_path.canonicalize().unwrap_or_else(|_| entry_path.to_path_buf()),
+    )
+    .unwrap_or_else(|_| deno_core::ModuleSpecifier::parse("file:///app.ts").unwrap());
     let (js, _) = js_engine::ts::transpile(&spec, media_type, raw_code)?;
     js
   } else {
@@ -359,7 +387,26 @@ fn create_standalone_binary(entry_path: &Path, output_path: &Path) -> anyhow::Re
     std::fs::create_dir_all(parent)?;
   }
 
-  let code_bytes = code.as_bytes();
+  let config = js_engine::config::JseConfig::discover(&std::env::current_dir()?)?;
+  let permissions = match config {
+    Some((_, config)) => config.build_permissions()?.unwrap_or_default(),
+    None => js_engine::permissions::Permissions::default(),
+  };
+  eprintln!(
+    "Entry-source embedding only: dependencies, workers and assets remain external; host platform only. Permissions: {}",
+    if permissions.allow_all {
+      "explicit allow-all"
+    } else {
+      "restricted manifest"
+    }
+  );
+  let payload = serde_json::to_vec(&EmbeddedApplication {
+    version: 2,
+    source: code,
+    permissions,
+  })?;
+  anyhow::ensure!(payload.len() <= 16 * 1024 * 1024, "embedded source exceeds 16 MiB");
+  let code_bytes = payload.as_slice();
   let code_len = (code_bytes.len() as u64).to_le_bytes();
 
   let mut out = Vec::with_capacity(exe_bytes.len() + code_bytes.len() + 25);
@@ -465,11 +512,7 @@ fn run_with_watch(
   }
 }
 
-async fn supervise_cluster(
-  entry: PathBuf,
-  workers: usize,
-  args: Vec<String>,
-) -> anyhow::Result<()> {
+async fn supervise_cluster(entry: PathBuf, workers: usize, args: Vec<String>) -> anyhow::Result<()> {
   println!("[jse:cluster] Spawning {workers} cluster workers across available CPU cores...");
   let current_exe = std::env::current_exe()?;
   let mut children: Vec<(usize, std::process::Child)> = Vec::new();
@@ -524,7 +567,13 @@ fn tool_program(program: &str) -> String {
 }
 
 fn run_tool(program: &str, args: &[String]) -> anyhow::Result<i32> {
-  Ok(std::process::Command::new(tool_program(program)).args(args).status()?.code().unwrap_or(0))
+  Ok(
+    std::process::Command::new(tool_program(program))
+      .args(args)
+      .status()?
+      .code()
+      .unwrap_or(0),
+  )
 }
 
 /// `jse x <bin>`: a node_modules/.bin binary, falling back to npx.
@@ -547,8 +596,9 @@ pub fn run() -> anyhow::Result<()> {
   js_engine::panic::init();
 
   // Check if running as a standalone compiled application binary
-  if let Some(embedded_code) = check_standalone_binary() {
-    js_engine::permissions::set_permissions(js_engine::permissions::Permissions::allow_all());
+  if let Some(embedded) = check_standalone_binary()? {
+    js_engine::permissions::set_permissions(embedded.permissions);
+    let embedded_code = embedded.source;
     let args: Vec<String> = std::env::args().collect();
     js_engine::ops::set_argv(args);
     let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -605,7 +655,10 @@ pub fn run() -> anyhow::Result<()> {
   // -c / --check: parse the file (the first non-flag argument, after an
   // optional `run`) without executing it.
   if cli.check {
-    let target = raw_args.iter().skip(1).find(|a| !a.starts_with('-') && a.as_str() != "run");
+    let target = raw_args
+      .iter()
+      .skip(1)
+      .find(|a| !a.starts_with('-') && a.as_str() != "run");
     let Some(target) = target else {
       eprintln!("error: --check needs a file");
       std::process::exit(9);
@@ -620,12 +673,15 @@ pub fn run() -> anyhow::Result<()> {
   let wasm_mode = cli.wasm;
   let output_wasm = cli.output.clone();
 
-  let tokio_rt = tokio::runtime::Builder::new_multi_thread()
-    .enable_all()
-    .build()?;
+  let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
   let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-  let discovered_config = js_engine::config::JseConfig::discover(&current_dir);
+  let discovered_config = js_engine::config::JseConfig::discover(&current_dir)?;
+  let configured_permissions = discovered_config
+    .as_ref()
+    .map(|(_, cfg)| cfg.build_permissions())
+    .transpose()?
+    .flatten();
 
   for req_mod in &cli.require {
     js_engine::runtime::add_preload_module(req_mod.clone());
@@ -647,19 +703,25 @@ pub fn run() -> anyhow::Result<()> {
   }
 
   if cli.interactive {
-    js_engine::permissions::set_permissions(js_engine::permissions::Permissions::allow_all());
+    js_engine::permissions::set_permissions(
+      configured_permissions
+        .clone()
+        .unwrap_or_else(js_engine::permissions::Permissions::allow_all),
+    );
     js_engine::ops::set_argv(vec![current_exe_name()]);
     return tokio_rt.block_on(supervise(|| {
-      let local_rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+      let local_rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
       local_rt.block_on(js_engine::runtime::repl())
     }));
   }
 
   // Handle -e / --eval flag directly: `jse -e "..."`
   if let Some(code) = cli.eval {
-    js_engine::permissions::set_permissions(js_engine::permissions::Permissions::allow_all());
+    js_engine::permissions::set_permissions(
+      configured_permissions
+        .clone()
+        .unwrap_or_else(js_engine::permissions::Permissions::allow_all),
+    );
     js_engine::ops::set_argv(vec![current_exe_name(), "-e".to_string()]);
     let result = tokio_rt.block_on(supervise(move || js_engine::runtime::run_code_blocking(&code)));
     match result {
@@ -673,7 +735,11 @@ pub fn run() -> anyhow::Result<()> {
 
   // Handle -p / --print flag directly: `jse -p "..."`
   if let Some(code) = cli.print {
-    js_engine::permissions::set_permissions(js_engine::permissions::Permissions::allow_all());
+    js_engine::permissions::set_permissions(
+      configured_permissions
+        .clone()
+        .unwrap_or_else(js_engine::permissions::Permissions::allow_all),
+    );
     js_engine::ops::set_argv(vec![current_exe_name(), "-p".to_string()]);
     let script = format!(
       "Promise.resolve(({code})).then(r => console.log(r !== undefined ? r : 'undefined')).catch(err => {{ console.error(err); process.exit(1); }});"
@@ -697,8 +763,14 @@ pub fn run() -> anyhow::Result<()> {
       };
 
       if config_file.exists() && !force {
-        let name = config_file.file_name().and_then(|n| n.to_str()).unwrap_or("config file");
-        eprintln!("error: {} already exists in current directory. Use --force to overwrite.", name);
+        let name = config_file
+          .file_name()
+          .and_then(|n| n.to_str())
+          .unwrap_or("config file");
+        eprintln!(
+          "error: {} already exists in current directory. Use --force to overwrite.",
+          name
+        );
         std::process::exit(1);
       }
 
@@ -726,6 +798,11 @@ pub fn run() -> anyhow::Result<()> {
         ConfigAction::Show => {
           println!("=== JSE Runtime Configuration ===");
           println!("Config File: {}", config_path.display());
+          println!(
+            "Resolved config permissions: {}",
+            serde_json::to_string(&config.build_permissions()?)?
+          );
+          println!("Explicit CLI permission flags replace this policy; null means command defaults apply.");
           if let Some(ref name) = config.name {
             println!("App Name:    {}", name);
           }
@@ -776,15 +853,21 @@ pub fn run() -> anyhow::Result<()> {
       Ok(())
     }
 
-    Some(Command::Build { file, output, standalone }) => {
+    Some(Command::Build {
+      file,
+      output,
+      standalone,
+    }) => {
       let target_file = match file {
         Some(f) => PathBuf::from(f),
         None => {
           if let Some((ref base_dir, ref cfg)) = discovered_config {
-            cfg.resolve_entry(base_dir.parent().unwrap_or(&current_dir)).unwrap_or_else(|| {
-              eprintln!("error: No entry file specified and none found in jse.json");
-              std::process::exit(1);
-            })
+            cfg
+              .resolve_entry(base_dir.parent().unwrap_or(&current_dir))
+              .unwrap_or_else(|| {
+                eprintln!("error: No entry file specified and none found in jse.json");
+                std::process::exit(1);
+              })
           } else {
             eprintln!("error: No file specified and no jse.json found");
             std::process::exit(1);
@@ -821,7 +904,9 @@ pub fn run() -> anyhow::Result<()> {
       });
 
       // Auto-clustering supervisor mode
-      if let Some(ref cluster_cfg) = config.cluster && std::env::var("NODE_UNIQUE_ID").is_err() {
+      if let Some(ref cluster_cfg) = config.cluster
+        && std::env::var("NODE_UNIQUE_ID").is_err()
+      {
         let workers = match cluster_cfg {
           js_engine::config::ConfigCluster::Auto(_) => {
             std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
@@ -836,7 +921,9 @@ pub fn run() -> anyhow::Result<()> {
       let perms = if !permissions.is_empty() {
         permissions.build()
       } else {
-        config.build_permissions().unwrap_or_else(js_engine::permissions::Permissions::allow_all)
+        config
+          .build_permissions()?
+          .unwrap_or_else(js_engine::permissions::Permissions::allow_all)
       };
 
       let entry_str = entry.to_string_lossy().to_string();
@@ -868,7 +955,9 @@ pub fn run() -> anyhow::Result<()> {
       let perms = if !permissions.is_empty() {
         permissions.build()
       } else {
-        config.build_permissions().unwrap_or_else(js_engine::permissions::Permissions::allow_all)
+        config
+          .build_permissions()?
+          .unwrap_or_else(js_engine::permissions::Permissions::allow_all)
       };
 
       let entry_str = entry.to_string_lossy().to_string();
@@ -879,7 +968,9 @@ pub fn run() -> anyhow::Result<()> {
       if let Some((ref config_path, ref cfg)) = discovered_config {
         let base_dir = config_path.parent().unwrap_or(&current_dir);
         cfg.apply_env(base_dir);
-        if let Some(ref scripts) = cfg.scripts && let Some(test_cmd) = scripts.get("test") {
+        if let Some(ref scripts) = cfg.scripts
+          && let Some(test_cmd) = scripts.get("test")
+        {
           println!("> {}", test_cmd);
           let parts: Vec<&str> = test_cmd.split_whitespace().collect();
           if parts.len() > 1 && (parts[0] == "jse" || parts[0] == "malia") {
@@ -920,7 +1011,9 @@ pub fn run() -> anyhow::Result<()> {
           let perms = if !permissions.is_empty() {
             permissions.build()
           } else if let Some((_, ref cfg)) = discovered_config {
-            cfg.build_permissions().unwrap_or_else(js_engine::permissions::Permissions::allow_all)
+            cfg
+              .build_permissions()?
+              .unwrap_or_else(js_engine::permissions::Permissions::allow_all)
           } else {
             js_engine::permissions::Permissions::allow_all()
           };
@@ -1015,16 +1108,25 @@ pub fn run() -> anyhow::Result<()> {
             .or_else(|| js_engine::runtime::resolve_target_path(Path::new(&f)))
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or(f);
-          (resolved, None)
+          (
+            resolved,
+            discovered_config
+              .as_ref()
+              .map(|(_, cfg)| cfg.build_permissions())
+              .transpose()?
+              .flatten(),
+          )
         }
         None => {
           // Auto-detect entry from config
           if let Some((ref base_dir, ref cfg)) = discovered_config {
-            let entry = cfg.resolve_entry(base_dir.parent().unwrap_or(&current_dir)).unwrap_or_else(|| {
-              eprintln!("error: No file provided and could not resolve entry in jse.json");
-              std::process::exit(1);
-            });
-            let p = cfg.build_permissions();
+            let entry = cfg
+              .resolve_entry(base_dir.parent().unwrap_or(&current_dir))
+              .unwrap_or_else(|| {
+                eprintln!("error: No file provided and could not resolve entry in jse.json");
+                std::process::exit(1);
+              });
+            let p = cfg.build_permissions()?;
             (entry.to_string_lossy().to_string(), p)
           } else {
             eprintln!("error: No file provided and no jse.json configuration found.");
@@ -1072,16 +1174,27 @@ pub fn run() -> anyhow::Result<()> {
       }
     }
 
-    Some(Command::Compile { file, wasm, standalone, output }) => {
+    Some(Command::Compile {
+      file,
+      wasm,
+      standalone,
+      output,
+    }) => {
       let is_wasm = wasm || (!standalone && output.as_ref().map(|o| o.ends_with(".wasm")).unwrap_or(false));
       if is_wasm {
+        eprintln!("--wasm packages source; it does not compile JavaScript to portable Wasm instructions.");
         let out_path = output.or(output_wasm).unwrap_or_else(|| {
           let path = Path::new(&file);
           path.with_extension("wasm").to_string_lossy().to_string()
         });
         let wasm_bytes = js_engine::wasm_compiler::compile_file_to_wasm(Path::new(&file))?;
         std::fs::write(&out_path, &wasm_bytes)?;
-        println!("Successfully compiled {} -> {} ({} bytes)", file, out_path, wasm_bytes.len());
+        println!(
+          "Created Malia source container {} -> {} ({} bytes; application execution requires Malia)",
+          file,
+          out_path,
+          wasm_bytes.len()
+        );
         Ok(())
       } else {
         let out_path = output.map(PathBuf::from).unwrap_or_else(|| {
@@ -1102,7 +1215,11 @@ pub fn run() -> anyhow::Result<()> {
       permissions,
       args,
     }) => {
-      js_engine::permissions::set_permissions(permissions.build());
+      js_engine::permissions::set_permissions(if permissions.is_empty() {
+        configured_permissions.clone().unwrap_or_else(|| permissions.build())
+      } else {
+        permissions.build()
+      });
       js_engine::ops::set_argv(make_argv(&file, &args));
       let f = file.clone();
       let start = std::time::Instant::now();
@@ -1118,7 +1235,11 @@ pub fn run() -> anyhow::Result<()> {
       permissions,
       args,
     }) => {
-      js_engine::permissions::set_permissions(permissions.build());
+      js_engine::permissions::set_permissions(if permissions.is_empty() {
+        configured_permissions.clone().unwrap_or_else(|| permissions.build())
+      } else {
+        permissions.build()
+      });
       let mut argv = vec![current_exe_name(), "-e".to_string()];
       argv.extend(args);
       js_engine::ops::set_argv(argv);
@@ -1142,7 +1263,9 @@ pub fn run() -> anyhow::Result<()> {
       if let Some((ref config_path, ref cfg)) = discovered_config {
         let base_dir = config_path.parent().unwrap_or(&current_dir);
         cfg.apply_env(base_dir);
-        if let Some(ref scripts) = cfg.scripts && let Some(cmd_line) = scripts.get(&target) {
+        if let Some(ref scripts) = cfg.scripts
+          && let Some(cmd_line) = scripts.get(&target)
+        {
           println!("> {}", cmd_line);
           let parts: Vec<&str> = cmd_line.split_whitespace().collect();
           if parts.len() > 1 && (parts[0] == "jse" || parts[0] == "malia") {
@@ -1169,9 +1292,7 @@ pub fn run() -> anyhow::Result<()> {
 
       // 2. Check if target is a local node_modules/.bin executable (e.g. `jse prettier`, `jse tsc`, `jse prisma`)
       if let Some(local_bin) = find_local_bin(&current_dir, &target) {
-        let status = std::process::Command::new(&local_bin)
-          .args(&custom_args)
-          .status()?;
+        let status = std::process::Command::new(&local_bin).args(&custom_args).status()?;
         std::process::exit(status.code().unwrap_or(0));
       }
 
@@ -1186,7 +1307,9 @@ pub fn run() -> anyhow::Result<()> {
         }
         let p_str = p.to_string_lossy().to_string();
         let perms = if let Some((_, ref cfg)) = discovered_config {
-          cfg.build_permissions().unwrap_or_else(js_engine::permissions::Permissions::allow_all)
+          cfg
+            .build_permissions()?
+            .unwrap_or_else(js_engine::permissions::Permissions::allow_all)
         } else {
           js_engine::permissions::Permissions::allow_all()
         };
@@ -1203,7 +1326,9 @@ pub fn run() -> anyhow::Result<()> {
       }
 
       eprintln!("error: Unknown command or script '{}'.", target);
-      if let Some((_, ref cfg)) = discovered_config && let Some(ref scripts) = cfg.scripts {
+      if let Some((_, ref cfg)) = discovered_config
+        && let Some(ref scripts) = cfg.scripts
+      {
         let script_names: Vec<&str> = scripts.keys().map(|s| s.as_str()).collect();
         eprintln!("Available scripts: {}", script_names.join(", "));
       }
@@ -1218,7 +1343,9 @@ pub fn run() -> anyhow::Result<()> {
           cfg.apply_env(base_dir);
 
           // Auto-cluster supervisor mode
-          if let Some(ref cluster_cfg) = cfg.cluster && std::env::var("NODE_UNIQUE_ID").is_err() {
+          if let Some(ref cluster_cfg) = cfg.cluster
+            && std::env::var("NODE_UNIQUE_ID").is_err()
+          {
             let workers = match cluster_cfg {
               js_engine::config::ConfigCluster::Auto(_) => {
                 std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
@@ -1230,7 +1357,9 @@ pub fn run() -> anyhow::Result<()> {
             }
           }
 
-          let perms = cfg.build_permissions().unwrap_or_else(js_engine::permissions::Permissions::allow_all);
+          let perms = cfg
+            .build_permissions()?
+            .unwrap_or_else(js_engine::permissions::Permissions::allow_all);
           js_engine::permissions::set_permissions(perms);
           let entry_str = entry.to_string_lossy().to_string();
           js_engine::ops::set_argv(vec![current_exe_name(), entry_str.clone()]);
@@ -1265,9 +1394,7 @@ pub fn run() -> anyhow::Result<()> {
       js_engine::permissions::set_permissions(js_engine::permissions::Permissions::allow_all());
       js_engine::ops::set_argv(vec![current_exe_name()]);
       tokio_rt.block_on(supervise(|| {
-        let local_rt = tokio::runtime::Builder::new_current_thread()
-          .enable_all()
-          .build()?;
+        let local_rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         local_rt.block_on(js_engine::runtime::repl())
       }))
     }
@@ -1289,7 +1416,12 @@ fn parse_inspect_addr(addr: &str) -> (String, u16) {
 fn current_exe_name() -> String {
   std::env::args()
     .next()
-    .and_then(|p| Path::new(&p).file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+    .and_then(|p| {
+      Path::new(&p)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+    })
     .filter(|s| s == "jse" || s == "malia")
     .unwrap_or_else(|| "malia".to_string())
 }

@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use aws_lc_rs::cipher::{
-  DecryptionContext, EncryptionContext, StreamingDecryptingKey, StreamingEncryptingKey, UnboundCipherKey,
-  AES_128, AES_192, AES_256,
+  AES_128, AES_192, AES_256, DecryptionContext, EncryptionContext, StreamingDecryptingKey, StreamingEncryptingKey,
+  UnboundCipherKey,
 };
 use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der, PublicKeyX509Der};
 use aws_lc_rs::rand::SystemRandom;
@@ -106,10 +106,20 @@ fn public_key_info(der: &[u8]) -> Option<KeyInfo> {
     } else {
       return None;
     };
-    return Some(KeyInfo { asymmetric_type: "ec", der: der.to_vec(), curve: Some(curve), bits: None });
+    return Some(KeyInfo {
+      asymmetric_type: "ec",
+      der: der.to_vec(),
+      curve: Some(curve),
+      bits: None,
+    });
   }
   if contains(der, OID_ED25519) {
-    return Some(KeyInfo { asymmetric_type: "ed25519", der: der.to_vec(), curve: None, bits: None });
+    return Some(KeyInfo {
+      asymmetric_type: "ed25519",
+      der: der.to_vec(),
+      curve: None,
+      bits: None,
+    });
   }
   // RSA: SubjectPublicKeyInfo or PKCS#1 RSAPublicKey, normalized to SPKI.
   let key = rsa::PublicKey::from_der(der).ok()?;
@@ -126,14 +136,27 @@ fn public_key_info(der: &[u8]) -> Option<KeyInfo> {
 #[op2]
 #[serde]
 pub fn op_crypto_key_import(#[buffer] der: &[u8], is_private: bool) -> Result<KeyInfo, JsErrorBox> {
-  let info = if is_private { private_key_info(der) } else { public_key_info(der) };
-  info.ok_or_else(|| err(format!("Unsupported or invalid {} key", if is_private { "private" } else { "public" })))
+  let info = if is_private {
+    private_key_info(der)
+  } else {
+    public_key_info(der)
+  };
+  info.ok_or_else(|| {
+    err(format!(
+      "Unsupported or invalid {} key",
+      if is_private { "private" } else { "public" }
+    ))
+  })
 }
 
 /// SubjectPublicKeyInfo DER for a PKCS#8 private key.
 #[op2]
 #[buffer]
-pub fn op_crypto_public_from_private(#[string] kind: String, #[buffer] pkcs8: &[u8], #[string] curve: String) -> Result<Vec<u8>, JsErrorBox> {
+pub fn op_crypto_public_from_private(
+  #[string] kind: String,
+  #[buffer] pkcs8: &[u8],
+  #[string] curve: String,
+) -> Result<Vec<u8>, JsErrorBox> {
   public_from_private(&kind, pkcs8, &curve)
 }
 
@@ -141,8 +164,14 @@ fn public_from_private(kind: &str, pkcs8: &[u8], curve: &str) -> Result<Vec<u8>,
   let invalid = |_| err("Invalid private key");
   let spki: PublicKeyX509Der = match kind {
     "rsa" => rsa::KeyPair::from_pkcs8(pkcs8).map_err(invalid)?.public_key().as_der(),
-    "ec" => EcdsaKeyPair::from_pkcs8(curve_alg(curve)?, pkcs8).map_err(invalid)?.public_key().as_der(),
-    "ed25519" => Ed25519KeyPair::from_pkcs8_maybe_unchecked(pkcs8).map_err(invalid)?.public_key().as_der(),
+    "ec" => EcdsaKeyPair::from_pkcs8(curve_alg(curve)?, pkcs8)
+      .map_err(invalid)?
+      .public_key()
+      .as_der(),
+    "ed25519" => Ed25519KeyPair::from_pkcs8_maybe_unchecked(pkcs8)
+      .map_err(invalid)?
+      .public_key()
+      .as_der(),
     _ => return Err(type_err(format!("Unsupported key type: {kind}"))),
   }
   .map_err(|_| err("Could not encode public key"))?;
@@ -159,7 +188,11 @@ pub struct GeneratedKeyPair {
 
 #[op2]
 #[serde]
-pub fn op_crypto_generate_key_pair(#[string] kind: String, bits: u32, #[string] curve: String) -> Result<GeneratedKeyPair, JsErrorBox> {
+pub fn op_crypto_generate_key_pair(
+  #[string] kind: String,
+  bits: u32,
+  #[string] curve: String,
+) -> Result<GeneratedKeyPair, JsErrorBox> {
   let failed = |_| err("Key generation failed");
   let private = match kind.as_str() {
     "rsa" => {
@@ -168,13 +201,27 @@ pub fn op_crypto_generate_key_pair(#[string] kind: String, bits: u32, #[string] 
         3072 => KeySize::Rsa3072,
         4096 => KeySize::Rsa4096,
         8192 => KeySize::Rsa8192,
-        _ => return Err(type_err(format!("Unsupported RSA modulusLength {bits} (supported: 2048, 3072, 4096, 8192)"))),
+        _ => {
+          return Err(type_err(format!(
+            "Unsupported RSA modulusLength {bits} (supported: 2048, 3072, 4096, 8192)"
+          )));
+        }
       };
       let pkcs8: Pkcs8V1Der = rsa::KeyPair::generate(size).map_err(failed)?.as_der().map_err(failed)?;
       pkcs8.as_ref().to_vec()
     }
-    "ec" => EcdsaKeyPair::generate(curve_alg(&curve)?).map_err(failed)?.to_pkcs8v1().map_err(failed)?.as_ref().to_vec(),
-    "ed25519" => Ed25519KeyPair::generate().map_err(failed)?.to_pkcs8v1().map_err(failed)?.as_ref().to_vec(),
+    "ec" => EcdsaKeyPair::generate(curve_alg(&curve)?)
+      .map_err(failed)?
+      .to_pkcs8v1()
+      .map_err(failed)?
+      .as_ref()
+      .to_vec(),
+    "ed25519" => Ed25519KeyPair::generate()
+      .map_err(failed)?
+      .to_pkcs8v1()
+      .map_err(failed)?
+      .as_ref()
+      .to_vec(),
     _ => return Err(type_err(format!("Unsupported key type: {kind}"))),
   };
   let public = public_from_private(&kind, &private, &curve)?;
@@ -195,7 +242,11 @@ fn rsa_signing(hash: &str, pss: bool) -> Result<&'static dyn signature::RsaEncod
   })
 }
 
-fn rsa_verification(hash: &str, pss: bool, bits: u32) -> Result<&'static dyn signature::VerificationAlgorithm, JsErrorBox> {
+fn rsa_verification(
+  hash: &str,
+  pss: bool,
+  bits: u32,
+) -> Result<&'static dyn signature::VerificationAlgorithm, JsErrorBox> {
   let legacy = bits < 2048;
   Ok(match (hash, pss, legacy) {
     ("sha1", false, true) => &signature::RSA_PKCS1_1024_8192_SHA1_FOR_LEGACY_USE_ONLY,
@@ -208,7 +259,12 @@ fn rsa_verification(hash: &str, pss: bool, bits: u32) -> Result<&'static dyn sig
     ("sha256", true, false) => &signature::RSA_PSS_2048_8192_SHA256,
     ("sha384", true, false) => &signature::RSA_PSS_2048_8192_SHA384,
     ("sha512", true, false) => &signature::RSA_PSS_2048_8192_SHA512,
-    _ => return Err(type_err(format!("Unsupported RSA verification: {hash}{} with {bits}-bit key", if pss { " (PSS)" } else { "" }))),
+    _ => {
+      return Err(type_err(format!(
+        "Unsupported RSA verification: {hash}{} with {bits}-bit key",
+        if pss { " (PSS)" } else { "" }
+      )));
+    }
   })
 }
 
@@ -228,7 +284,11 @@ fn ecdsa_signing(curve: &str, hash: &str, fixed: bool) -> Result<&'static EcdsaS
   })
 }
 
-fn ecdsa_verification(curve: &str, hash: &str, fixed: bool) -> Result<&'static dyn signature::VerificationAlgorithm, JsErrorBox> {
+fn ecdsa_verification(
+  curve: &str,
+  hash: &str,
+  fixed: bool,
+) -> Result<&'static dyn signature::VerificationAlgorithm, JsErrorBox> {
   Ok(match (curve, hash, fixed) {
     ("prime256v1", "sha256", false) => &signature::ECDSA_P256_SHA256_ASN1,
     ("prime256v1", "sha384", false) => &signature::ECDSA_P256_SHA384_ASN1,
@@ -262,7 +322,11 @@ pub struct SignSpec {
 
 #[op2]
 #[buffer]
-pub fn op_crypto_sign(#[serde] spec: SignSpec, #[buffer] pkcs8: &[u8], #[buffer] data: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
+pub fn op_crypto_sign(
+  #[serde] spec: SignSpec,
+  #[buffer] pkcs8: &[u8],
+  #[buffer] data: &[u8],
+) -> Result<Vec<u8>, JsErrorBox> {
   let invalid = |_| err("Invalid private key");
   let failed = |_| err("Signing failed");
   let rng = SystemRandom::new();
@@ -270,14 +334,21 @@ pub fn op_crypto_sign(#[serde] spec: SignSpec, #[buffer] pkcs8: &[u8], #[buffer]
     "rsa" => {
       let kp = rsa::KeyPair::from_pkcs8(pkcs8).map_err(invalid)?;
       let mut sig = vec![0u8; kp.public_modulus_len()];
-      kp.sign(rsa_signing(&spec.hash, spec.pss)?, &rng, data, &mut sig).map_err(failed)?;
+      kp.sign(rsa_signing(&spec.hash, spec.pss)?, &rng, data, &mut sig)
+        .map_err(failed)?;
       Ok(sig)
     }
     "ec" => {
       let kp = EcdsaKeyPair::from_pkcs8(ecdsa_signing(&spec.curve, &spec.hash, spec.fixed)?, pkcs8).map_err(invalid)?;
       Ok(kp.sign(&rng, data).map_err(failed)?.as_ref().to_vec())
     }
-    "ed25519" => Ok(Ed25519KeyPair::from_pkcs8_maybe_unchecked(pkcs8).map_err(invalid)?.sign(data).as_ref().to_vec()),
+    "ed25519" => Ok(
+      Ed25519KeyPair::from_pkcs8_maybe_unchecked(pkcs8)
+        .map_err(invalid)?
+        .sign(data)
+        .as_ref()
+        .to_vec(),
+    ),
     kind => Err(type_err(format!("Unsupported key type for signing: {kind}"))),
   }
 }
@@ -313,7 +384,11 @@ fn oaep(hash: &str) -> Result<&'static rsa::OaepAlgorithm, JsErrorBox> {
 /// RSA public-key encryption: OAEP with `oaep_hash`, or PKCS#1 v1.5 when empty.
 #[op2]
 #[buffer]
-pub fn op_crypto_rsa_encrypt(#[buffer] spki: &[u8], #[buffer] data: &[u8], #[string] oaep_hash: String) -> Result<Vec<u8>, JsErrorBox> {
+pub fn op_crypto_rsa_encrypt(
+  #[buffer] spki: &[u8],
+  #[buffer] data: &[u8],
+  #[string] oaep_hash: String,
+) -> Result<Vec<u8>, JsErrorBox> {
   let key = rsa::PublicEncryptingKey::from_der(spki).map_err(|_| err("Invalid public key"))?;
   let failed = |_| err("Encryption failed (message too long for the key?)");
   if oaep_hash.is_empty() {
@@ -323,13 +398,22 @@ pub fn op_crypto_rsa_encrypt(#[buffer] spki: &[u8], #[buffer] data: &[u8], #[str
   } else {
     let key = rsa::OaepPublicEncryptingKey::new(key).map_err(failed)?;
     let mut out = vec![0u8; key.ciphertext_size()];
-    Ok(key.encrypt(oaep(&oaep_hash)?, data, &mut out, None).map_err(failed)?.to_vec())
+    Ok(
+      key
+        .encrypt(oaep(&oaep_hash)?, data, &mut out, None)
+        .map_err(failed)?
+        .to_vec(),
+    )
   }
 }
 
 #[op2]
 #[buffer]
-pub fn op_crypto_rsa_decrypt(#[buffer] pkcs8: &[u8], #[buffer] data: &[u8], #[string] oaep_hash: String) -> Result<Vec<u8>, JsErrorBox> {
+pub fn op_crypto_rsa_decrypt(
+  #[buffer] pkcs8: &[u8],
+  #[buffer] data: &[u8],
+  #[string] oaep_hash: String,
+) -> Result<Vec<u8>, JsErrorBox> {
   let key = rsa::PrivateDecryptingKey::from_pkcs8(pkcs8).map_err(|_| err("Invalid private key"))?;
   let failed = |_| err("Decryption failed");
   if oaep_hash.is_empty() {
@@ -339,7 +423,12 @@ pub fn op_crypto_rsa_decrypt(#[buffer] pkcs8: &[u8], #[buffer] data: &[u8], #[st
   } else {
     let key = rsa::OaepPrivateDecryptingKey::new(key).map_err(failed)?;
     let mut out = vec![0u8; key.min_output_size()];
-    Ok(key.decrypt(oaep(&oaep_hash)?, data, &mut out, None).map_err(failed)?.to_vec())
+    Ok(
+      key
+        .decrypt(oaep(&oaep_hash)?, data, &mut out, None)
+        .map_err(failed)?
+        .to_vec(),
+    )
   }
 }
 
@@ -385,14 +474,24 @@ pub fn op_crypto_stream_cipher_new(
   if key.len() != key_len {
     return Err(JsErrorBox::range_error("Invalid key length"));
   }
-  let iv: [u8; 16] = iv.try_into().map_err(|_| JsErrorBox::range_error("Invalid initialization vector"))?;
+  let iv: [u8; 16] = iv
+    .try_into()
+    .map_err(|_| JsErrorBox::range_error("Invalid initialization vector"))?;
   let key = UnboundCipherKey::new(alg, key).map_err(|_| JsErrorBox::range_error("Invalid key length"))?;
   let failed = |_| err(format!("Could not initialize {algorithm}"));
   let cipher = match (mode, decrypt) {
-    ("cbc", false) => StreamCipher::Encrypt(StreamingEncryptingKey::less_safe_cbc_pkcs7(key, EncryptionContext::Iv128(iv.into())).map_err(failed)?),
-    ("ctr", false) => StreamCipher::Encrypt(StreamingEncryptingKey::less_safe_ctr(key, EncryptionContext::Iv128(iv.into())).map_err(failed)?),
-    ("cbc", true) => StreamCipher::Decrypt(StreamingDecryptingKey::cbc_pkcs7(key, DecryptionContext::Iv128(iv.into())).map_err(failed)?),
-    ("ctr", true) => StreamCipher::Decrypt(StreamingDecryptingKey::ctr(key, DecryptionContext::Iv128(iv.into())).map_err(failed)?),
+    ("cbc", false) => StreamCipher::Encrypt(
+      StreamingEncryptingKey::less_safe_cbc_pkcs7(key, EncryptionContext::Iv128(iv.into())).map_err(failed)?,
+    ),
+    ("ctr", false) => StreamCipher::Encrypt(
+      StreamingEncryptingKey::less_safe_ctr(key, EncryptionContext::Iv128(iv.into())).map_err(failed)?,
+    ),
+    ("cbc", true) => StreamCipher::Decrypt(
+      StreamingDecryptingKey::cbc_pkcs7(key, DecryptionContext::Iv128(iv.into())).map_err(failed)?,
+    ),
+    ("ctr", true) => {
+      StreamCipher::Decrypt(StreamingDecryptingKey::ctr(key, DecryptionContext::Iv128(iv.into())).map_err(failed)?)
+    }
     _ => return Err(type_err(format!("Unknown cipher: {algorithm}"))),
   };
   let table = cipher_table(state);
@@ -403,12 +502,27 @@ pub fn op_crypto_stream_cipher_new(
 
 #[op2]
 #[buffer]
-pub fn op_crypto_stream_cipher_update(state: &mut OpState, id: u32, #[buffer] data: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
-  let cipher = cipher_table(state).ciphers.get_mut(&id).ok_or_else(|| err("Cipher already finalized"))?;
+pub fn op_crypto_stream_cipher_update(
+  state: &mut OpState,
+  id: u32,
+  #[buffer] data: &[u8],
+) -> Result<Vec<u8>, JsErrorBox> {
+  let cipher = cipher_table(state)
+    .ciphers
+    .get_mut(&id)
+    .ok_or_else(|| err("Cipher already finalized"))?;
   let mut out = vec![0u8; data.len() + 16];
   let written = match cipher {
-    StreamCipher::Encrypt(c) => c.update(data, &mut out).map_err(|_| err("Cipher update failed"))?.written().len(),
-    StreamCipher::Decrypt(c) => c.update(data, &mut out).map_err(|_| err("Decipher update failed"))?.written().len(),
+    StreamCipher::Encrypt(c) => c
+      .update(data, &mut out)
+      .map_err(|_| err("Cipher update failed"))?
+      .written()
+      .len(),
+    StreamCipher::Decrypt(c) => c
+      .update(data, &mut out)
+      .map_err(|_| err("Decipher update failed"))?
+      .written()
+      .len(),
   };
   out.truncate(written);
   Ok(out)
@@ -417,10 +531,18 @@ pub fn op_crypto_stream_cipher_update(state: &mut OpState, id: u32, #[buffer] da
 #[op2]
 #[buffer]
 pub fn op_crypto_stream_cipher_final(state: &mut OpState, id: u32) -> Result<Vec<u8>, JsErrorBox> {
-  let cipher = cipher_table(state).ciphers.remove(&id).ok_or_else(|| err("Cipher already finalized"))?;
+  let cipher = cipher_table(state)
+    .ciphers
+    .remove(&id)
+    .ok_or_else(|| err("Cipher already finalized"))?;
   let mut out = vec![0u8; 32];
   let written = match cipher {
-    StreamCipher::Encrypt(c) => c.finish(&mut out).map_err(|_| err("Cipher final failed"))?.1.written().len(),
+    StreamCipher::Encrypt(c) => c
+      .finish(&mut out)
+      .map_err(|_| err("Cipher final failed"))?
+      .1
+      .written()
+      .len(),
     // OpenSSL's message for a bad key/IV or corrupted CBC ciphertext.
     StreamCipher::Decrypt(c) => c.finish(&mut out).map_err(|_| err("bad decrypt"))?.written().len(),
   };
@@ -454,9 +576,9 @@ pub struct EcdhKeyPair {
 pub fn op_crypto_ecdh_generate(#[string] curve: String) -> Result<EcdhKeyPair, JsErrorBox> {
   use aws_lc_rs::encoding::{AsBigEndian, AsDer};
   let algo = ecdh_algo(&curve)?;
-  let private = aws_lc_rs::agreement::PrivateKey::generate(algo)
-    .map_err(|_| err("ECDH key generation failed"))?;
-  let public = private.compute_public_key()
+  let private = aws_lc_rs::agreement::PrivateKey::generate(algo).map_err(|_| err("ECDH key generation failed"))?;
+  let public = private
+    .compute_public_key()
     .map_err(|_| err("ECDH public key computation failed"))?;
   // Try PKCS#8 DER first (EC curves), fall back to raw seed (X25519).
   let priv_bytes = if let Ok(pkcs8) = AsDer::<aws_lc_rs::encoding::Pkcs8V1Der>::as_der(&private) {

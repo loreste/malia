@@ -2,11 +2,11 @@
 // Eliminates node-gyp / better-sqlite3 build headaches with native, secure,
 // bundled SQLite, prepared statements, and tagged template literals.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use deno_core::op2;
 use deno_error::JsErrorBox;
-use rusqlite::{types::ValueRef, Connection, ToSql};
+use rusqlite::{Connection, ToSql, types::ValueRef};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub struct SqlEngine {
   connections: Mutex<HashMap<u32, Arc<Mutex<Connection>>>>,
@@ -40,9 +40,7 @@ impl SqlEngine {
     let _ = conn.pragma_update(None, "foreign_keys", "ON");
     let _ = conn.pragma_update(None, "synchronous", "NORMAL");
 
-    let id = self
-      .next_id
-      .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut conns) = self.connections.lock() {
       conns.insert(id, Arc::new(Mutex::new(conn)));
     }
@@ -67,8 +65,7 @@ impl SqlEngine {
   }
 }
 
-pub static GLOBAL_SQL: std::sync::LazyLock<SqlEngine> =
-  std::sync::LazyLock::new(SqlEngine::new);
+pub static GLOBAL_SQL: std::sync::LazyLock<SqlEngine> = std::sync::LazyLock::new(SqlEngine::new);
 
 fn json_to_sqlite(val: &serde_json::Value) -> Box<dyn ToSql> {
   match val {
@@ -125,11 +122,7 @@ pub fn op_sql_close(id: u32) -> bool {
 }
 
 #[op2]
-pub fn op_sql_exec(
-  id: u32,
-  #[string] sql: String,
-  #[serde] params: Vec<serde_json::Value>,
-) -> Result<f64, JsErrorBox> {
+pub fn op_sql_exec(id: u32, #[string] sql: String, #[serde] params: Vec<serde_json::Value>) -> Result<f64, JsErrorBox> {
   let conn_arc = GLOBAL_SQL.get_conn(id)?;
   let conn = conn_arc.lock().map_err(|e| JsErrorBox::generic(e.to_string()))?;
 
@@ -167,11 +160,7 @@ pub fn op_sql_query(
     .prepare(&sql)
     .map_err(|e| JsErrorBox::generic(format!("sqlite prepare error: {e}")))?;
 
-  let column_names: Vec<String> = stmt
-    .column_names()
-    .into_iter()
-    .map(|s| s.to_string())
-    .collect();
+  let column_names: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
 
   let mut rows = stmt
     .query(param_refs.as_slice())

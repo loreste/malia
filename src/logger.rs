@@ -1,6 +1,6 @@
 // Centralized structured logging for jse runtime, HTTP server, and JS applications.
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::SystemTime;
 
 #[repr(u8)]
@@ -186,22 +186,18 @@ pub fn log(level: LogLevel, target: &str, message: &str) {
       let lvl_str = level.as_str();
       let esc_target = escape_json(target);
       let esc_msg = escape_json(message);
-      eprintln!(
-        r#"{{"time":"{ts}","level":"{lvl_str}","target":"{esc_target}","message":"{esc_msg}"}}"#
-      );
+      eprintln!(r#"{{"time":"{ts}","level":"{lvl_str}","target":"{esc_target}","message":"{esc_msg}"}}"#);
     }
     LogFormat::Text => {
       let (badge, color_code) = match level {
         LogLevel::Debug => ("[DEBUG]", "\x1b[35m"), // Magenta
-        LogLevel::Info => ("[INFO] ", "\x1b[32m"), // Green
-        LogLevel::Warn => ("[WARN] ", "\x1b[33m"), // Yellow
+        LogLevel::Info => ("[INFO] ", "\x1b[32m"),  // Green
+        LogLevel::Warn => ("[WARN] ", "\x1b[33m"),  // Yellow
         LogLevel::Error => ("[ERROR]", "\x1b[31m"), // Red
         LogLevel::None => ("[LOG]  ", "\x1b[0m"),
       };
       // Format: timestamp badge [target] message
-      eprintln!(
-        "{ts} {color_code}{badge}\x1b[0m \x1b[36m[{target}]\x1b[0m {message}"
-      );
+      eprintln!("{ts} {color_code}{badge}\x1b[0m \x1b[36m[{target}]\x1b[0m {message}");
     }
   }
 }
