@@ -85,8 +85,7 @@ jobs:
         if: matrix.build_packages
         shell: bash
         run: |
-          # Install nfpm. Release assets are versioned and the repo has no
-          # install.sh, so download a pinned release directly.
+          # Install nfpm
           NFPM_VERSION=2.47.0
           curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | tar xz -C /tmp nfpm
           /tmp/nfpm --version
