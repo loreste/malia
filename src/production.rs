@@ -34,9 +34,15 @@ impl ProductionTelemetry {
   }
 
   pub fn dec_conns(&self) {
-    let _ = self.active_conns.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
-      Some(c.saturating_sub(1))
-    });
+    // Saturating decrement. A plain CAS loop: fetch_update is deprecated
+    // (renamed try_update) on newer toolchains but try_update is not on older ones.
+    let mut current = self.active_conns.load(Ordering::Relaxed);
+    while current > 0 {
+      match self.active_conns.compare_exchange_weak(current, current - 1, Ordering::Relaxed, Ordering::Relaxed) {
+        Ok(_) => break,
+        Err(actual) => current = actual,
+      }
+    }
   }
 }
 
