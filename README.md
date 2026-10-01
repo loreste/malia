@@ -467,6 +467,3 @@ examples/         example programs
 tests/            integration tests and fixtures
 ```
 
-## Engineering status and support boundaries
-
-The [remediation specification](docs/engineering/malia-remediation.md), [evidence ledger](docs/engineering/remediation-ledger.json), and [compatibility matrix](docs/engineering/compatibility-matrix.md) define current support. Open P0 requirements block a production-ready designation. TypeScript is transpile-only. JavaScript source containers in `.wasm` files require Malia; `_start` does not execute their embedded application in an independent engine. `WebAssembly.compileStreaming` and `instantiateStreaming` currently buffer input. Native `build` and `compile` embed only entry source and a permission manifest in the host runtime; they do not bundle dependencies, assets, workers or source maps and do not cross-compile.
