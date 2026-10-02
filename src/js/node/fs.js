@@ -638,8 +638,10 @@ export class FSWatcher extends EventEmitter {
     try {
       this.#id = ops.op_fs_watch(this.#path, recursive);
       this.#pump();
-    } catch {
-      // Fallback: polling if native watch fails.
+    } catch (err) {
+      // Permission errors must not be swallowed.
+      if (err?.message?.includes("PermissionDenied")) throw err;
+      // Fallback: polling if native watch fails for other reasons.
       this.#pollFallback(options.interval || 200);
     }
   }
