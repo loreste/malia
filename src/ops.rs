@@ -2471,6 +2471,7 @@ deno_core::extension!(
     op_isatty,
     op_pid,
     op_ppid,
+    op_process_kill,
     op_exec_path,
     op_exec_argv,
     op_ipc_listen,

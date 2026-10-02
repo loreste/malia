@@ -361,6 +361,25 @@
     listenerCount,
     rawListeners,
     listeners: rawListeners,
+    kill(pid, signal = "SIGTERM") {
+      if (typeof pid !== "number") throw new TypeError("pid must be a number");
+      const sig = typeof signal === "string" ? signal.replace(/^SIG/, "") : String(signal);
+      const name = "SIG" + sig;
+      // Self-signal: emit the event directly.
+      if (pid === process.pid || pid === 0) {
+        if (listenerCount(name) > 0) {
+          emit(name);
+          return true;
+        }
+        if (name === "SIGTERM") process.exit(143);
+        if (name === "SIGINT") process.exit(130);
+        if (name === "SIGKILL") process.exit(137);
+        return true;
+      }
+      // Other process: use native op.
+      ops.op_process_kill(pid, sig);
+      return true;
+    },
     _dispatchException,
     _dispatchUnhandledRejection,
     get execPath() {

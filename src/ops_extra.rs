@@ -2949,6 +2949,34 @@ pub fn op_ppid() -> u32 {
   crate::platform::ppid()
 }
 
+#[op2(fast)]
+pub fn op_process_kill(pid: i32, #[string] signal: String) -> Result<(), JsErrorBox> {
+  #[cfg(unix)]
+  {
+    let sig = match signal.as_str() {
+      "TERM" => nix::sys::signal::Signal::SIGTERM,
+      "INT" => nix::sys::signal::Signal::SIGINT,
+      "KILL" => nix::sys::signal::Signal::SIGKILL,
+      "HUP" => nix::sys::signal::Signal::SIGHUP,
+      "USR1" => nix::sys::signal::Signal::SIGUSR1,
+      "USR2" => nix::sys::signal::Signal::SIGUSR2,
+      "QUIT" => nix::sys::signal::Signal::SIGQUIT,
+      "PIPE" => nix::sys::signal::Signal::SIGPIPE,
+      "ALRM" => nix::sys::signal::Signal::SIGALRM,
+      "0" => nix::sys::signal::Signal::SIGTERM, // existence check
+      _ => return Err(JsErrorBox::generic(format!("Unknown signal: SIG{signal}"))),
+    };
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), sig)
+      .map_err(|e| JsErrorBox::generic(format!("kill({pid}): {e}")))?;
+    Ok(())
+  }
+  #[cfg(not(unix))]
+  {
+    let _ = (pid, signal);
+    Err(JsErrorBox::generic("process.kill is not supported on this platform"))
+  }
+}
+
 #[op2]
 #[string]
 pub fn op_exec_path() -> Result<String, JsErrorBox> {
