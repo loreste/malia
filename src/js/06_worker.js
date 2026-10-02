@@ -37,7 +37,7 @@
       if (this.#terminated) throw new Error("worker is terminated");
       const ok = ops.op_worker_send(
         this.#id,
-        __jse.serialize({ type: "message", data: value === undefined ? null : value }),
+        __jse.serialize(value === undefined ? null : value),
       );
       if (!ok) throw new Error("worker is gone");
     }
@@ -47,8 +47,7 @@
     async receive() {
       const bytes = await ops.op_worker_recv(this.#id);
       if (bytes.length === 0) throw new Error("worker is gone");
-      const msg = __jse.deserialize(bytes);
-      return { data: msg.data };
+      return { data: __jse.deserialize(bytes) };
     }
 
     terminate() {
@@ -66,9 +65,9 @@
         }
         if (bytes.length === 0) break;
         try {
-          const msg = __jse.deserialize(bytes);
-          if (msg.type === "message" && this.#onmessage) {
-            this.#onmessage({ data: msg.data });
+          const data = __jse.deserialize(bytes);
+          if (this.#onmessage) {
+            this.#onmessage({ data });
           }
         } catch (err) {
           console.error("worker onmessage error:", err);
@@ -97,8 +96,8 @@
     const poolContext = new Deno.core.AsyncVariable();
     globalThis.postMessage = (value) => {
       const job = poolContext.get();
-      const data = job ? { __maliaPoolId: job.id, kind: job.stream && value?.__done === true ? 'done' : 'data', data: value } : value;
-      if (!ops.op_host_send(__jse.serialize({ type: 'message', data: data === undefined ? null : data }))) {
+      const payload = job ? { __maliaPoolId: job.id, kind: job.stream && value?.__done === true ? 'done' : 'data', data: value } : (value === undefined ? null : value);
+      if (!ops.op_host_send(__jse.serialize(payload))) {
         throw new Error('worker reply channel is closed or full');
       }
     };
@@ -108,16 +107,16 @@
         const bytes = await ops.op_host_recv();
         if (bytes.length === 0) break;
         try {
-          const msg = __jse.deserialize(bytes);
-          if (msg.type === "message" && messageHandler) {
-            const job = msg.data?.__maliaPoolJob;
-            if (!job) { messageHandler({ data: msg.data }); continue; }
+          const data = __jse.deserialize(bytes);
+          if (messageHandler) {
+            const job = data?.__maliaPoolJob;
+            if (!job) { messageHandler({ data }); continue; }
             const previous = poolContext.enter(job);
-            const report = error => ops.op_host_send(__jse.serialize({ type: 'message', data: {
+            const report = error => ops.op_host_send(__jse.serialize({
               __maliaPoolId: job.id, kind: 'error', error: String(error?.message ?? error)
-            } }));
+            }));
             try {
-              const result = messageHandler({ data: msg.data.data });
+              const result = messageHandler({ data: data.data });
               if (result && typeof result.then === 'function') result.catch(report);
             } catch (error) { report(error); }
             finally { Deno.core.setAsyncContext(previous); }
