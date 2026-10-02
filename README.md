@@ -342,7 +342,7 @@ with an `AbortSignal`.
 | `os` | `cpus` (real brand/frequency/times), `loadavg`, `uptime`, `totalmem`, `freemem`, `networkInterfaces` (MAC addresses), `userInfo`, `hostname`, `platform`, `arch`, `type`, `release`, `version`, `machine`, `availableParallelism`, `tmpdir`, `homedir`, `endianness`. Reports cgroup limits inside containers |
 | `path` | Port of Node's implementation; `posix` and `win32`, with the platform's variant as the default |
 | `perf_hooks` | `performance.mark`, `performance.measure`, `performance.getEntries`, `PerformanceObserver` (fires callbacks on entries), `monitorEventLoopDelay` |
-| `process` | `argv`, `env` (mutations propagate to child processes), `cwd`, `chdir`, `nextTick`, `hrtime`, `hrtime.bigint`, `memoryUsage`, `cpuUsage`, `exit`, `stdin` (readable stream), `stdout`/`stderr` (writable streams), `uncaughtException`/`unhandledRejection`/`SIGTERM`/`SIGINT` events, `emitWarning`, `umask` |
+| `process` | `argv`, `env` (mutations propagate to child processes), `cwd`, `chdir`, `nextTick`, `hrtime`, `hrtime.bigint`, `memoryUsage`, `cpuUsage`, `kill`, `exit`, `stdin` (readable stream), `stdout`/`stderr` (writable streams), `uncaughtException`/`unhandledRejection`/`SIGTERM`/`SIGINT` events, `emitWarning`, `umask` |
 | `punycode`, `querystring`, `readline`, `string_decoder`, `timers`, `tty`, `constants` | Available |
 | `sqlite` | `DatabaseSync`, `StatementSync` (Node 22 API) |
 | `stream`, `stream/promises`, `stream/consumers`, `stream/web` | Node's stream implementation (readable-stream 4): `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline`, `finished`, `compose`, backpressure, `toWeb`/`fromWeb`; consumers; WHATWG streams |
