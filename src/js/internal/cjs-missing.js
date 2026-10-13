@@ -3,9 +3,9 @@
 export default new Proxy(function () {}, {
   get(_target, prop) {
     if (prop === Symbol.toPrimitive) return () => "[missing module]";
-    throw new Error("Cannot find module (optional require() could not be resolved)");
+    throw Object.assign(new Error("Cannot find module (optional require() could not be resolved)"), { code: "MODULE_NOT_FOUND" });
   },
   apply() {
-    throw new Error("Cannot find module (optional require() could not be resolved)");
+    throw Object.assign(new Error("Cannot find module (optional require() could not be resolved)"), { code: "MODULE_NOT_FOUND" });
   },
 });

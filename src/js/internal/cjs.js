@@ -34,7 +34,7 @@ export function __makeRequire(parentUrl, modules, urls) {
     if (Object.prototype.hasOwnProperty.call(urls, spec)) {
       const targetUrl = urls[spec];
       if (targetUrl === "jse:internal/cjs-missing") {
-        throw new Error("Cannot find module '" + spec + "' required from " + parentUrl);
+        throw Object.assign(new Error("Cannot find module '" + spec + "'"), { code: "MODULE_NOT_FOUND" });
       }
       if (cjsCache.has(targetUrl)) {
         return cjsCache.get(targetUrl).exports;
@@ -53,14 +53,26 @@ export function __makeRequire(parentUrl, modules, urls) {
       const ns = modules[spec];
       return ns !== null && typeof ns === "object" && "default" in ns ? ns.default : ns;
     }
-    throw new Error(
-      "Cannot find module '" + spec + "' required from " + parentUrl +
-        " (only static literal require() calls are supported)",
-    );
+    // Dynamic require: resolve at runtime via the native op.
+    try {
+      const resolved = Deno.core.ops.op_require_resolve(spec, new URL(parentUrl).pathname);
+      // Read and evaluate as CJS at runtime.
+      const code = Deno.core.ops.op_read_text_file_sync(resolved);
+      const mod = { exports: {} };
+      const fn = new Function("exports", "require", "module", "__filename", "__dirname", code);
+      fn(mod.exports, require, mod, resolved, resolved.replace(/[/\\][^/\\]*$/, ""));
+      cjsCache.set(resolved, mod);
+      return mod.exports;
+    } catch {
+      throw Object.assign(
+        new Error("Cannot find module '" + spec + "' required from " + parentUrl),
+        { code: "MODULE_NOT_FOUND" },
+      );
+    }
   }
   require.resolve = (spec) => {
     if (Object.prototype.hasOwnProperty.call(urls, spec)) return urls[spec];
-    throw new Error("Cannot find module '" + spec + "'");
+    throw Object.assign(new Error("Cannot find module '" + spec + "'"), { code: "MODULE_NOT_FOUND" });
   };
   require.cache = cjsCache;
   return require;
