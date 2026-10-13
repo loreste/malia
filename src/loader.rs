@@ -824,9 +824,14 @@ impl JseModuleLoader {
       .map_err(|_| err(format!("Only file:// URLs are supported, got {spec_str}")))?;
 
     if path.extension().is_some_and(|extension| extension == "node") {
-      return Err(err(
-        "ERR_NATIVE_ADDON_UNSUPPORTED: Malia does not implement the Node native addon ABI",
-      ));
+      // Return a module that throws on require/import, so try/catch
+      // fallback patterns (like Next.js SWC native → WASM) work.
+      let msg = format!(
+        "ERR_NATIVE_ADDON_UNSUPPORTED: Cannot load native addon: {}",
+        path.display()
+      );
+      let code = format!("throw Object.assign(new Error({msg:?}), {{ code: 'ERR_DLOPEN_FAILED' }});");
+      return Ok(module_source(ModuleType::JavaScript, code, specifier, None));
     }
 
     // JSON modules requested with `with { type: "json" }`.
@@ -1014,10 +1019,10 @@ impl JseModuleLoader {
       // throwing stub so try/catch optional requires keep working.
       let url = match self.resolve_internal(spec, specifier.as_str(), true) {
         Ok(u) => {
-          // Requires of unknown builtins (often dead code or comments
-          // picked up by the scanner) get the throwing stub too.
           let url = u.to_string();
-          if url.starts_with("node:") && builtin_source(&url).is_none() {
+          // Native addons and unknown builtins get a throwing stub so
+          // they resolve at runtime where try/catch works.
+          if u.path().ends_with(".node") || (url.starts_with("node:") && builtin_source(&url).is_none()) {
             "jse:internal/cjs-missing".to_string()
           } else {
             url
@@ -1259,16 +1264,20 @@ pub fn has_esm_syntax(code: &str) -> bool {
     if skip_comment_or_regex(bytes, &mut i) {
       continue;
     }
-    if b == b'\'' || b == b'"' || b == b'`' {
-      let quote = b;
+    if b == b'\'' || b == b'"' {
       i += 1;
-      while i < len && bytes[i] != quote {
+      while i < len && bytes[i] != b {
         if bytes[i] == b'\\' {
           i += 1;
         }
         i += 1;
       }
       i += 1;
+      continue;
+    }
+    if b == b'`' {
+      i += 1;
+      skip_template(bytes, &mut i);
       continue;
     }
     if is_statement_start(bytes, i) && matches_word(bytes, i, b"import") {
@@ -1316,6 +1325,51 @@ fn is_valid_ident(s: &str) -> bool {
     return false;
   }
   chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// Skip a template literal body, handling `${expr}` nesting. Called after
+/// the opening backtick has been consumed. Leaves `idx` past the closing
+/// backtick.
+fn skip_template(bytes: &[u8], idx: &mut usize) {
+  let len = bytes.len();
+  while *idx < len {
+    match bytes[*idx] {
+      b'\\' => *idx += 2,
+      b'`' => {
+        *idx += 1;
+        return;
+      }
+      b'$' if *idx + 1 < len && bytes[*idx + 1] == b'{' => {
+        *idx += 2; // skip ${
+        let mut depth = 1u32;
+        while *idx < len && depth > 0 {
+          match bytes[*idx] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            b'\'' | b'"' => {
+              let q = bytes[*idx];
+              *idx += 1;
+              while *idx < len && bytes[*idx] != q {
+                if bytes[*idx] == b'\\' {
+                  *idx += 1;
+                }
+                *idx += 1;
+              }
+            }
+            b'`' => {
+              *idx += 1;
+              skip_template(bytes, idx);
+              continue;
+            }
+            b'\\' => *idx += 1,
+            _ => {}
+          }
+          *idx += 1;
+        }
+      }
+      _ => *idx += 1,
+    }
+  }
 }
 
 fn skip_whitespace(bytes: &[u8], idx: &mut usize) {
