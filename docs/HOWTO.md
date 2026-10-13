@@ -476,8 +476,9 @@ competes with network handling.
 
 ### WorkerPool
 
-Dispatch CPU work to a fixed set of workers. One line to fan out, one to
-collect.
+Dispatch CPU work to a fixed set of workers. Default size is `cpus - 1`,
+leaving one core free for the main thread and I/O. Override with
+`{ size: N }`.
 
 ```javascript
 // worker.js

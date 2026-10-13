@@ -302,7 +302,7 @@ start = "jse start"
 | `jse.serve(options, handler)` | Deno-style HTTP server. Handler returns a `Response` or a promise of one. Supports keep-alive, whole and chunked bodies, TLS |
 | `WebSocket`, `jse.upgradeWebSocket(req)` | WebSocket client and server upgrade. `binaryType` may be `nodebuffer`, `arraybuffer`, or `blob` |
 | `chan(capacity?)` | Channels with `send`/`recv`/`close`/`for await`, backed by tokio mpsc. Bounded channels apply backpressure |
-| `Worker`, `WorkerPool` | One OS thread and V8 isolate per worker. Messages use V8 structured clone. `new WorkerPool(path, { size })`, `pool.run(arg)`, `pool.map(items)`, `pool.stream(arg)` (async iterable of multiple replies), `pool.close()` |
+| `Worker`, `WorkerPool` | One OS thread and V8 isolate per worker. Messages use V8 structured clone. `new WorkerPool(path, { size })` defaults to `cpus - 1` (leaves headroom for the main thread). `pool.run(arg)`, `pool.map(items)`, `pool.stream(arg)` (async iterable), `pool.close()`. Supports `{ signal }` for cancellation and `{ timeoutMs }` for deadlines |
 | `structuredClone` | V8 value serializer |
 | `URL`, `URLSearchParams` | `URL` via the `url` crate; `URLSearchParams` in JS |
 | `jse.Router` | Router with `:param` and wildcard routes; `router.static()` serves files with ETag and 304 handling |
