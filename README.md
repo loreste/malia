@@ -114,7 +114,7 @@ malia run app.wasm
 `-i/--interactive`, `-v/--version`, `--no-warnings`, `--max-old-space-size`,
 `--inspect[=host:port]`, `--inspect-brk[=host:port]`,
 and `--enable-source-maps` are accepted. Flags in `NODE_OPTIONS` are read as
-well. `process.version` is `v26.0.0`, and when invoked through a `node`
+well. `process.version` is `v26.11.1`, and when invoked through a `node`
 symlink, `--version` prints the same.
 
 ### Debugging

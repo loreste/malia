@@ -21,7 +21,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 26.4.0
+          node-version: 26
       - name: Install example and fixture dependencies
         run: |
           npm install --no-audit --no-fund --prefix examples/express_demo
@@ -45,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 26.4.0
+          node-version: 26
       - name: Install required fixtures
         run: |
           npm install --no-audit --no-fund --prefix examples/express_demo
@@ -120,7 +120,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 26.4.0
+          node-version: 26
       - run: npm ci --no-audit --no-fund --prefix tests/db
       - run: cargo build --locked --bin jse
       - name: Run drivers against live servers

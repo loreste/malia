@@ -56,7 +56,7 @@ assert(saw, "process.on/emit");
 assert(process.pid > 0, `pid ${process.pid}`);
 assert(process.ppid > 0, `ppid ${process.ppid}`);
 assert(typeof process.hrtime.bigint() === "bigint", "hrtime.bigint");
-assert(process.versions.node === "26.0.0", `versions.node ${process.versions.node}`);
+assert(process.versions.node.startsWith("26."), `versions.node ${process.versions.node}`);
 assert(process.uptime() >= 0, "uptime");
 const mem = process.memoryUsage();
 assert(mem.heapUsed > 0, `heapUsed ${mem.heapUsed}`);

@@ -32,7 +32,7 @@
       userAgentData: {
         brands: [
           { brand: "jse", version: "0.1.0" },
-          { brand: "Node.js", version: "26.0.0" },
+          { brand: "Node.js", version: "26.11.1" },
         ],
         mobile: false,
         platform: typeof process !== "undefined" ? process.platform : "darwin",

@@ -315,8 +315,8 @@
     platform: ops.op_platform(),
     arch: ops.op_arch(),
     title: "node",
-    version: "v26.0.0",
-    versions: { malia: "0.1.0", jse: "0.1.0", v8: "15.0.4", node: "26.0.0" },
+    version: "v26.11.1",
+    versions: { malia: "0.1.0", jse: "0.1.0", v8: "15.0.4", node: "26.11.1" },
     release: {
       name: "node",
       lts: "Iron",
