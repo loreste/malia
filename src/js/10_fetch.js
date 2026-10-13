@@ -498,7 +498,20 @@
       }
     }
     const redirect = String(init.redirect ?? (input instanceof Request ? input.redirect : "follow"));
-    const head = await ops.op_fetch_start(url, method, headerPairs, bodyBytes, redirect, bodyStream);
+    const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
+    if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+    const fetchPromise = ops.op_fetch_start(url, method, headerPairs, bodyBytes, redirect, bodyStream);
+    let head;
+    if (signal) {
+      head = await Promise.race([
+        fetchPromise,
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError")), { once: true });
+        }),
+      ]);
+    } else {
+      head = await fetchPromise;
+    }
     return Response._fromFetch(head, url);
   }
 
