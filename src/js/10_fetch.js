@@ -510,6 +510,19 @@
 
   async function fetch(input, init = {}) {
     const url = typeof input === "string" ? input : String(input?.url ?? input?.href ?? input);
+
+    // data: URLs are handled inline since reqwest does not support them.
+    if (url.startsWith("data:")) {
+      const comma = url.indexOf(",");
+      if (comma === -1) throw new TypeError("Invalid data URL");
+      const meta = url.substring(5, comma);
+      const isBase64 = meta.endsWith(";base64");
+      const mime = (isBase64 ? meta.slice(0, -7) : meta) || "text/plain;charset=US-ASCII";
+      const raw = url.substring(comma + 1);
+      const body = isBase64 ? Uint8Array.from(atob(raw), c => c.charCodeAt(0)) : new TextEncoder().encode(decodeURIComponent(raw));
+      return new Response(body, { headers: { "content-type": mime } });
+    }
+
     const method = String(init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     let headerPairs = [];
     const headerInit = init.headers ?? (input instanceof Request ? input.headers : undefined);
