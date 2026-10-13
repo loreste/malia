@@ -350,6 +350,16 @@
         }
       }
       this.redirect = init.redirect ?? (input instanceof Request ? input.redirect : "follow");
+      this.signal = init.signal ?? null;
+    }
+
+    clone() {
+      return new Request(this.url, {
+        method: this.method,
+        headers: new Headers(this.headers),
+        body: this._bodyBytes?.length ? this._bodyBytes.slice() : undefined,
+        redirect: this.redirect,
+      });
     }
 
     // Internal: build from a raw serve request { method, url, headers, body }.
@@ -428,6 +438,29 @@
       resp._fetchId = head.id;
       resp._bodyUsed = false;
       return resp;
+    }
+
+    static json(data, init = {}) {
+      const body = JSON.stringify(data);
+      const headers = new Headers(init.headers);
+      if (!headers.has("content-type")) headers.set("content-type", "application/json");
+      return new Response(body, { ...init, headers });
+    }
+
+    static redirect(url, status = 302) {
+      return new Response(null, { status, headers: { location: String(url) } });
+    }
+
+    clone() {
+      const cloned = new Response(this._bodyBytes ? this._bodyBytes.slice() : null, {
+        status: this.status,
+        statusText: this.statusText,
+        headers: new Headers(this.headers),
+      });
+      cloned.url = this.url;
+      cloned.redirected = this.redirected;
+      cloned.type = this.type;
+      return cloned;
     }
 
     get ok() {
