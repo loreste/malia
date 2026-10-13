@@ -77,24 +77,32 @@
       return this.#joinedCache;
     }
 
-    *entries() {
-      for (const { name, values } of this.#map.values()) {
-        yield [name, values.join(", ")];
+    // Iteration per WHATWG: lowercase names, sorted; set-cookie values one
+    // by one, other repeated values joined.
+    #sorted() {
+      const out = [];
+      for (const key of [...this.#map.keys()].sort()) {
+        const { values } = this.#map.get(key);
+        if (key === "set-cookie") for (const v of values) out.push([key, v]);
+        else out.push([key, values.join(", ")]);
       }
+      return out;
+    }
+
+    *entries() {
+      yield* this.#sorted();
     }
 
     *keys() {
-      for (const { name } of this.#map.values()) yield name;
+      for (const [name] of this.#sorted()) yield name;
     }
 
     *values() {
-      for (const { values } of this.#map.values()) yield values.join(", ");
+      for (const [, value] of this.#sorted()) yield value;
     }
 
     forEach(cb, thisArg) {
-      for (const { name, values } of this.#map.values()) {
-        cb.call(thisArg, values.join(", "), name, this);
-      }
+      for (const [name, value] of this.#sorted()) cb.call(thisArg, value, name, this);
     }
 
     [Symbol.iterator]() {
@@ -182,20 +190,29 @@
       return this._bodyUsed;
     }
 
+    // A WHATWG ReadableStream over the body (created once, read lazily);
+    // null for requests/responses constructed without a body.
     get body() {
+      if (this._nullBody) return null;
+      if (this._bodyStream) return this._bodyStream;
+      let it = null;
       const self = this;
-      return {
-        [Symbol.asyncIterator]() {
-          return self._chunkIterator();
+      this._bodyStream = new ReadableStream(
+        {
+          async pull(controller) {
+            it ??= self._chunkIterator();
+            const { value, done } = await it.next();
+            if (done) controller.close();
+            else controller.enqueue(value);
+          },
+          async cancel() {
+            if (it) await it.return?.();
+            self._cancelStream?.();
+          },
         },
-        getReader() {
-          const it = self._chunkIterator();
-          return {
-            read: () => it.next(),
-            cancel: () => self._cancelStream(),
-          };
-        },
-      };
+        { highWaterMark: 0 },
+      );
+      return this._bodyStream;
     }
 
     async *_chunkIterator() {
@@ -320,6 +337,17 @@
     _rawHeaders; // serve path only: header pairs until first access
     _headersCache;
 
+    // State lives in fields with prototype getters (as in Node), so subclasses
+    // such as Next.js's NextRequest can define their own url/method getters.
+    _url;
+    _method;
+    _redirect;
+    _signal;
+    get url() { return this._url; }
+    get method() { return this._method; }
+    get redirect() { return this._redirect; }
+    get signal() { return this._signal; }
+
     get headers() {
       let headers = this._headersCache;
       if (!headers) {
@@ -333,13 +361,13 @@
     constructor(input, init = {}) {
       super();
       if (input instanceof Request) {
-        this.url = input.url;
-        this.method = init.method ?? input.method;
+        this._url = input.url;
+        this._method = init.method ?? input.method;
         this._headersCache = new Headers(init.headers ?? input.headers);
         this._bodyBytes = input._bodyBytes;
       } else {
-        this.url = String(input?.href ?? input);
-        this.method = String(init.method ?? "GET").toUpperCase();
+        this._url = String(input?.href ?? input);
+        this._method = String(init.method ?? "GET").toUpperCase();
         this._headersCache = new Headers(init.headers);
         this._bodyBytes = new Uint8Array(0);
         if (init.body !== undefined && init.body !== null) {
@@ -351,8 +379,11 @@
           }
         }
       }
-      this.redirect = init.redirect ?? (input instanceof Request ? input.redirect : "follow");
-      this.signal = init.signal ?? null;
+      this._nullBody = input instanceof Request
+        ? input._nullBody && (init.body === undefined || init.body === null)
+        : init.body === undefined || init.body === null;
+      this._redirect = init.redirect ?? (input instanceof Request ? input.redirect : "follow");
+      this._signal = init.signal ?? null;
     }
 
     clone() {
@@ -369,8 +400,11 @@
     // look at them skip the Map construction entirely.
     static _fromServe(raw) {
       const req = Object.create(Request.prototype);
-      req.url = raw.url;
-      req.method = raw.method;
+      req._url = raw.url;
+      req._method = raw.method;
+      req._redirect = "follow";
+      req._signal = null;
+      req._nullBody = (raw.method === "GET" || raw.method === "HEAD") && !(raw.body && raw.body.byteLength);
       req._rawHeaders = raw.headers;
       req._bodyBytes = raw.body instanceof Uint8Array ? raw.body : new Uint8Array(raw.body ?? 0);
       req._bodyIter = null;
@@ -385,6 +419,7 @@
   class Response extends BodyMixin {
     constructor(body = null, init = {}) {
       super();
+      this._nullBody = body === null || body === undefined;
       this.status = init.status ?? 200;
       this.statusText = init.statusText ?? "";
       // Lazy: built as a Headers instance on first access. The serve hot
@@ -454,7 +489,7 @@
     }
 
     clone() {
-      const cloned = new Response(this._bodyBytes ? this._bodyBytes.slice() : null, {
+      const cloned = new Response(this._nullBody || !this._bodyBytes ? null : this._bodyBytes.slice(), {
         status: this.status,
         statusText: this.statusText,
         headers: new Headers(this.headers),

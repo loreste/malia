@@ -161,6 +161,32 @@
     listFor(type).push({ fn, once: true });
     return process;
   }
+  let maxListeners = 10;
+  function prependListener(type, fn) {
+    if (type === "message") initIpc();
+    listFor(type).unshift({ fn, once: false });
+    return process;
+  }
+  function prependOnceListener(type, fn) {
+    if (type === "message") initIpc();
+    listFor(type).unshift({ fn, once: true });
+    return process;
+  }
+  function removeAllListeners(type) {
+    if (type === undefined) listeners.clear();
+    else listeners.delete(type);
+    return process;
+  }
+  function eventNames() {
+    return [...listeners].filter(([, list]) => list.length > 0).map(([type]) => type);
+  }
+  function setMaxListeners(n) {
+    maxListeners = n;
+    return process;
+  }
+  function getMaxListeners() {
+    return maxListeners;
+  }
   function off(type, fn) {
     const list = listeners.get(type);
     if (!list) return process;
@@ -358,6 +384,12 @@
     emit,
     addListener: on,
     removeListener: off,
+    prependListener,
+    prependOnceListener,
+    removeAllListeners,
+    eventNames,
+    setMaxListeners,
+    getMaxListeners,
     listenerCount,
     rawListeners,
     listeners: rawListeners,

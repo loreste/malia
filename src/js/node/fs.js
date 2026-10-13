@@ -453,64 +453,91 @@ export const mkdtemp = callbackize(async (prefix) => ops.op_mkdtemp(String(prefi
 // Node's `end` is inclusive. Each pull is 64KB and runs off the isolate,
 // so a listener attached later still sees the bytes and timers keep firing.
 // `_read` returns without pushing; the promise pushes when the bytes arrive.
+// fs.ReadStream / fs.WriteStream, as in Node (libraries check instanceof and
+// call close()).
+export class ReadStream extends Readable {
+  constructor(path, options = {}) {
+    if (typeof options === "string") options = { encoding: options };
+    super({ highWaterMark: options.highWaterMark, encoding: options.encoding });
+    this.path = String(path);
+    this.start = options.start ?? 0;
+    this.end = options.end;
+    this.bytesRead = 0;
+    this.pending = false;
+    this._pos = this.start;
+    this._left = this.end === undefined ? Number.POSITIVE_INFINITY : this.end - this.start + 1;
+  }
+  _read() {
+    if (this._left <= 0) {
+      this.push(null);
+      return;
+    }
+    const len = Math.min(this._left, 64 * 1024);
+    ops.op_read_range_at(this.path, this._pos, len).then(
+      (bytes) => {
+        if (this.destroyed) return;
+        if (!bytes || bytes.byteLength === 0) {
+          this.push(null);
+          return;
+        }
+        this._pos += bytes.byteLength;
+        this._left -= bytes.byteLength;
+        this.bytesRead += bytes.byteLength;
+        this.push(asBuffer(bytes));
+        if (this._left <= 0) this.push(null);
+      },
+      (err) => {
+        if (!this.destroyed) this.destroy(err);
+      },
+    );
+  }
+  close(cb) {
+    if (cb) this.once("close", () => cb());
+    this.destroy();
+  }
+}
+
 export function createReadStream(path, options = {}) {
-  const start = options.start ?? 0;
-  const end = options.end;
-  const file = String(path);
-  const stream = new Readable({
-    read() {
-      if (this._left <= 0) {
-        this.push(null);
-        return;
-      }
-      const len = Math.min(this._left, 64 * 1024);
-      const pos = this._pos;
-      const self = this;
-      ops.op_read_range_at(file, pos, len).then(
-        (bytes) => {
-          if (self.destroyed) return;
-          if (!bytes || bytes.byteLength === 0) {
-            self.push(null);
-            return;
-          }
-          self._pos += bytes.byteLength;
-          self._left -= bytes.byteLength;
-          self.push(asBuffer(bytes));
-          if (self._left <= 0) self.push(null);
-        },
-        (err) => {
-          if (!self.destroyed) self.destroy(err);
-        },
-      );
-    },
-  });
-  stream._pos = start;
-  stream._left = end === undefined ? Number.POSITIVE_INFINITY : end - start + 1;
-  return stream;
+  return new ReadStream(path, options);
+}
+
+export class WriteStream extends Writable {
+  constructor(path, options = {}) {
+    if (typeof options === "string") options = { encoding: options };
+    super({ highWaterMark: options.highWaterMark, decodeStrings: true });
+    this.path = String(path);
+    this.flags = options.flags || "w";
+    this.bytesWritten = 0;
+    this.pending = false;
+    this._started = false;
+  }
+  _write(chunk, encoding, cb) {
+    const bytes = toBytes(chunk, encoding);
+    const first = !this._started && this.flags !== "a";
+    this._started = true;
+    const op = first ? ops.op_write_file_bytes(this.path, bytes) : ops.op_append_bytes(this.path, bytes);
+    op.then(() => {
+      this.bytesWritten += bytes.byteLength;
+      cb();
+    }, (err) => cb(err));
+  }
+  _final(cb) {
+    if (this._started) {
+      cb();
+      return;
+    }
+    const empty = new Uint8Array(0);
+    const op = this.flags === "a" ? ops.op_append_bytes(this.path, empty) : ops.op_write_file_bytes(this.path, empty);
+    op.then(() => cb(), (err) => cb(err));
+  }
+  close(cb) {
+    if (cb) this.once("close", () => cb());
+    this.end();
+  }
 }
 
 export function createWriteStream(path, options = {}) {
-  const flags = options.flags || "w";
-  const file = String(path);
-  let started = false;
-  return new Writable({
-    write(chunk, encoding, cb) {
-      const bytes = toBytes(chunk, encoding);
-      const first = !started && flags !== "a";
-      started = true;
-      const op = first ? ops.op_write_file_bytes(file, bytes) : ops.op_append_bytes(file, bytes);
-      op.then(() => cb(), (err) => cb(err));
-    },
-    final(cb) {
-      if (started) {
-        cb();
-        return;
-      }
-      const empty = new Uint8Array(0);
-      const op = flags === "a" ? ops.op_append_bytes(file, empty) : ops.op_write_file_bytes(file, empty);
-      op.then(() => cb(), (err) => cb(err));
-    },
-  });
+  return new WriteStream(path, options);
 }
 
 export const constants = {
@@ -854,6 +881,8 @@ export default {
   unwatchFile,
   createReadStream,
   createWriteStream,
+  ReadStream,
+  WriteStream,
   constants,
   promises,
 };

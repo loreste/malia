@@ -138,10 +138,34 @@ Socket.prototype.connect = function (port, host, cb) {
       }
       this._onConnect(info);
     },
-    (err) => this.destroy(err),
+    (err) => this.destroy(connectError(err, String(hostname), portNum)),
   );
   return this;
 };
+
+// Node's error shape for connect failures (code/errno/syscall/address/port);
+// the OS message is portable where errno numbers are not.
+const CONNECT_ERRORS = [
+  [/connection refused/i, "ECONNREFUSED"],
+  [/connection reset/i, "ECONNRESET"],
+  [/timed out/i, "ETIMEDOUT"],
+  [/no route to host/i, "EHOSTUNREACH"],
+  [/network is unreachable/i, "ENETUNREACH"],
+  [/broken pipe/i, "EPIPE"],
+  [/failed to lookup address|nodename nor servname|name or service not known|no such host/i, "ENOTFOUND"],
+];
+function connectError(err, address, port) {
+  if (!err || typeof err !== "object" || err.code) return err;
+  const message = String(err.message ?? err);
+  const match = CONNECT_ERRORS.find(([re]) => re.test(message));
+  if (!match) return err;
+  const code = match[1];
+  const os = /os error (\d+)/.exec(message);
+  const syscall = code === "ENOTFOUND" ? "getaddrinfo" : "connect";
+  const e = new Error(code === "ENOTFOUND" ? `getaddrinfo ENOTFOUND ${address}` : `connect ${code} ${address}:${port}`);
+  Object.assign(e, { code, errno: os ? -Number(os[1]) : undefined, syscall, address, port, hostname: code === "ENOTFOUND" ? address : undefined });
+  return e;
+}
 
 // One in-flight read. The stream pump re-enters _read; don't chain it here.
 Socket.prototype._read = function () {

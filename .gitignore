@@ -7,3 +7,5 @@
 node_modules/
 *.log
 .DS_Store
+# Test fixture: a fake native addon the loader must handle
+!tests/fixtures/nextjs_compat/node_modules/

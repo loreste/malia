@@ -355,6 +355,24 @@ fn node_compat_improvements() {
   run_fixture("node_compat_improvements.js");
 }
 
+/// Node behaviors the Next.js production server depends on at startup.
+#[test]
+fn nextjs_compat() {
+  run_fixture("nextjs_compat/main.cjs");
+}
+
+/// node:vm contexts as Next.js uses them to load its build manifests.
+#[test]
+fn vm_contexts() {
+  run_fixture("nextjs_compat/vm_contexts.cjs");
+}
+
+/// IncomingMessage rawHeaders and duplicate-header merging, as in Node.
+#[test]
+fn http_incoming_headers() {
+  run_fixture("nextjs_compat/http_headers.cjs");
+}
+
 #[test]
 fn cjs_interop() {
   run_fixture("cjs_main.js");

@@ -7,8 +7,8 @@
   globalThis.global = globalThis;
   globalThis.GLOBAL = globalThis;
   globalThis.root = globalThis;
-  if (!globalThis.self) globalThis.self = globalThis;
-  if (!globalThis.window) globalThis.window = globalThis;
+  // No `window` or `self`, as in Node: isomorphic code (React, Next.js) uses
+  // `typeof window` to tell server from browser.
 
   // structuredClone
   if (typeof globalThis.structuredClone !== "function") {

@@ -20,6 +20,27 @@ function toBytes(buf) {
   return Buffer.from(buf ?? []);
 }
 
+// Node's zlib stream extras. Every native write already ends with a zlib sync
+// flush, so flush() only has to wait for earlier writes; an empty write gives
+// exactly that ordering.
+const zlibStreamMethods = {
+  flush(kind, callback) {
+    if (typeof kind === "function") callback = kind;
+    if (this.writableEnded || this.destroyed) {
+      if (callback) queueMicrotask(callback);
+      return;
+    }
+    this.write(new Uint8Array(0), () => callback && callback());
+  },
+  close(callback) {
+    if (callback) this.once("close", () => callback());
+    this.destroy();
+  },
+  params(_level, _strategy, callback) {
+    if (callback) queueMicrotask(callback);
+  },
+};
+
 class ZlibTransform extends Transform {
   constructor(kind, options) {
     super();
@@ -131,6 +152,8 @@ export function unzip(buf, options, cb) {
   return inflate(bytes, options, cb);
 }
 
+Object.assign(ZlibTransform.prototype, zlibStreamMethods);
+
 class UnzipTransform extends Transform {
   constructor(options) {
     super();
@@ -157,6 +180,7 @@ class UnzipTransform extends Transform {
     }
   }
 }
+Object.assign(UnzipTransform.prototype, zlibStreamMethods);
 
 export function createUnzip(options) {
   return new UnzipTransform(options);

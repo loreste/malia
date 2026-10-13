@@ -20,5 +20,6 @@ pub mod serve;
 pub mod snapshot;
 pub mod sql;
 pub mod ts;
+pub mod vm;
 pub mod wasm_compiler;
 pub mod worker;

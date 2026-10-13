@@ -8,8 +8,32 @@
   // them, and a pure-JS implementation is 10-50x slower on hot paths like
   // Buffer.from/Buffer.prototype.toString).
   globalThis.TextEncoder = class TextEncoder {
+    get encoding() {
+      return "utf-8";
+    }
     encode(str) {
       return ops.op_text_encode(String(str));
+    }
+    // Encodes as many whole characters as fit; `read` counts UTF-16 code
+    // units, `written` bytes (React's streaming renderer depends on this).
+    encodeInto(source, destination) {
+      const str = String(source);
+      const bytes = ops.op_text_encode(str);
+      if (bytes.length <= destination.length) {
+        destination.set(bytes);
+        return { read: str.length, written: bytes.length };
+      }
+      let read = 0;
+      let written = 0;
+      for (const ch of str) {
+        const cp = ch.codePointAt(0);
+        const n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+        if (written + n > destination.length) break;
+        written += n;
+        read += ch.length;
+      }
+      destination.set(bytes.subarray(0, written));
+      return { read, written };
     }
   };
   const UTF8_LABELS = new Set(["utf-8", "utf8", "unicode-1-1-utf-8"]);
@@ -926,7 +950,22 @@ Buffer.from = function (value, offsetOrEncoding, length) {
       return Buffer.from(value, encoding).length;
     }
 
-  globalThis.Buffer = Buffer;
+  // Node's Buffer is a plain function, callable without `new` (deprecated,
+  // DEP0005, but libraries such as safe-buffer still call it). The class keeps
+  // the implementation; statics resolve through the prototype chain.
+  function CallableBuffer(arg, encodingOrOffset, length) {
+    return Reflect.construct(Buffer, [arg, encodingOrOffset, length], new.target ?? Buffer);
+  }
+  Object.setPrototypeOf(CallableBuffer, Buffer);
+  // Statics as own properties, as in Node: safer-buffer copies only own keys.
+  for (const key of Reflect.ownKeys(Buffer)) {
+    if (key === "length" || key === "name" || key === "prototype") continue;
+    Object.defineProperty(CallableBuffer, key, Object.getOwnPropertyDescriptor(Buffer, key));
+  }
+  CallableBuffer.prototype = Buffer.prototype;
+  Object.defineProperty(CallableBuffer, "name", { value: "Buffer" });
+  Object.defineProperty(Buffer.prototype, "constructor", { value: CallableBuffer, writable: true, configurable: true, enumerable: false });
+  globalThis.Buffer = CallableBuffer;
   // DOMException is defined later in the bootstrap (12_websocket.js); these
   // only run after startup.
   const invalidCharacter = (message) => new DOMException(message, "InvalidCharacterError");

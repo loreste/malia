@@ -938,7 +938,7 @@ and `size`.
 
 ## Current engineering limits
 
-See [the compatibility matrix](engineering/compatibility-matrix.md) before deployment. Entry-source executables are not complete application bundles. Wasm source containers execute JavaScript only through Malia. TLS server accept, TLS socket upgrades, custom roots, VM contexts and VM timeouts are currently unsupported and rejected.
+See [the compatibility matrix](engineering/compatibility-matrix.md) before deployment. Entry-source executables are not complete application bundles. Wasm source containers execute JavaScript only through Malia. TLS server accept, TLS socket upgrades, custom roots and VM timeouts are currently unsupported and rejected.
 
 HTTP incoming bodies are buffered with configurable `jse.serve({ limits: { maxBodyBytes, maxRequests, maxConnections, bodyTimeoutMs, requestTimeoutMs } }, handler)` limits. Defaults are 1 MiB, 128 requests, 256 connections, 30 seconds to read a body and 30 seconds for response initiation. Full responses are capped at 8 MiB; stream larger output. Await streaming writes; a stream has eight 64 KiB native chunks of capacity, and each submitted chunk may be at most 1 MiB. Node HTTP response writers must respect `write()` returning false and wait for `drain`; queuing more than 1 MiB rejects. These are per-listener limits, not a whole-process RSS guarantee.
 

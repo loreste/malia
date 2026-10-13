@@ -367,7 +367,7 @@ with an `AbortSignal`.
 | `url` | `URL`, `URLSearchParams`, `fileURLToPath`, `pathToFileURL` |
 | `util`, `util/types` | `format`, `inspect`, `promisify`, `callbackify`, `inherits`, `deprecate`, `isDeepStrictEqual`, type predicates |
 | `v8` | `getHeapStatistics`, `serialize`, `deserialize`, `Serializer`, `Deserializer` |
-| `vm` | `runInThisContext`, `Script` (global evaluation only; isolated `createContext`/`runInContext`/`runInNewContext` reject explicitly) |
+| `vm` | `runInThisContext`, `createContext`/`runInContext`/`runInNewContext` and `Script` in real V8 contexts (sandbox properties seed the context's global; globals the code defines are written back). Timeouts and cached data reject explicitly. Like Node, not a security boundary |
 | `wasi` | WASI Preview 1: args, env, clocks, random, stdio, exit |
 | `worker_threads` | `Worker`, `isMainThread`, `threadId`, `workerData`, `parentPort`, `MessageChannel`, `BroadcastChannel` (across threads), `SHARE_ENV` |
 | `ws` | `WebSocket` and `WebSocketServer` compatible with the `ws` package |
@@ -401,6 +401,7 @@ Tested with modern framework packages (npm packages executed end-to-end):
 - **Svelte 5**: `svelte/compiler` (compiling Svelte 5 components) + `svelte/server` (`render`)
 - **Fastify 5**: `fastify` (route registration and request dispatch via `inject`)
 - **Express 5**: `express` (routing, query parsing, middleware, static files)
+- **Next.js 16**: `next build` standalone output (`node server.js`): App Router SSR with streaming, proxy/middleware, nonce-based CSP, static files
 
 ## Containers
 

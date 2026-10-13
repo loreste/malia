@@ -171,9 +171,9 @@ assert.strictEqual(exitErr.code, 42, "proc_exit exit code matches 42");
 // =========================================================================
 console.log("  -> Testing Framework SSR & React Scheduler globals...");
 
-// Window & Self aliases
-assert.strictEqual(globalThis.self, globalThis, "globalThis.self === globalThis");
-assert.strictEqual(globalThis.window, globalThis, "globalThis.window === globalThis");
+// Server-side globals as in Node: no window/self, so SSR code detects the server
+assert.strictEqual(typeof window, "undefined", "no window global (server)");
+assert.strictEqual(typeof self, "undefined", "no self global (server)");
 assert.strictEqual(globalThis.global, globalThis, "globalThis.global === globalThis");
 
 // Navigator (Angular SSR, Vue 3, Vite, Nuxt)

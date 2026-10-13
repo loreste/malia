@@ -109,6 +109,10 @@ mod loader {
   }
 }
 
+mod vm {
+  include!("src/vm.rs");
+}
+
 #[allow(dead_code)]
 mod sql {
   use deno_core::op2;
@@ -165,6 +169,7 @@ mod ops {
 fn main() {
   println!("cargo::rerun-if-changed=src/js");
   println!("cargo::rerun-if-changed=src/ops.rs");
+  println!("cargo::rerun-if-changed=src/vm.rs");
   println!("cargo::rerun-if-changed=src/ops_extra.rs");
   println!("cargo::rerun-if-changed=src/serve.rs");
   println!("cargo::rerun-if-changed=src/permissions.rs");

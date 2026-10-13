@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import v8 from 'node:v8';
-assert.throws(() => vm.createContext({}), { code: 'ERR_VM_UNSUPPORTED' });
+// Contexts are real V8 contexts: globals land on the sandbox, never on ours.
+const sandbox = vm.createContext({});
+assert.equal(vm.runInContext('var leaked = 1; leaked + 1', sandbox), 2);
+assert.equal(sandbox.leaked, 1);
+assert.equal(globalThis.leaked, undefined);
 assert.throws(() => vm.runInThisContext('while (true) {}', { timeout: 1 }), { code: 'ERR_VM_UNSUPPORTED' });
 assert.equal(vm.runInThisContext('21 * 2'), 42);
 assert.throws(() => new vm.Script('42', { timeout: 1 }), { code: 'ERR_VM_UNSUPPORTED' });

@@ -30,6 +30,26 @@ function makeSocket() {
   return socket;
 }
 
+// Duplicate request headers, merged as Node does: set-cookie collects an
+// array, cookie joins with "; ", single-value headers keep the first, and
+// everything else joins with ", ".
+const SINGLE_VALUE_HEADERS = new Set([
+  "age", "authorization", "content-length", "content-type", "etag", "expires", "from", "host",
+  "if-modified-since", "if-unmodified-since", "last-modified", "location", "max-forwards",
+  "proxy-authorization", "referer", "retry-after", "server", "user-agent",
+]);
+function addIncomingHeader(headers, key, value) {
+  if (key === "set-cookie") {
+    (headers[key] ??= []).push(value);
+  } else if (!(key in headers)) {
+    headers[key] = value;
+  } else if (key === "cookie") {
+    headers[key] += "; " + value;
+  } else if (!SINGLE_VALUE_HEADERS.has(key)) {
+    headers[key] += ", " + value;
+  }
+}
+
 function IncomingMessage(rawOrSocket) {
   EventEmitter.call(this);
   if (rawOrSocket && (rawOrSocket.method !== undefined || rawOrSocket.url !== undefined)) {
@@ -42,9 +62,11 @@ function IncomingMessage(rawOrSocket) {
     this.socket = makeSocket();
     this.connection = this.socket;
     this.headers = {};
+    this.rawHeaders = [];
     if (raw.headers) {
       for (const [name, value] of (Array.isArray(raw.headers) ? raw.headers : Object.entries(raw.headers))) {
-        this.headers[name.toLowerCase()] = value;
+        this.rawHeaders.push(name, value);
+        addIncomingHeader(this.headers, name.toLowerCase(), value);
       }
     }
     const body = raw.body instanceof Uint8Array ? raw.body : new Uint8Array(raw.body ?? 0);
@@ -58,6 +80,7 @@ function IncomingMessage(rawOrSocket) {
     this.complete = false;
     this.readable = true;
     this.headers = {};
+    this.rawHeaders = [];
     this._rawBody = Buffer.alloc(0);
   }
   this._encoding = null;
@@ -157,7 +180,16 @@ function ServerResponse(reqOrListenerId, reqId) {
   this.connection = this.socket;
 }
 Object.setPrototypeOf(ServerResponse.prototype, EventEmitter.prototype);
+// Writable-stream state as Node's OutgoingMessage exposes it.
+const RESPONSE_HIGH_WATER_MARK = 16 * 1024;
 Object.defineProperties(ServerResponse.prototype, {
+  destroyed: { get() { return this._destroyed === true; }, configurable: true },
+  writable: { get() { return !this._ended && this._destroyed !== true; }, configurable: true },
+  writableEnded: { get() { return this._ended === true; }, configurable: true },
+  writableFinished: { get() { return this._finished === true; }, configurable: true },
+  writableNeedDrain: { get() { return (this._pendingBytes ?? 0) >= RESPONSE_HIGH_WATER_MARK; }, configurable: true },
+  writableHighWaterMark: { get() { return RESPONSE_HIGH_WATER_MARK; }, configurable: true },
+  closed: { get() { return this._closed === true; }, configurable: true },
   headersSent: {
     get() {
       return this._started;
@@ -228,6 +260,11 @@ Object.assign(ServerResponse.prototype, {
 
   flushHeaders() {},
 
+  // Node internal, called by middleware (e.g. compression) before writing.
+  _implicitHeader() {
+    this.writeHead(this.statusCode);
+  },
+
   _headerPairs() {
     return Object.entries(this._headers)
       .map(([name, value]) => name + ": " + value)
@@ -246,9 +283,13 @@ Object.assign(ServerResponse.prototype, {
       return false;
     }
     if (!this._started) {
+      // Like Node: implicit headers go through writeHead, so hooks on it
+      // (on-headers, used by compression middleware) can still add headers.
+      this._implicitHeader();
       this._started = true;
+      this._header = this._headerPairs();
       if (this._listenerId !== null && this._reqId !== null) {
-        ops.op_serve_respond_start(this._listenerId, this._reqId, this.statusCode, this._headerPairs());
+        ops.op_serve_respond_start(this._listenerId, this._reqId, this.statusCode, this._header);
       }
     }
     const bytes = toChunkBytes(chunk, encoding);
@@ -264,13 +305,51 @@ Object.assign(ServerResponse.prototype, {
       if (this._reqId !== null) await ops.op_serve_respond_chunk(this._reqId, bytes);
       this._pendingBytes -= bytes.length;
       if (cb) cb();
-      if (!this._pendingBytes && !this._ended) this.emit('drain');
+      if (this._needDrain && !this._pendingBytes && !this._ended) {
+        this._needDrain = false;
+        this.emit('drain');
+      }
     });
     this._writePromise.catch(error => {
       if (cb) cb(error);
       else this.emit('error', error);
     });
+    // Like Node: true while below the high-water mark; otherwise wait for 'drain'.
+    if (this._pendingBytes < RESPONSE_HIGH_WATER_MARK) return true;
+    this._needDrain = true;
     return false;
+  },
+
+  cork() {},
+  uncork() {},
+
+  // Ends the response without completing it normally ('error' if given, then 'close').
+  destroy(error) {
+    if (this._destroyed) return this;
+    this._destroyed = true;
+    if (!this._ended) {
+      this._ended = true;
+      if (this._reqId !== null) {
+        if (this._started) ops.op_serve_respond_end(this._reqId);
+        else ops.op_serve_respond(this._listenerId, this._reqId, 500, "", new Uint8Array(0));
+      }
+    }
+    queueMicrotask(() => {
+      if (error) this.emit("error", error);
+      this._closed = true;
+      this.emit("close");
+    });
+    return this;
+  },
+
+  _finish() {
+    this._finished = true;
+    this.emit("finish");
+    queueMicrotask(() => {
+      if (this._closed) return;
+      this._closed = true;
+      this.emit("close");
+    });
   },
 
   end(chunk, encoding, cb) {
@@ -289,9 +368,11 @@ Object.assign(ServerResponse.prototype, {
       const body = chunk === undefined || chunk === null
         ? new Uint8Array(0)
         : toChunkBytes(chunk, encoding);
+      this._implicitHeader();
       this._started = true;
+      this._header = this._headerPairs();
       if (this._listenerId !== null && this._reqId !== null) {
-        ops.op_serve_respond(this._listenerId, this._reqId, this.statusCode, this._headerPairs(), body);
+        ops.op_serve_respond(this._listenerId, this._reqId, this.statusCode, this._header, body);
       }
     } else {
       if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
@@ -299,7 +380,7 @@ Object.assign(ServerResponse.prototype, {
       (this._writePromise ?? Promise.resolve()).then(() => {
         if (this._reqId !== null) ops.op_serve_respond_end(this._reqId);
         if (cb) cb();
-        this.emit('finish');
+        this._finish();
       }, error => {
         if (this._reqId !== null) ops.op_serve_respond_end(this._reqId);
         if (cb) cb(error);
@@ -308,7 +389,7 @@ Object.assign(ServerResponse.prototype, {
     }
     this._ended = true;
     if (cb) cb();
-    this.emit("finish");
+    this._finish();
     return this;
   },
 });
@@ -642,6 +723,7 @@ class ClientRequest extends Writable {
     this.path = opts.path;
     if (typeof cb === "function") this.once("response", cb);
     if (opts.timeout) this.setTimeout(opts.timeout);
+    process.nextTick(() => this._connect());
   }
 
   setHeader(name, value) {
@@ -707,6 +789,46 @@ class ClientRequest extends Writable {
   }
 
   _final(cb) {
+    // Send on the next tick, like Node's socket assignment, so listeners added
+    // right after request()/get() (which ends it) see 'socket'.
+    process.nextTick(() => this._send(cb));
+  }
+
+  // Like Node, the socket is assigned (and connecting) right after the
+  // request is created, before it is finished: proxies wait for 'socket'
+  // before piping the request body in.
+  _connect() {
+    if (this._sock || this.destroyed) return this._sock;
+    const opts = this._opts;
+    const sock = this._sock = net.connect({
+      host: opts.hostname,
+      port: opts.port,
+      tls: !!opts.tls,
+      servername: opts.servername || opts.hostname,
+      rejectUnauthorized: opts.rejectUnauthorized !== false,
+    });
+    this._connected = false;
+    sock.on("connect", () => {
+      this._connected = true;
+      const send = this._onConnect;
+      this._onConnect = null;
+      if (send) send();
+    });
+    sock.on("error", (err) => this._fail(err));
+    this.socket = this.connection = sock;
+    this.emit("socket", sock);
+    return sock;
+  }
+
+  _fail(err) {
+    if (this._settled) return;
+    this._settled = true;
+    this.emit("error", err);
+    if (this._finishCb) this._finishCb(err);
+    if (!this.destroyed) this.destroy();
+  }
+
+  _send(cb) {
     const opts = this._opts;
     const payload = Buffer.concat(this._chunks);
     const defaultPort = opts.tls ? 443 : 80;
@@ -717,63 +839,52 @@ class ClientRequest extends Writable {
     this.removeHeader("transfer-encoding");
     this.setHeader("Content-Length", String(payload.length));
     if (!this.hasHeader("connection")) this.setHeader("Connection", "close");
+    let finished = false;
+    this._finishCb = (err) => {
+      if (finished) return;
+      finished = true;
+      cb(err);
+    };
+    const sock = this._connect();
+    if (!sock || this._settled) {
+      this._finishCb();
+      return;
+    }
+    // Headers are built now, after 'socket' listeners had their chance.
     let head = `${opts.method} ${opts.path} HTTP/1.1\r\n`;
     for (const [name, value] of this._headers.values()) {
       for (const v of Array.isArray(value) ? value : [value]) head += `${name}: ${v}\r\n`;
     }
     head += "\r\n";
     const bytes = Buffer.concat([Buffer.from(head), payload]);
-    const sock = this._sock = net.connect({
-      host: opts.hostname,
-      port: opts.port,
-      tls: !!opts.tls,
-      servername: opts.servername || opts.hostname,
-      rejectUnauthorized: opts.rejectUnauthorized !== false,
-    });
-    let settled = false;
-    let finished = false;
-    const finish = (err) => {
-      if (finished) return;
-      finished = true;
-      cb(err);
-    };
-    sock.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      this.emit("error", err);
-      finish(err);
-    });
-    sock.on("connect", () => {
+    const send = () => {
       readResponse(
         sock,
         opts.method,
         (res) => {
-          settled = true;
+          this._settled = true;
+          // Like Node: the request closes once its response is complete.
+          res.once("end", () => {
+            if (!this.destroyed) this.destroy();
+          });
           this.emit("response", res);
         },
-        (err) => {
-          if (settled) return;
-          settled = true;
-          this.emit("error", err);
-          finish(err);
-        },
+        (err) => this._fail(err),
       );
       // Content-Length ends the request. Shutting the write side down here
       // (socket.end) sends a FIN while the server is still answering, and
       // the response is dropped.
       sock.write(bytes, (err) => {
         if (err) {
-          if (!settled) {
-            settled = true;
-            this.emit("error", err);
-          }
-          finish(err);
+          this._fail(err);
           sock.destroy(err);
           return;
         }
-        finish();
+        this._finishCb();
       });
-    });
+    };
+    if (this._connected) send();
+    else this._onConnect = send;
   }
 }
 

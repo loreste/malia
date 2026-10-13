@@ -29,6 +29,40 @@ function __execCjs(url, bodyFn, modules, urls) {
   return mod.exports;
 }
 
+// Builtin lookup for runtime require(), registered (from node:module) by
+// modules that contain computed require() calls; see wrap_cjs in loader.rs.
+let runtimeBuiltin = null;
+export function __registerBuiltins(fn) {
+  runtimeBuiltin ??= fn;
+}
+
+// require.extensions, shared with Module._extensions (the same object, as in
+// Node). Loader hooks such as Next.js's next.config.ts support wrap '.js'.
+export function __extensions() {
+  const key = Symbol.for("malia.require.extensions");
+  if (!globalThis[key]) {
+    const compile = (module, filename) => {
+      const code = Deno.core.ops.op_read_text_file_sync(filename);
+      const dirname = filename.replace(/[/\\][^/\\]*$/, "");
+      const req = __makeRequire("file://" + filename, {}, {});
+      new Function("exports", "require", "module", "__filename", "__dirname", code)(module.exports, req, module, filename, dirname);
+    };
+    Object.defineProperty(globalThis, key, {
+      value: {
+        ".js": compile,
+        ".cjs": compile,
+        ".json": (module, filename) => {
+          module.exports = JSON.parse(Deno.core.ops.op_read_text_file_sync(filename));
+        },
+        ".node": (_module, filename) => {
+          throw Object.assign(new Error("Cannot load native addon " + filename + ": native addons are not supported"), { code: "ERR_DLOPEN_FAILED" });
+        },
+      },
+    });
+  }
+  return globalThis[key];
+}
+
 export function __makeRequire(parentUrl, modules, urls) {
   function require(spec) {
     if (Object.prototype.hasOwnProperty.call(urls, spec)) {
@@ -53,28 +87,57 @@ export function __makeRequire(parentUrl, modules, urls) {
       const ns = modules[spec];
       return ns !== null && typeof ns === "object" && "default" in ns ? ns.default : ns;
     }
-    // Dynamic require: resolve at runtime via the native op.
+    // Dynamic require: resolve at runtime via the native op, then load by
+    // extension (JSON parsed, native addons rejected). Only resolution
+    // failures are MODULE_NOT_FOUND; errors from the module body propagate.
+    let resolved;
     try {
-      const resolved = Deno.core.ops.op_require_resolve(spec, new URL(parentUrl).pathname);
-      // Read and evaluate as CJS at runtime.
-      const code = Deno.core.ops.op_read_text_file_sync(resolved);
-      const mod = { exports: {} };
-      const fn = new Function("exports", "require", "module", "__filename", "__dirname", code);
-      fn(mod.exports, require, mod, resolved, resolved.replace(/[/\\][^/\\]*$/, ""));
-      cjsCache.set(resolved, mod);
-      return mod.exports;
+      resolved = Deno.core.ops.op_require_resolve(spec, new URL(parentUrl).pathname);
     } catch {
       throw Object.assign(
         new Error("Cannot find module '" + spec + "' required from " + parentUrl),
         { code: "MODULE_NOT_FOUND" },
       );
     }
+    if (resolved.startsWith("node:")) {
+      const builtin = runtimeBuiltin && runtimeBuiltin(resolved);
+      if (builtin === undefined || builtin === null) {
+        throw Object.assign(new Error("Cannot find module '" + spec + "' required from " + parentUrl), { code: "MODULE_NOT_FOUND" });
+      }
+      return builtin;
+    }
+    if (cjsCache.has(resolved)) return cjsCache.get(resolved).exports;
+    const mod = { exports: {}, id: resolved, filename: resolved, loaded: false };
+    cjsCache.set(resolved, mod);
+    const exts = __extensions();
+    const dot = resolved.lastIndexOf(".");
+    const load = (dot > resolved.lastIndexOf("/") && exts[resolved.slice(dot)]) || exts[".js"];
+    try {
+      load(mod, resolved);
+    } catch (err) {
+      cjsCache.delete(resolved);
+      throw err;
+    }
+    mod.loaded = true;
+    return mod.exports;
   }
+  // Like Node: a filesystem path, or the bare name for builtins; specifiers the
+  // static scan didn't see (computed paths) resolve at runtime.
   require.resolve = (spec) => {
-    if (Object.prototype.hasOwnProperty.call(urls, spec)) return urls[spec];
-    throw Object.assign(new Error("Cannot find module '" + spec + "'"), { code: "MODULE_NOT_FOUND" });
+    if (Object.prototype.hasOwnProperty.call(urls, spec)) {
+      const url = String(urls[spec]);
+      if (url.startsWith("file://")) return __filenameOf(url);
+      if (url.startsWith("node:") || url.startsWith("jse:")) return spec;
+      return url;
+    }
+    try {
+      return Deno.core.ops.op_require_resolve(spec, new URL(parentUrl).pathname);
+    } catch {
+      throw Object.assign(new Error("Cannot find module '" + spec + "' required from " + parentUrl), { code: "MODULE_NOT_FOUND" });
+    }
   };
   require.cache = cjsCache;
+  require.extensions = __extensions();
   return require;
 }
 

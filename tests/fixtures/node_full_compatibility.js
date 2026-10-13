@@ -74,8 +74,10 @@ assert(Buffer.isBuffer(serialized), "serialized is buffer");
 const deserialized = v8.deserialize(serialized);
 assert.strictEqual(deserialized.hello, "v8");
 
-// 6. vm: explicitly restricted until real V8 contexts are implemented.
-assert.throws(() => vm.createContext({ count: 5 }), { code: 'ERR_VM_UNSUPPORTED' });
+// 6. vm: real V8 contexts; timeouts and cached data stay unsupported.
+const vmContext = vm.createContext({ count: 5 });
+assert.strictEqual(vm.runInContext('count += 1', vmContext), 6);
+assert.strictEqual(vmContext.count, 6);
 assert.throws(() => vm.runInThisContext('while (true) {}', { timeout: 1 }), { code: 'ERR_VM_UNSUPPORTED' });
 const script = new vm.Script('40 + 2');
 assert.strictEqual(script.runInThisContext(), 42);

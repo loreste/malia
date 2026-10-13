@@ -1012,6 +1012,13 @@ impl JseModuleLoader {
     out.push_str(
       "import { __makeRequire as __jse_mr, __filenameOf as __jse_fo, __dirnameOf as __jse_do, __initCjs as __jse_ic, __namedExport as __jse_ne } from \"jse:internal/cjs\";\n",
     );
+    // Computed require() calls resolve at runtime; give them the builtin
+    // table (node:module loads every builtin, so only these modules pay).
+    if has_dynamic_require(code) {
+      out.push_str(
+        "import { __registerBuiltins as __jse_rb } from \"jse:internal/cjs\";\nimport { __builtin as __jse_bi } from \"node:module\";\n__jse_rb(__jse_bi);\n",
+      );
+    }
     let mut map_entries = String::new();
     let mut url_entries = String::new();
     for (i, spec) in specs.iter().enumerate() {
@@ -1103,6 +1110,32 @@ fn code_cache_for(code: &str) -> Option<deno_core::SourceCodeCacheInfo> {
 /// Scan source for static `require("literal")` calls. False positives
 /// (e.g. inside strings or comments) are harmless — they only add an extra
 /// hoisted import.
+/// Whether `code` calls `require(...)` with something other than a string
+/// literal (a computed specifier, resolved only at runtime).
+fn has_dynamic_require(code: &str) -> bool {
+  let bytes = code.as_bytes();
+  let mut i = 0;
+  while i + 7 < bytes.len() {
+    if &bytes[i..i + 7] == b"require" && (i == 0 || !is_ident_char(bytes[i - 1])) && !is_ident_char(bytes[i + 7]) {
+      let mut j = i + 7;
+      while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+        j += 1;
+      }
+      if j < bytes.len() && bytes[j] == b'(' {
+        j += 1;
+        while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+          j += 1;
+        }
+        if j < bytes.len() && bytes[j] != b'"' && bytes[j] != b'\'' && bytes[j] != b')' {
+          return true;
+        }
+      }
+    }
+    i += 1;
+  }
+  false
+}
+
 fn scan_requires(code: &str) -> Vec<String> {
   let bytes = code.as_bytes();
   let mut out = Vec::new();

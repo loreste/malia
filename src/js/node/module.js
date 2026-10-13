@@ -1,5 +1,6 @@
 // node:module — createRequire with support for builtins, JSON, Wasm, CJS, plus Module class.
 import { fileURLToPath } from "node:url";
+import { __extensions } from "jse:internal/cjs";
 
 import * as assert from "node:assert";
 import * as assertStrict from "node:assert/strict";
@@ -254,11 +255,7 @@ export function createRequire(filename) {
 
   require.resolve = resolve;
   require.cache = cache;
-  require.extensions = {
-    ".js": () => {},
-    ".json": () => {},
-    ".wasm": () => {},
-  };
+  require.extensions = __extensions();
   require.main = undefined;
   return require;
 }
@@ -277,11 +274,7 @@ Module.createRequire = createRequire;
 Module.builtinModules = builtinModules;
 Module.isBuiltin = isBuiltin;
 Module._cache = {};
-Module._extensions = {
-  ".js": () => {},
-  ".json": () => {},
-  ".wasm": () => {},
-};
+Module._extensions = __extensions();
 Module.builtin = builtins;
 Module.syncBuiltinESMExports = function () {};
 Module.findSourceMap = function () { return null; };
@@ -298,5 +291,13 @@ Module._nodeModulePaths = function (from) {
 };
 
 BUILTIN_MAP["module"] = Module;
+
+// Builtin lookup for require() calls resolved at runtime (computed specifiers);
+// the CommonJS loader registers it for modules that contain such calls.
+export function __builtin(id) {
+  // Same shape as a statically hoisted require: the default export when there is one.
+  const mod = BUILTIN_MAP[String(id).replace(/^node:/, "")];
+  return mod !== null && typeof mod === "object" && "default" in mod ? mod.default : mod;
+}
 
 export default Module;
