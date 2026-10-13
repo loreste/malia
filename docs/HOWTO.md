@@ -149,6 +149,136 @@ als.run({ requestId: "req-998" }, async () => {
 });
 ```
 
+### Migrating CPU-heavy work to WorkerPool
+
+If your Node app has endpoints that do CPU-intensive work on the main
+thread, you can move them to a WorkerPool with minimal changes.
+
+**Before (Node — blocks the event loop):**
+
+```javascript
+import express from "express";
+const app = express();
+
+app.post("/pdf", (req, res) => {
+  // This blocks every other request while it runs
+  const result = generateReport(req.body);
+  res.json({ url: result.url });
+});
+
+function generateReport(data) {
+  // CPU-heavy: template rendering, data crunching, image processing
+  let output = "";
+  for (const row of data.rows) {
+    output += formatRow(row); // 50ms per row, 1000 rows = 50 seconds blocked
+  }
+  return { url: "/reports/" + data.id + ".pdf" };
+}
+```
+
+**After (Malia — runs in parallel, main thread stays free):**
+
+```javascript
+// report_worker.js
+onmessage = (e) => {
+  const data = e.data;
+  let output = "";
+  for (const row of data.rows) {
+    output += formatRow(row);
+  }
+  postMessage({ url: "/reports/" + data.id + ".pdf" });
+};
+```
+
+```javascript
+import express from "express";
+const app = express();
+const pool = new WorkerPool("./report_worker.js");
+
+app.post("/pdf", async (req, res) => {
+  // Runs on a worker thread — other requests keep flowing
+  const result = await pool.run(req.body);
+  res.json(result);
+});
+```
+
+Three lines changed. The endpoint is now non-blocking and runs across
+all available cores.
+
+### Replacing manual worker_threads with WorkerPool
+
+**Before (Node — manual worker lifecycle):**
+
+```javascript
+import { Worker } from "worker_threads";
+
+async function processItems(items) {
+  const results = [];
+  for (const item of items) {
+    const result = await new Promise((resolve, reject) => {
+      const w = new Worker("./process.js", { workerData: item });
+      w.on("message", resolve);
+      w.on("error", reject);
+      w.on("exit", (code) => {
+        if (code !== 0) reject(new Error("worker exit " + code));
+      });
+    });
+    results.push(result);
+  }
+  return results;
+}
+```
+
+**After (Malia — one line):**
+
+```javascript
+const pool = new WorkerPool("./process.js");
+const results = await pool.map(items);
+pool.close();
+```
+
+Same result. No manual worker lifecycle, no error wiring, automatic
+reuse and parallelism across cores.
+
+### Adding backpressure with channels
+
+**Before (Node — unbounded queue, memory grows):**
+
+```javascript
+const queue = [];
+
+app.post("/ingest", (req, res) => {
+  queue.push(req.body); // no limit, grows forever under load
+  res.sendStatus(202);
+});
+
+setInterval(() => {
+  while (queue.length > 0) {
+    process(queue.shift());
+  }
+}, 100);
+```
+
+**After (Malia — bounded channel, producer waits when full):**
+
+```javascript
+const ch = chan(100); // max 100 buffered items
+
+app.post("/ingest", async (req, res) => {
+  await ch.send(req.body); // waits if buffer is full
+  res.sendStatus(202);
+});
+
+(async () => {
+  for await (const item of ch) {
+    process(item);
+  }
+})();
+```
+
+The channel applies backpressure automatically. Under load, `send()`
+waits instead of growing memory without bound.
+
 ---
 
 ## 4. Standalone executables
