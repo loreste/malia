@@ -12,7 +12,8 @@
     #timeout;
     constructor(path, options = {}) {
       this.#path = path;
-      const size = options.size ?? Deno.core.ops.op_cpus();
+      const cpus = Deno.core.ops.op_cpus();
+      const size = options.size ?? Math.max(1, cpus - 1);
       this.#maxQueue = options.maxQueue ?? 1024;
       this.#maxBuffered = options.maxBuffered ?? 64;
       this.#timeout = options.timeoutMs ?? 30000;

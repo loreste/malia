@@ -144,7 +144,7 @@ try {
   assert(n >= 1, `availableParallelism ${n}`);
   const workerUrl = import.meta.url.replace(/[^/]*$/, "fib_worker.js");
   const pool = new WorkerPool(workerUrl);
-  assert(pool.size === n, `pool size ${pool.size} != ${n}`);
+  assert(pool.size === Math.max(1, n - 1), `pool size ${pool.size} != ${Math.max(1, n - 1)}`);
   const [a, b] = await Promise.all([pool.run(10), pool.run(11)]);
   pool.close();
   assert(a === 55 && b === 89, `fib ${a} ${b}`);

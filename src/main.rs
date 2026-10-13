@@ -908,9 +908,7 @@ pub fn run() -> anyhow::Result<()> {
         && std::env::var("NODE_UNIQUE_ID").is_err()
       {
         let workers = match cluster_cfg {
-          js_engine::config::ConfigCluster::Auto(_) => {
-            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
-          }
+          js_engine::config::ConfigCluster::Auto(_) => default_worker_count(),
           js_engine::config::ConfigCluster::Workers(n) => *n,
         };
         if workers > 1 {
@@ -1347,9 +1345,7 @@ pub fn run() -> anyhow::Result<()> {
             && std::env::var("NODE_UNIQUE_ID").is_err()
           {
             let workers = match cluster_cfg {
-              js_engine::config::ConfigCluster::Auto(_) => {
-                std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
-              }
+              js_engine::config::ConfigCluster::Auto(_) => default_worker_count(),
               js_engine::config::ConfigCluster::Workers(n) => *n,
             };
             if workers > 1 {
@@ -1399,6 +1395,13 @@ pub fn run() -> anyhow::Result<()> {
       }))
     }
   }
+}
+
+/// Worker/cluster count: leave one core for the main thread and OS.
+fn default_worker_count() -> usize {
+  std::thread::available_parallelism()
+    .map(|n| n.get().max(2) - 1)
+    .unwrap_or(1)
 }
 
 fn parse_inspect_addr(addr: &str) -> (String, u16) {
