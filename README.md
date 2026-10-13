@@ -26,15 +26,17 @@ Installs `malia` and `jse` to `~/.malia/bin` and adds it to `PATH`.
 **Debian / Ubuntu (.deb)**
 
 ```sh
-curl -fsSLO https://github.com/loreste/malia/releases/latest/download/malia_0.1.0_amd64.deb
-sudo dpkg -i malia_0.1.0_amd64.deb
+VERSION=$(curl -fsSL https://api.github.com/repos/loreste/malia/releases/latest | grep tag_name | cut -d'"' -f4 | tr -d v)
+curl -fsSLO "https://github.com/loreste/malia/releases/latest/download/malia_${VERSION}_amd64.deb"
+sudo dpkg -i "malia_${VERSION}_amd64.deb"
 ```
 
 **Fedora / RHEL / CentOS (.rpm)**
 
 ```sh
-curl -fsSLO https://github.com/loreste/malia/releases/latest/download/malia-0.1.0-1.x86_64.rpm
-sudo rpm -i malia-0.1.0-1.x86_64.rpm
+VERSION=$(curl -fsSL https://api.github.com/repos/loreste/malia/releases/latest | grep tag_name | cut -d'"' -f4 | tr -d v)
+curl -fsSLO "https://github.com/loreste/malia/releases/latest/download/malia-${VERSION}-1.x86_64.rpm"
+sudo rpm -i "malia-${VERSION}-1.x86_64.rpm"
 ```
 
 Packages install `malia` and `jse` to `/usr/bin`.
