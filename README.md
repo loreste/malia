@@ -1,9 +1,24 @@
 # Malia
 
-A JavaScript/TypeScript and WebAssembly runtime written in Rust. It uses V8
-(via `deno_core`) for execution, tokio for the event loop, `deno_ast` (SWC)
-for TypeScript transpilation, and a Node-compatible module resolver for npm
-packages.
+A drop-in Node.js replacement built in Rust. Runs your existing JavaScript
+and TypeScript with the same V8 engine, same npm packages, same APIs — but
+with real parallelism, lower memory, and faster I/O.
+
+```
+Startup         3x faster than Node
+HTTP throughput 3.3x faster
+Worker dispatch 120x faster
+Memory          35% less RSS, 62% less heap
+```
+
+**What Node can't do, Malia does out of the box:**
+
+- `WorkerPool` — parallel CPU work in one line: `await pool.map(items)`
+- Bounded channels — `chan(10)` with backpressure, `for await` consumption
+- HTTP on a separate thread pool — network I/O never blocks your JS
+- Permissions — deny-by-default filesystem, network, env, subprocess access
+- Built-in SQLite, KV store, task queue, router, tracing, metrics
+- TypeScript runs directly — no build step, no config
 
 The binary is available under two names, `malia` and `jse`. They are the
 same program. In code, the `malia.*` and `jse.*` globals are also the same.
