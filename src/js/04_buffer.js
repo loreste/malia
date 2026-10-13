@@ -876,7 +876,7 @@ Buffer.from = function (value, offsetOrEncoding, length) {
 
   Buffer.alloc = function (size, fill, encoding) {
       if (typeof size !== "number") throw __jse.invalidArgType("size", "number", size);
-      if (!(size >= 0 && size <= 2 ** 53 - 1)) throw outOfRange("size", ">= 0 && <= 9007199254740991", size);
+      if (!(size >= 0 && size <= 0x7FFFFFFF)) throw outOfRange("size", ">= 0 && <= 2147483647", size);
       const buf = allocOf(size);
       if (fill !== undefined && fill !== 0 && size > 0) buf.fill(fill, encoding);
       return buf;
@@ -884,6 +884,8 @@ Buffer.from = function (value, offsetOrEncoding, length) {
 
 
   Buffer.allocUnsafe = function (size) {
+      if (typeof size !== "number") throw __jse.invalidArgType("size", "number", size);
+      if (!(size >= 0 && size <= 0x7FFFFFFF)) throw outOfRange("size", ">= 0 && <= 2147483647", size);
       return pooled(size);
     }
 

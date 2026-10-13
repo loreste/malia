@@ -28,20 +28,22 @@
 
     append(name, value) {
       this.#joinedCache = null;
-      name = String(name);
+      name = String(name).replace(/[\r\n]/g, "");
+      value = String(value).replace(/[\r\n]/g, "");
       const key = name.toLowerCase();
       const entry = this.#map.get(key);
       if (entry) {
-        entry.values.push(String(value));
+        entry.values.push(value);
       } else {
-        this.#map.set(key, { name, values: [String(value)] });
+        this.#map.set(key, { name, values: [value] });
       }
     }
 
     set(name, value) {
       this.#joinedCache = null;
-      name = String(name);
-      this.#map.set(name.toLowerCase(), { name, values: [String(value)] });
+      name = String(name).replace(/[\r\n]/g, "");
+      value = String(value).replace(/[\r\n]/g, "");
+      this.#map.set(name.toLowerCase(), { name, values: [value] });
     }
 
     get(name) {
@@ -484,11 +486,12 @@
       const init = this._responseHeadersInit;
       if (!init) return "";
       if (init instanceof Headers) return init._joined();
+      const sanitize = (v) => String(v).replace(/[\r\n]/g, "");
       if (Array.isArray(init)) {
-        return init.map(([name, value]) => name + ": " + value).join("\r\n");
+        return init.map(([name, value]) => sanitize(name) + ": " + sanitize(value)).join("\r\n");
       }
       const parts = [];
-      for (const name of Object.keys(init)) parts.push(name + ": " + init[name]);
+      for (const name of Object.keys(init)) parts.push(sanitize(name) + ": " + sanitize(init[name]));
       return parts.join("\r\n");
     }
 
