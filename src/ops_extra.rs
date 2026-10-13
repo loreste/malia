@@ -1724,38 +1724,32 @@ pub fn op_zlib_close(state: &mut OpState, id: u32) {
 }
 
 // ---------------------------------------------------------------------------
-// HMAC (md5, sha1, sha224, sha256, sha384, sha512) and PBKDF2 on it.
+// HMAC and PBKDF2 via aws-lc-rs (assembly-optimized, same as OpenSSL).
+// Replaces the manual RFC 2104 implementation with ~200 fewer lines.
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
-enum MacAlgo {
-  Sha224,
-  Sha256,
-  Sha384,
-  Sha512,
-  Sha1,
-  Md5,
+fn hmac_algo(name: &str) -> Result<aws_lc_rs::hmac::Algorithm, JsErrorBox> {
+  let name = name.to_ascii_lowercase();
+  let name = name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "");
+  match name.as_str() {
+    "sha1" => Ok(aws_lc_rs::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY),
+    "sha224" => Ok(aws_lc_rs::hmac::HMAC_SHA224),
+    "sha256" => Ok(aws_lc_rs::hmac::HMAC_SHA256),
+    "sha384" => Ok(aws_lc_rs::hmac::HMAC_SHA384),
+    "sha512" => Ok(aws_lc_rs::hmac::HMAC_SHA512),
+    "md5" => Err(JsErrorBox::generic("HMAC-MD5 is not supported; use SHA-based HMAC")),
+    other => Err(JsErrorBox::generic(format!("unsupported hmac algorithm: {other}"))),
+  }
 }
 
-enum HmacInner {
-  Sha224(sha2::Sha224),
-  Sha256(sha2::Sha256),
-  Sha384(sha2::Sha384),
-  Sha512(sha2::Sha512),
-  Sha1(sha1::Sha1),
-  Md5(md5::Context),
-}
-
-struct Hmac {
-  algo: MacAlgo,
-  opad: Vec<u8>,
-  inner: HmacInner,
+struct HmacCtx {
+  ctx: aws_lc_rs::hmac::Context,
 }
 
 #[derive(Default)]
 struct HmacTable {
   next_id: u32,
-  macs: HashMap<u32, Hmac>,
+  macs: HashMap<u32, HmacCtx>,
 }
 
 fn hmac_table(state: &mut OpState) -> &mut HmacTable {
@@ -1765,246 +1759,51 @@ fn hmac_table(state: &mut OpState) -> &mut HmacTable {
   state.borrow_mut::<HmacTable>()
 }
 
-fn parse_mac(algo: &str) -> Result<MacAlgo, JsErrorBox> {
-  let name = algo.to_ascii_lowercase();
-  match name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "").as_str() {
-    "sha224" => Ok(MacAlgo::Sha224),
-    "sha256" => Ok(MacAlgo::Sha256),
-    "sha384" => Ok(MacAlgo::Sha384),
-    "sha512" => Ok(MacAlgo::Sha512),
-    "sha1" => Ok(MacAlgo::Sha1),
-    "md5" => Ok(MacAlgo::Md5),
-    other => Err(JsErrorBox::generic(format!("unsupported hmac algorithm: {other}"))),
-  }
-}
-
-fn hash_key(algo: MacAlgo, key: &[u8]) -> Vec<u8> {
-  use sha2::Digest;
-  match algo {
-    MacAlgo::Sha224 => sha2::Sha224::digest(key).to_vec(),
-    MacAlgo::Sha256 => sha2::Sha256::digest(key).to_vec(),
-    MacAlgo::Sha384 => sha2::Sha384::digest(key).to_vec(),
-    MacAlgo::Sha512 => sha2::Sha512::digest(key).to_vec(),
-    MacAlgo::Sha1 => sha1::Sha1::digest(key).to_vec(),
-    MacAlgo::Md5 => md5::compute(key).0.to_vec(),
-  }
-}
-
-fn prime_inner(algo: MacAlgo, ipad: &[u8]) -> HmacInner {
-  use sha2::Digest;
-  match algo {
-    MacAlgo::Sha224 => {
-      let mut hasher = sha2::Sha224::new();
-      hasher.update(ipad);
-      HmacInner::Sha224(hasher)
-    }
-    MacAlgo::Sha384 => {
-      let mut hasher = sha2::Sha384::new();
-      hasher.update(ipad);
-      HmacInner::Sha384(hasher)
-    }
-    MacAlgo::Sha256 => {
-      let mut hasher = sha2::Sha256::new();
-      hasher.update(ipad);
-      HmacInner::Sha256(hasher)
-    }
-    MacAlgo::Sha512 => {
-      let mut hasher = sha2::Sha512::new();
-      hasher.update(ipad);
-      HmacInner::Sha512(hasher)
-    }
-    MacAlgo::Sha1 => {
-      let mut hasher = sha1::Sha1::new();
-      hasher.update(ipad);
-      HmacInner::Sha1(hasher)
-    }
-    MacAlgo::Md5 => {
-      let mut ctx = md5::Context::new();
-      ctx.consume(ipad);
-      HmacInner::Md5(ctx)
-    }
-  }
-}
-
-fn hmac_update(inner: &mut HmacInner, data: &[u8]) {
-  use sha2::Digest;
-  match inner {
-    HmacInner::Sha224(hasher) => hasher.update(data),
-    HmacInner::Sha256(hasher) => hasher.update(data),
-    HmacInner::Sha384(hasher) => hasher.update(data),
-    HmacInner::Sha512(hasher) => hasher.update(data),
-    HmacInner::Sha1(hasher) => hasher.update(data),
-    HmacInner::Md5(ctx) => ctx.consume(data),
-  }
-}
-
-fn outer_digest(algo: MacAlgo, opad: &[u8], inner: &[u8]) -> Vec<u8> {
-  use sha2::Digest;
-  match algo {
-    MacAlgo::Sha224 => {
-      let mut hasher = sha2::Sha224::new();
-      hasher.update(opad);
-      hasher.update(inner);
-      hasher.finalize().to_vec()
-    }
-    MacAlgo::Sha384 => {
-      let mut hasher = sha2::Sha384::new();
-      hasher.update(opad);
-      hasher.update(inner);
-      hasher.finalize().to_vec()
-    }
-    MacAlgo::Sha256 => {
-      let mut hasher = sha2::Sha256::new();
-      hasher.update(opad);
-      hasher.update(inner);
-      hasher.finalize().to_vec()
-    }
-    MacAlgo::Sha512 => {
-      let mut hasher = sha2::Sha512::new();
-      hasher.update(opad);
-      hasher.update(inner);
-      hasher.finalize().to_vec()
-    }
-    MacAlgo::Sha1 => {
-      let mut hasher = sha1::Sha1::new();
-      hasher.update(opad);
-      hasher.update(inner);
-      hasher.finalize().to_vec()
-    }
-    MacAlgo::Md5 => {
-      let mut ctx = md5::Context::new();
-      ctx.consume(opad);
-      ctx.consume(inner);
-      ctx.compute().0.to_vec()
-    }
-  }
-}
-
-fn inner_digest(inner: HmacInner) -> Vec<u8> {
-  use sha2::Digest;
-  match inner {
-    HmacInner::Sha224(hasher) => hasher.finalize().to_vec(),
-    HmacInner::Sha256(hasher) => hasher.finalize().to_vec(),
-    HmacInner::Sha384(hasher) => hasher.finalize().to_vec(),
-    HmacInner::Sha512(hasher) => hasher.finalize().to_vec(),
-    HmacInner::Sha1(hasher) => hasher.finalize().to_vec(),
-    HmacInner::Md5(ctx) => ctx.compute().0.to_vec(),
-  }
-}
-
 #[op2(fast)]
 pub fn op_hmac_new(state: &mut OpState, #[string] algo: String, #[buffer] key: &[u8]) -> Result<u32, JsErrorBox> {
-  let algo = parse_mac(&algo)?;
-  let block = match algo {
-    MacAlgo::Sha384 | MacAlgo::Sha512 => 128,
-    _ => 64,
-  };
-  let mut key = if key.len() > block {
-    hash_key(algo, key)
-  } else {
-    key.to_vec()
-  };
-  key.resize(block, 0);
-  let mut ipad = key.clone();
-  let mut opad = key;
-  for byte in &mut ipad {
-    *byte ^= 0x36;
-  }
-  for byte in &mut opad {
-    *byte ^= 0x5c;
-  }
-  let mac = Hmac {
-    algo,
-    opad,
-    inner: prime_inner(algo, &ipad),
-  };
+  let alg = hmac_algo(&algo)?;
+  let hmac_key = aws_lc_rs::hmac::Key::new(alg, key);
+  let ctx = aws_lc_rs::hmac::Context::with_key(&hmac_key);
   let table = hmac_table(state);
   let id = table.next_id;
   table.next_id += 1;
-  table.macs.insert(id, mac);
+  table.macs.insert(id, HmacCtx { ctx });
   Ok(id)
 }
 
 #[op2(fast)]
 pub fn op_hmac_update(state: &mut OpState, id: u32, #[buffer] data: &[u8]) -> Result<(), JsErrorBox> {
-  match hmac_table(state).macs.get_mut(&id) {
-    Some(mac) => {
-      hmac_update(&mut mac.inner, data);
-      Ok(())
-    }
-    None => Err(JsErrorBox::generic("hmac already digested or unknown")),
-  }
+  let table = hmac_table(state);
+  let mac = table.macs.get_mut(&id).ok_or_else(|| JsErrorBox::generic("hmac already digested or unknown"))?;
+  mac.ctx.update(data);
+  Ok(())
 }
 
 #[op2]
 #[buffer]
 pub fn op_hmac_digest(state: &mut OpState, id: u32) -> Result<Vec<u8>, JsErrorBox> {
-  let mac = hmac_table(state)
-    .macs
-    .remove(&id)
+  let mac = hmac_table(state).macs.remove(&id)
     .ok_or_else(|| JsErrorBox::generic("hmac already digested or unknown"))?;
-  let inner = inner_digest(mac.inner);
-  Ok(outer_digest(mac.algo, &mac.opad, &inner))
+  Ok(mac.ctx.sign().as_ref().to_vec())
 }
 
-fn pbkdf2_derive(algo: MacAlgo, pass: &[u8], salt: &[u8], iterations: u32, keylen: usize) -> Vec<u8> {
-  let block = match algo {
-    MacAlgo::Sha384 | MacAlgo::Sha512 => 128,
-    _ => 64,
-  };
-  let mut padded_key = if pass.len() > block {
-    hash_key(algo, pass)
-  } else {
-    pass.to_vec()
-  };
-  padded_key.resize(block, 0);
-
-  let mut ipad = padded_key.clone();
-  let mut opad = padded_key;
-  for b in &mut ipad {
-    *b ^= 0x36;
+fn pbkdf2_algo(name: &str) -> Result<aws_lc_rs::pbkdf2::Algorithm, JsErrorBox> {
+  let name = name.to_ascii_lowercase();
+  let name = name.strip_prefix("rsa-").unwrap_or(&name).replace('-', "");
+  match name.as_str() {
+    "sha1" => Ok(aws_lc_rs::pbkdf2::PBKDF2_HMAC_SHA1),
+    "sha256" => Ok(aws_lc_rs::pbkdf2::PBKDF2_HMAC_SHA256),
+    "sha384" => Ok(aws_lc_rs::pbkdf2::PBKDF2_HMAC_SHA384),
+    "sha512" => Ok(aws_lc_rs::pbkdf2::PBKDF2_HMAC_SHA512),
+    other => Err(JsErrorBox::generic(format!("unsupported pbkdf2 algorithm: {other}"))),
   }
-  for b in &mut opad {
-    *b ^= 0x5c;
-  }
+}
 
-  let hlen = match algo {
-    MacAlgo::Md5 => 16,
-    MacAlgo::Sha1 => 20,
-    MacAlgo::Sha224 => 28,
-    MacAlgo::Sha256 => 32,
-    MacAlgo::Sha384 => 48,
-    MacAlgo::Sha512 => 64,
-  };
-
-  let num_blocks = keylen.div_ceil(hlen);
-  let mut derived = Vec::with_capacity(num_blocks * hlen);
-
-  for block_idx in 1..=(num_blocks as u32) {
-    let mut salt_and_idx = Vec::with_capacity(salt.len() + 4);
-    salt_and_idx.extend_from_slice(salt);
-    salt_and_idx.extend_from_slice(&block_idx.to_be_bytes());
-
-    let mut inner = prime_inner(algo, &ipad);
-    hmac_update(&mut inner, &salt_and_idx);
-    let inner_hash = inner_digest(inner);
-    let mut u = outer_digest(algo, &opad, &inner_hash);
-    let mut acc = u.clone();
-
-    for _ in 1..iterations {
-      let mut inner = prime_inner(algo, &ipad);
-      hmac_update(&mut inner, &u);
-      let inner_hash = inner_digest(inner);
-      u = outer_digest(algo, &opad, &inner_hash);
-      for (a, b) in acc.iter_mut().zip(u.iter()) {
-        *a ^= *b;
-      }
-    }
-    derived.extend_from_slice(&acc);
-  }
-
-  derived.truncate(keylen);
-  derived
+fn pbkdf2_derive(algo_name: &str, pass: &[u8], salt: &[u8], iterations: u32, keylen: usize) -> Result<Vec<u8>, JsErrorBox> {
+  let alg = pbkdf2_algo(algo_name)?;
+  let mut out = vec![0u8; keylen];
+  aws_lc_rs::pbkdf2::derive(alg, std::num::NonZeroU32::new(iterations).unwrap(), salt, pass, &mut out);
+  Ok(out)
 }
 
 #[op2]
@@ -2016,11 +1815,10 @@ pub fn op_crypto_pbkdf2(
   iterations: u32,
   keylen: u32,
 ) -> Result<Vec<u8>, JsErrorBox> {
-  let algo = parse_mac(&algo)?;
   if iterations == 0 {
     return Err(JsErrorBox::generic("iterations must be > 0"));
   }
-  Ok(pbkdf2_derive(algo, pass, salt, iterations, keylen as usize))
+  pbkdf2_derive(&algo, pass, salt, iterations, keylen as usize)
 }
 
 fn scrypt_derive(pass: &[u8], salt: &[u8], cost: f64, block_size: u32, parallelization: u32, keylen: u32, maxmem: f64) -> Result<Vec<u8>, JsErrorBox> {
