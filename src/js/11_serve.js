@@ -18,12 +18,12 @@
     for (let i = 0; i < count; i++) {
       const id = view.getUint32(pos, true);
       pos += 4;
-      const methodLen = view.getUint16(pos, true);
-      pos += 2;
+      const methodLen = view.getUint32(pos, true);
+      pos += 4;
       const method = sharedDecoder.decode(blob.subarray(pos, pos + methodLen));
       pos += methodLen;
-      const urlLen = view.getUint16(pos, true);
-      pos += 2;
+      const urlLen = view.getUint32(pos, true);
+      pos += 4;
       const url = sharedDecoder.decode(blob.subarray(pos, pos + urlLen));
       pos += urlLen;
       const headersLen = view.getUint32(pos, true);

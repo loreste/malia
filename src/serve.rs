@@ -123,17 +123,17 @@ pub struct Listener {
 }
 
 /// Pack a batch of requests into one binary blob (no serde):
-/// u32 count, then per request: u32 id, u16 method_len + method,
-/// u16 url_len + url, u32 headers_len + headers ("name: value" joined by
+/// u32 count, then per request: u32 id, u32 method_len + method,
+/// u32 url_len + url, u32 headers_len + headers ("name: value" joined by
 /// CRLF, both forbidden inside values), u32 body_len + body.
 pub fn pack_requests(requests: &[ServeRequest]) -> Vec<u8> {
   let mut out = Vec::with_capacity(192 * requests.len() + 4);
   out.extend_from_slice(&(requests.len() as u32).to_le_bytes());
   for req in requests {
     out.extend_from_slice(&req.id.to_le_bytes());
-    out.extend_from_slice(&(req.method.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(req.method.len() as u32).to_le_bytes());
     out.extend_from_slice(req.method.as_bytes());
-    out.extend_from_slice(&(req.url.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(req.url.len() as u32).to_le_bytes());
     out.extend_from_slice(req.url.as_bytes());
     let mut headers_len = 0usize;
     for (name, value) in &req.headers {

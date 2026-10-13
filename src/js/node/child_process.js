@@ -371,6 +371,7 @@ function fork(modulePath, args, options) {
       },
       () => {
         child.connected = false;
+        child.emit("disconnect");
       },
     );
   }

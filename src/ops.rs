@@ -478,7 +478,8 @@ pub fn op_fs_open(
   let file = opts.open(&path).map_err(|e| io_box("open", &path, e))?;
   let table = fd_table(state);
   let fd = table.next_fd;
-  table.next_fd += 1;
+  table.next_fd = table.next_fd.wrapping_add(1);
+  if table.next_fd < 100 { table.next_fd = 100; }
   table.files.insert(fd, Arc::new(StdMutex::new(file)));
   Ok(fd)
 }

@@ -23,13 +23,23 @@ const Stream = loadReadableStream((id) => {
 const { Readable, Writable, Duplex, Transform, PassThrough, pipeline, finished, promises } = Stream;
 
 Readable.toWeb = function (stream) {
+  let onData, onEnd, onError;
+  function cleanup() {
+    stream.off("data", onData);
+    stream.off("end", onEnd);
+    stream.off("error", onError);
+  }
   return new ReadableStream({
     start(controller) {
-      stream.on("data", (chunk) => controller.enqueue(chunk));
-      stream.on("end", () => controller.close());
-      stream.on("error", (err) => controller.error(err));
+      onData = (chunk) => controller.enqueue(chunk);
+      onEnd = () => { cleanup(); controller.close(); };
+      onError = (err) => { cleanup(); controller.error(err); };
+      stream.on("data", onData);
+      stream.on("end", onEnd);
+      stream.on("error", onError);
     },
     cancel(reason) {
+      cleanup();
       stream.destroy(reason);
     },
   });
