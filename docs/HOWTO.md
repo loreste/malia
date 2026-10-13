@@ -463,35 +463,128 @@ jse run --allow-all src/server.ts
 
 ---
 
-## 10. Workers and clustering
+## 10. Concurrency and parallelism
+
+JavaScript is single-threaded. Node works around this with an event loop
+and `worker_threads`, but CPU-bound work still blocks the main thread,
+worker setup is manual, and there is no built-in pool or channel primitive.
+
+Malia provides three things Node does not: a worker pool, bounded channels,
+and streaming workers. Each worker runs its own V8 isolate on a dedicated
+OS thread. I/O runs on a separate tokio runtime. The JS thread never
+competes with network handling.
 
 ### WorkerPool
 
-`new WorkerPool(path, { size })` starts `size` workers (default: number of
-CPUs). `pool.run(arg)` sends `arg` to an idle worker and resolves with that
-worker's reply. Each worker must post exactly one reply per message.
+Dispatch CPU work to a fixed set of workers. One line to fan out, one to
+collect.
 
 ```javascript
 // worker.js
-onmessage = (e) => {
-  postMessage(e.data.n * 2);
-};
+onmessage = (e) => postMessage(e.data * 2);
 ```
 
 ```javascript
-// main.js
-const pool = new WorkerPool("./worker.js", { size: 4 });
+const pool = new WorkerPool("./worker.js", { size: 8 });
 
-const results = await pool.map([{ n: 1 }, { n: 2 }, { n: 3 }]);
-console.log(results); // [2, 4, 6]
+// Single task
+const result = await pool.run(21); // 42
+
+// Parallel map
+const results = await pool.map([1, 2, 3, 4, 5]); // [2, 4, 6, 8, 10]
 
 pool.close();
 ```
 
+Options: `{ size, maxQueue, maxBuffered, timeoutMs }`. Jobs that exceed
+`timeoutMs` are terminated and the worker is replaced. `maxQueue` rejects
+new work when the backlog is full. Cancellation via `AbortSignal`:
+
+```javascript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 1000);
+try {
+  await pool.run(heavyInput, { signal: controller.signal });
+} catch (e) {
+  // e.message: "job aborted"
+}
+```
+
+### Streaming workers
+
+When a single task produces multiple results, use `pool.stream()` instead
+of `pool.run()`. The worker sends results one at a time; the caller
+consumes them as an async iterator.
+
+```javascript
+// stream_worker.js
+onmessage = (e) => {
+  for (const item of e.data) {
+    postMessage(transform(item));
+  }
+  postMessage({ __done: true });
+};
+```
+
+```javascript
+const pool = new WorkerPool("./stream_worker.js", { size: 4 });
+for await (const result of pool.stream(largeDataset)) {
+  process(result);
+}
+pool.close();
+```
+
+### Bounded channels
+
+Channels are typed message queues between async tasks within one isolate.
+Bounded channels apply backpressure: `send()` waits when full.
+
+```javascript
+const ch = chan(10); // capacity 10; chan() for unbounded
+
+// Producer
+(async () => {
+  for (let i = 0; i < 100; i++) {
+    await ch.send(i); // blocks when 10 items buffered
+  }
+  ch.close();
+})();
+
+// Consumer
+for await (const msg of ch) {
+  console.log(msg);
+}
+```
+
+Channels work between any async contexts in the same isolate: timers,
+promises, request handlers. They do not cross worker boundaries; use
+`postMessage` for that.
+
+### Raw workers
+
+Standard `Worker` and `worker_threads` APIs work for cases where the pool
+abstraction doesn't fit. Each worker is a separate V8 isolate with its
+own event loop.
+
+```javascript
+import { Worker, isMainThread, parentPort } from "node:worker_threads";
+
+if (!isMainThread) {
+  parentPort.on("message", (msg) => parentPort.postMessage(msg + " world"));
+} else {
+  const w = new Worker(new URL(import.meta.url));
+  w.postMessage("hello");
+  w.on("message", (msg) => {
+    console.log(msg); // "hello world"
+    w.terminate();
+  });
+}
+```
+
 ### node:cluster
 
-Workers bind the same port with `SO_REUSEPORT`, and the OS distributes
-incoming connections among them.
+Workers bind the same port with `SO_REUSEPORT`. The OS distributes
+connections; no primary-process bottleneck.
 
 ```javascript
 import cluster from "node:cluster";
@@ -507,6 +600,17 @@ if (cluster.isPrimary) {
   }).listen(8080);
 }
 ```
+
+### How it differs from Node
+
+| | Node | Malia |
+|---|---|---|
+| Worker setup | Manual thread, manual message loop | `WorkerPool` with dispatch, timeout, cancellation |
+| Parallel map | Write your own | `pool.map(items)` |
+| Backpressure | None between async tasks | Bounded `chan(capacity)` |
+| HTTP I/O | Same thread as JS | Separate tokio runtime |
+| Async file/crypto | libuv pool (4 threads default) | tokio blocking pool (scales to CPU count) |
+| Worker dispatch | ~10us/msg | ~0.04us/msg |
 
 ---
 
