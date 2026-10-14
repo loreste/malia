@@ -430,6 +430,7 @@
     },
     features: {},
     config: { variables: {} },
+    mainModule: undefined,
     connected: false,
   };
 

@@ -1,5 +1,7 @@
 // Helpers injected into every wrapped CommonJS module.
 const cjsCache = new Map();
+// Node-compatible plain-object cache keyed by absolute filename.
+const cjsCacheObj = {};
 
 export function __initCjs(url, bodyFn, modules, urls) {
   if (cjsCache.has(url)) {
@@ -16,6 +18,8 @@ function __execCjs(url, bodyFn, modules, urls) {
   const isEntry = cjsCache.size === 0;
   const mod = { exports: {}, id: isEntry ? "." : filename, filename, loaded: false };
   cjsCache.set(url, mod);
+  if (filename) cjsCacheObj[filename] = mod;
+  if (isEntry && typeof globalThis.process === "object") globalThis.process.mainModule = mod;
 
   const req = __makeRequire(url, modules, urls);
   const dirname = __dirnameOf(url);
@@ -24,6 +28,7 @@ function __execCjs(url, bodyFn, modules, urls) {
     bodyFn.call(mod.exports, mod, mod.exports, req, filename, dirname);
   } catch (err) {
     cjsCache.delete(url);
+    if (filename) delete cjsCacheObj[filename];
     throw err;
   }
   mod.loaded = true;
@@ -111,6 +116,7 @@ export function __makeRequire(parentUrl, modules, urls) {
     if (cjsCache.has(resolved)) return cjsCache.get(resolved).exports;
     const mod = { exports: {}, id: resolved, filename: resolved, loaded: false };
     cjsCache.set(resolved, mod);
+    cjsCacheObj[resolved] = mod;
     const exts = __extensions();
     const dot = resolved.lastIndexOf(".");
     const load = (dot > resolved.lastIndexOf("/") && exts[resolved.slice(dot)]) || exts[".js"];
@@ -118,6 +124,7 @@ export function __makeRequire(parentUrl, modules, urls) {
       load(mod, resolved);
     } catch (err) {
       cjsCache.delete(resolved);
+      delete cjsCacheObj[resolved];
       throw err;
     }
     mod.loaded = true;
@@ -138,7 +145,7 @@ export function __makeRequire(parentUrl, modules, urls) {
       throw Object.assign(new Error("Cannot find module '" + spec + "' required from " + parentUrl), { code: "MODULE_NOT_FOUND" });
     }
   };
-  require.cache = cjsCache;
+  require.cache = cjsCacheObj;
   require.extensions = __extensions();
   return require;
 }
