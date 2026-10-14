@@ -13,7 +13,8 @@ function __execCjs(url, bodyFn, modules, urls) {
     return cjsCache.get(url).exports;
   }
   const filename = __filenameOf(url);
-  const mod = { exports: {}, id: filename || ".", filename, loaded: false };
+  const isEntry = cjsCache.size === 0;
+  const mod = { exports: {}, id: isEntry ? "." : filename, filename, loaded: false };
   cjsCache.set(url, mod);
 
   const req = __makeRequire(url, modules, urls);
@@ -25,6 +26,7 @@ function __execCjs(url, bodyFn, modules, urls) {
     cjsCache.delete(url);
     throw err;
   }
+  mod.loaded = true;
 
   return mod.exports;
 }
