@@ -12,11 +12,11 @@ function __execCjs(url, bodyFn, modules, urls) {
   if (cjsCache.has(url)) {
     return cjsCache.get(url).exports;
   }
-  const mod = { exports: {} };
+  const filename = __filenameOf(url);
+  const mod = { exports: {}, id: filename || ".", filename, loaded: false };
   cjsCache.set(url, mod);
 
   const req = __makeRequire(url, modules, urls);
-  const filename = __filenameOf(url);
   const dirname = __dirnameOf(url);
 
   try {

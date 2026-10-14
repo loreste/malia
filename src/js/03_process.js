@@ -341,8 +341,8 @@
     platform: ops.op_platform(),
     arch: ops.op_arch(),
     title: "node",
-    version: "v26.11.1",
-    versions: { malia: ops.op_runtime_version(), jse: ops.op_runtime_version(), v8: "15.0.4", node: "26.11.1" },
+    version: "v26.12.0",
+    versions: { malia: ops.op_runtime_version(), jse: ops.op_runtime_version(), v8: "15.0.4", node: "26.12.0" },
     release: {
       name: "node",
       lts: "Iron",

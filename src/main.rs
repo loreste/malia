@@ -644,7 +644,7 @@ pub fn run() -> anyhow::Result<()> {
     let is_node_bin = bin_name.ends_with("node") || bin_name.ends_with("node.exe");
     if is_node_bin {
       // Keep in sync with process.version in src/js/03_process.js.
-      println!("v26.11.1");
+      println!("v26.12.0");
     } else {
       let exe_name = current_exe_name();
       println!("{} {}", exe_name, env!("CARGO_PKG_VERSION"));
