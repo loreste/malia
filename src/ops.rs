@@ -39,6 +39,14 @@ pub fn get_no_warnings() -> bool {
   NO_WARNINGS.load(Ordering::SeqCst)
 }
 
+/// The crate version (Cargo.toml), the single source for every version the
+/// runtime reports.
+#[op2]
+#[string]
+pub fn op_runtime_version() -> String {
+  env!("CARGO_PKG_VERSION").to_string()
+}
+
 #[op2(fast)]
 pub fn op_no_warnings() -> bool {
   get_no_warnings()
@@ -2458,6 +2466,7 @@ deno_core::extension!(
     crate::crypto::op_crypto_ecdh_generate,
     crate::crypto::op_crypto_ecdh_compute,
     op_no_warnings,
+    op_runtime_version,
     op_umask,
     op_crypto_scrypt_sync,
     op_crypto_scrypt,

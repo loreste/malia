@@ -188,7 +188,7 @@
               },
               scopeSpans: [
                 {
-                  scope: { name: "jse.trace", version: "0.1.0" },
+                  scope: { name: "jse.trace", version: Deno.core.ops.op_runtime_version() },
                   spans: completedSpans.map((s) => ({
                     traceId: s.traceId,
                     spanId: s.spanId,

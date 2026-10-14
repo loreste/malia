@@ -1046,7 +1046,7 @@ fn node_cli_emulation_flags() {
     .output()
     .expect("failed to execute jse -v");
   assert!(out_version.status.success());
-  assert!(String::from_utf8_lossy(&out_version.stdout).contains("jse 0.1.0"));
+  assert!(String::from_utf8_lossy(&out_version.stdout).contains(&format!("jse {}", env!("CARGO_PKG_VERSION"))));
 
   // 6. NODE_OPTIONS environment variable
   let out_node_options = std::process::Command::new(jse)
@@ -1189,26 +1189,36 @@ fn malia_dual_binary_and_global_namespace() {
     .output()
     .expect("failed to execute malia --version");
   assert!(malia_ver.status.success());
-  assert_eq!(String::from_utf8_lossy(&malia_ver.stdout).trim(), "malia 0.1.0");
+  assert_eq!(
+    String::from_utf8_lossy(&malia_ver.stdout).trim(),
+    format!("malia {}", env!("CARGO_PKG_VERSION"))
+  );
 
   let jse_ver = std::process::Command::new(jse_bin)
     .arg("--version")
     .output()
     .expect("failed to execute jse --version");
   assert!(jse_ver.status.success());
-  assert_eq!(String::from_utf8_lossy(&jse_ver.stdout).trim(), "jse 0.1.0");
+  assert_eq!(
+    String::from_utf8_lossy(&jse_ver.stdout).trim(),
+    format!("jse {}", env!("CARGO_PKG_VERSION"))
+  );
 
   // 2. Both globals malia and jse available and identical in malia binary
+  // The crate version everywhere the runtime reports one.
   let script = r#"
+    const V = '__VERSION__';
     if (typeof malia !== 'object' || typeof jse !== 'object') throw new Error('globals missing');
     if (malia !== jse) throw new Error('malia and jse must reference same object');
-    if (malia.version !== '0.1.0' || jse.version !== '0.1.0') throw new Error('version mismatch');
+    if (malia.version !== V || jse.version !== V) throw new Error('version mismatch: ' + malia.version);
+    if (process.versions.malia !== V || process.versions.jse !== V) throw new Error('process.versions mismatch: ' + process.versions.malia);
     if (typeof malia.serve !== 'function' || typeof malia.kv !== 'object' || typeof malia.sql !== 'function') throw new Error('subsystems missing');
     console.log('MALIA_DUAL_GLOBALS_OK');
-  "#;
+  "#
+  .replace("__VERSION__", env!("CARGO_PKG_VERSION"));
 
   let malia_eval = std::process::Command::new(malia_bin)
-    .args(["-e", script])
+    .args(["-e", script.as_str()])
     .output()
     .expect("failed to evaluate script via malia");
   assert!(
@@ -1219,7 +1229,7 @@ fn malia_dual_binary_and_global_namespace() {
 
   // 3. Both globals available and identical in jse binary
   let jse_eval = std::process::Command::new(jse_bin)
-    .args(["-e", script])
+    .args(["-e", script.as_str()])
     .output()
     .expect("failed to evaluate script via jse");
   assert!(

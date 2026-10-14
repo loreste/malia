@@ -342,7 +342,7 @@
     arch: ops.op_arch(),
     title: "node",
     version: "v26.11.1",
-    versions: { malia: "0.1.0", jse: "0.1.0", v8: "15.0.4", node: "26.11.1" },
+    versions: { malia: ops.op_runtime_version(), jse: ops.op_runtime_version(), v8: "15.0.4", node: "26.11.1" },
     release: {
       name: "node",
       lts: "Iron",

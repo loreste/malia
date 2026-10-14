@@ -81,6 +81,12 @@ tag builds them (`.github/workflows/release.yml`):
 | Linux arm64 (.rpm) | `malia-<version>-1.aarch64.rpm` |
 | Windows x64 | `malia-win32-x64.zip` |
 
+Linux glibc builds (archives, .deb, .rpm) run on glibc 2.28 or newer: RHEL/Alma/Rocky 8+,
+Debian 10+, Ubuntu 20.04+. The musl build has no glibc requirement.
+
+Releases: set the version in `Cargo.toml`, run `scripts/version.py sync` (npm packages),
+then push the matching `v<version>` tag; the release refuses mismatched versions.
+
 **From source**
 
 ```sh

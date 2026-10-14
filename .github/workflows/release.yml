@@ -33,22 +33,26 @@ jobs:
             os: macos-latest
             archive: tar.gz
             asset_name: malia-darwin-x64
+          # glibc targets build inside manylinux_2_28 (glibc 2.28), so the
+          # binaries run on RHEL/Alma 8+, Debian 10+, Ubuntu 20.04+; building on
+          # the runner itself would require its own (much newer) glibc.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
             asset_name: malia-linux-x64-gnu
             build_packages: true
+            manylinux: quay.io/pypa/manylinux_2_28_x86_64
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             archive: tar.gz
             asset_name: malia-linux-x64-musl
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             archive: tar.gz
             asset_name: malia-linux-arm64-gnu
-            use_cross: true
             build_packages: true
             pkg_arch: arm64
+            manylinux: quay.io/pypa/manylinux_2_28_aarch64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
@@ -67,15 +71,13 @@ jobs:
             exit 1
           fi
           git rev-parse --verify "refs/tags/$RELEASE_TAG"
+          # The tag, Cargo.toml and every npm package must agree.
+          python3 scripts/version.py check "$RELEASE_TAG"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install cross (if needed)
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Install musl tools (if needed)
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -84,10 +86,26 @@ jobs:
       - name: Build release binaries
         shell: bash
         run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --locked --release --target ${{ matrix.target }} --bins
+          if [ -n "${{ matrix.manylinux }}" ]; then
+            docker run --rm -v "$PWD":/src -w /src "${{ matrix.manylinux }}" bash -c '
+              set -e
+              curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+              . "$HOME/.cargo/env"
+              cargo build --locked --release --target ${{ matrix.target }} --bins'
+            sudo chown -R "$(id -u):$(id -g)" target
           else
             cargo build --locked --release --target ${{ matrix.target }} --bins
+          fi
+
+      - name: Check glibc requirement (Linux glibc builds)
+        if: matrix.manylinux
+        shell: bash
+        run: |
+          need=$(objdump -T "target/${{ matrix.target }}/release/malia" | grep -oE 'GLIBC_2\.[0-9]+' | sort -V | uniq | tail -1)
+          echo "malia needs $need"
+          if [ "$(printf '%s\nGLIBC_2.28\n' "$need" | sort -V | tail -1)" != "GLIBC_2.28" ]; then
+            echo "binary requires $need; releases must run on glibc 2.28" >&2
+            exit 1
           fi
 
       - name: Package tarball (Unix)
@@ -105,7 +123,8 @@ jobs:
         run: |
           # Install nfpm
           NFPM_VERSION=2.47.0
-          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | tar xz -C /tmp nfpm
+          NFPM_ARCH=$([ "$(uname -m)" = "aarch64" ] && echo arm64 || echo x86_64)
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${NFPM_ARCH}.tar.gz" | tar xz -C /tmp nfpm
           /tmp/nfpm --version
 
           BIN_DIR="target/${{ matrix.target }}/release"

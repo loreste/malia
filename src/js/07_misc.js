@@ -31,7 +31,7 @@
       userAgent: "Node.js/26", // what Node reports
       userAgentData: {
         brands: [
-          { brand: "jse", version: "0.1.0" },
+          { brand: "jse", version: ops.op_runtime_version() },
           { brand: "Node.js", version: "26.11.1" },
         ],
         mobile: false,
