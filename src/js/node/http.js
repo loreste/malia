@@ -134,6 +134,20 @@ Object.assign(IncomingMessage.prototype, {
     return this._encoding ? this._rawBody.toString(this._encoding) : this._rawBody;
   },
 
+  [Symbol.asyncIterator]() {
+    const req = this;
+    let done = false;
+    return {
+      next() {
+        if (done) return Promise.resolve({ done: true, value: undefined });
+        return new Promise((resolve) => {
+          req.on("data", (chunk) => resolve({ done: false, value: chunk }));
+          req.on("end", () => { done = true; resolve({ done: true, value: undefined }); });
+        });
+      },
+    };
+  },
+
   _emitEnd() {
     this.complete = true;
     this.readable = false;
@@ -205,7 +219,7 @@ Object.defineProperties(ServerResponse.prototype, {
 });
 Object.assign(ServerResponse.prototype, {
   setHeader(name, value) {
-    this._headers[String(name).toLowerCase()] = String(value);
+    this._headers[String(name).toLowerCase()] = Array.isArray(value) ? value.map(String) : String(value);
     return this;
   },
 
@@ -266,9 +280,15 @@ Object.assign(ServerResponse.prototype, {
   },
 
   _headerPairs() {
-    return Object.entries(this._headers)
-      .map(([name, value]) => name + ": " + value)
-      .join("\r\n");
+    const pairs = [];
+    for (const [name, value] of Object.entries(this._headers)) {
+      if (Array.isArray(value)) {
+        for (const v of value) pairs.push(name + ": " + v);
+      } else {
+        pairs.push(name + ": " + value);
+      }
+    }
+    return pairs.join("\r\n");
   },
 
   write(chunk, encoding, cb) {
