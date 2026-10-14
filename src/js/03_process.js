@@ -116,7 +116,14 @@
         } else {
           text = String(chunk);
         }
-        ops.op_print(text, isErr);
+        try {
+          ops.op_print(text, isErr);
+        } catch (err) {
+          const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
+          if (cb) { queueMicrotask(() => cb(epipe)); return false; }
+          this.emit("error", epipe);
+          return false;
+        }
         if (cb) queueMicrotask(cb);
         return true;
       },

@@ -6,7 +6,7 @@
   let groupDepth = 0;
   const print = (msg, isErr) => {
     const indent = groupDepth > 0 ? "  ".repeat(groupDepth) : "";
-    ops.op_print(indent + msg + "\n", isErr);
+    try { ops.op_print(indent + msg + "\n", isErr); } catch { /* EPIPE: output closed */ }
   };
   const timers = new Map();
   const counters = new Map();
