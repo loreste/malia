@@ -1,7 +1,16 @@
 // Helpers injected into every wrapped CommonJS module.
 const cjsCache = new Map();
-// Node-compatible plain-object cache keyed by absolute filename.
-const cjsCacheObj = {};
+// Node-compatible cache keyed by absolute filename. Deletions propagate
+// to cjsCache so require() reloads the module (hot-reload, test runners).
+const cjsCacheObj = new Proxy({}, {
+  deleteProperty(target, prop) {
+    // Find and remove from cjsCache too.
+    for (const [url, mod] of cjsCache) {
+      if (mod.filename === prop || url === prop) { cjsCache.delete(url); break; }
+    }
+    return Reflect.deleteProperty(target, prop);
+  },
+});
 
 export function __initCjs(url, bodyFn, modules, urls) {
   if (cjsCache.has(url)) {
@@ -15,11 +24,13 @@ function __execCjs(url, bodyFn, modules, urls) {
     return cjsCache.get(url).exports;
   }
   const filename = __filenameOf(url);
-  const isEntry = cjsCache.size === 0;
+  // Node sets module.id to "." and process.mainModule only for the entry CJS file.
+  const argv1 = typeof globalThis.process === "object" && globalThis.process.argv?.[1];
+  const isEntry = argv1 && filename && (filename === argv1 || filename.endsWith(argv1));
   const mod = { exports: {}, id: isEntry ? "." : filename, filename, loaded: false };
   cjsCache.set(url, mod);
   if (filename) cjsCacheObj[filename] = mod;
-  if (isEntry && typeof globalThis.process === "object") globalThis.process.mainModule = mod;
+  if (isEntry) globalThis.process.mainModule = mod;
 
   const req = __makeRequire(url, modules, urls);
   const dirname = __dirnameOf(url);
