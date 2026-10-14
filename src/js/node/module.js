@@ -292,6 +292,12 @@ Module._nodeModulePaths = function (from) {
 
 BUILTIN_MAP["module"] = Module;
 
+// Register builtins with the global require() shim so ESM files can
+// call require("fs") etc. without createRequire.
+if (typeof globalThis.__jse_register_require_builtins === "function") {
+  globalThis.__jse_register_require_builtins(__builtin);
+}
+
 // Builtin lookup for require() calls resolved at runtime (computed specifiers);
 // the CommonJS loader registers it for modules that contain such calls.
 export function __builtin(id) {

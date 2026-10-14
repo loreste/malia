@@ -10,6 +10,53 @@
   // No `window` or `self`, as in Node: isomorphic code (React, Next.js) uses
   // `typeof window` to tell server from browser.
 
+  // Global require() for ESM (Node v22+ compat). Builtins are served from
+  // the node:module builtin map once it's loaded. File modules use the CJS
+  // loader. This is a lazy shim: it becomes fully functional after the first
+  // ESM module that triggers node:module's registration.
+  if (typeof globalThis.require !== "function") {
+    const cache = new Map();
+    // Populated by node:module when it loads (via createRequire's __builtin).
+    let builtinFn = null;
+    globalThis.__jse_register_require_builtins = (fn) => { builtinFn = fn; };
+    globalThis.require = function require(spec) {
+      const text = String(spec);
+      const bare = text.replace(/^node:/, "");
+      // Try builtin first.
+      if (builtinFn) {
+        const key = "node:" + bare;
+        if (cache.has(key)) return cache.get(key);
+        const mod = builtinFn(key);
+        if (mod !== undefined && mod !== null) { cache.set(key, mod); return mod; }
+      }
+      // File module.
+      const cwd = ops.op_cwd();
+      let resolved;
+      try { resolved = ops.op_require_resolve(bare, cwd + "/_.js"); }
+      catch { throw Object.assign(new Error("Cannot find module '" + spec + "'"), { code: "MODULE_NOT_FOUND" }); }
+      if (cache.has(resolved)) return cache.get(resolved);
+      if (resolved.endsWith(".json")) {
+        const val = JSON.parse(ops.op_read_text_file_sync(resolved));
+        cache.set(resolved, val);
+        return val;
+      }
+      const code = ops.op_read_text_file_sync(resolved);
+      const mod = { exports: {}, id: resolved, filename: resolved, loaded: false };
+      cache.set(resolved, mod.exports);
+      const dir = resolved.replace(/[/\\][^/\\]*$/, "");
+      new Function("exports", "require", "module", "__filename", "__dirname", code)(mod.exports, require, mod, resolved, dir);
+      mod.loaded = true;
+      cache.set(resolved, mod.exports);
+      return mod.exports;
+    };
+    globalThis.require.resolve = function (spec) {
+      const bare = String(spec).replace(/^node:/, "");
+      try { return ops.op_require_resolve(bare, ops.op_cwd() + "/_.js"); }
+      catch { throw Object.assign(new Error("Cannot find module '" + spec + "'"), { code: "MODULE_NOT_FOUND" }); }
+    };
+    globalThis.require.cache = {};
+  }
+
   // structuredClone
   if (typeof globalThis.structuredClone !== "function") {
     globalThis.structuredClone = (value) => {
