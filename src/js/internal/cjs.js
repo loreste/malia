@@ -92,7 +92,7 @@ export function __makeRequire(parentUrl, modules, urls) {
     // failures are MODULE_NOT_FOUND; errors from the module body propagate.
     let resolved;
     try {
-      resolved = Deno.core.ops.op_require_resolve(spec, new URL(parentUrl).pathname);
+      resolved = Deno.core.ops.op_require_resolve(spec, __filenameOf(parentUrl));
     } catch {
       throw Object.assign(
         new Error("Cannot find module '" + spec + "' required from " + parentUrl),
@@ -131,7 +131,7 @@ export function __makeRequire(parentUrl, modules, urls) {
       return url;
     }
     try {
-      return Deno.core.ops.op_require_resolve(spec, new URL(parentUrl).pathname);
+      return Deno.core.ops.op_require_resolve(spec, __filenameOf(parentUrl));
     } catch {
       throw Object.assign(new Error("Cannot find module '" + spec + "' required from " + parentUrl), { code: "MODULE_NOT_FOUND" });
     }
@@ -151,7 +151,10 @@ export function __namedExport(exp, key) {
 }
 
 export function __filenameOf(url) {
-  return decodeURIComponent(String(url).replace(/^file:\/\//, ""));
+  let p = decodeURIComponent(String(url).replace(/^file:\/\/\//, "/").replace(/^file:\/\//, ""));
+  // Windows: /C:/... -> C:/...
+  if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+  return p;
 }
 
 export function __dirnameOf(url) {
