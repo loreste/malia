@@ -1,6 +1,6 @@
 {
   "name": "@malia/linux-x64-gnu",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Linux x64 (glibc) native binary for Malia runtime",
   "os": [
     "linux"
