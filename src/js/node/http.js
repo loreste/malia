@@ -296,6 +296,11 @@ Object.assign(ServerResponse.prototype, {
       cb = encoding;
       encoding = "utf8";
     }
+    if (this._destroyed) {
+      const err = Object.assign(new Error("Cannot call write after a stream was destroyed"), { code: "ERR_STREAM_DESTROYED" });
+      if (cb) queueMicrotask(() => cb(err));
+      return false;
+    }
     if (this._ended) {
       const err = new Error("write after end");
       if (cb) queueMicrotask(() => cb(err));
@@ -308,8 +313,9 @@ Object.assign(ServerResponse.prototype, {
       this._implicitHeader();
       this._started = true;
       this._header = this._headerPairs();
-      if (this._listenerId !== null && this._reqId !== null) {
-        ops.op_serve_respond_start(this._listenerId, this._reqId, this.statusCode, this._header);
+      if (this._listenerId !== null && this._reqId !== null &&
+          !this._respond(() => ops.op_serve_respond_start(this._listenerId, this._reqId, this.statusCode, this._header))) {
+        return this.write(chunk, encoding, cb);
       }
     }
     const bytes = toChunkBytes(chunk, encoding);
@@ -331,8 +337,9 @@ Object.assign(ServerResponse.prototype, {
       }
     });
     this._writePromise.catch(error => {
+      // The only way a chunk fails is the client going away.
+      this._clientGone();
       if (cb) cb(error);
-      else this.emit('error', error);
     });
     // Like Node: true while below the high-water mark; otherwise wait for 'drain'.
     if (this._pendingBytes < RESPONSE_HIGH_WATER_MARK) return true;
@@ -343,6 +350,31 @@ Object.assign(ServerResponse.prototype, {
   cork() {},
   uncork() {},
 
+  // Runs a response op; if it fails, the client has gone. Returns success.
+  _respond(op) {
+    try {
+      op();
+      return true;
+    } catch {
+      this._clientGone();
+      return false;
+    }
+  },
+
+  // Like Node when the connection closes under a response: destroyed, then
+  // 'close'; later writes are dropped and no 'error' is emitted.
+  _clientGone() {
+    if (this._destroyed) return;
+    this._destroyed = true;
+    this._ended = true;
+    this._writePromise = Promise.resolve();
+    queueMicrotask(() => {
+      if (this._closed) return;
+      this._closed = true;
+      this.emit("close");
+    });
+  },
+
   // Ends the response without completing it normally ('error' if given, then 'close').
   destroy(error) {
     if (this._destroyed) return this;
@@ -350,8 +382,8 @@ Object.assign(ServerResponse.prototype, {
     if (!this._ended) {
       this._ended = true;
       if (this._reqId !== null) {
-        if (this._started) ops.op_serve_respond_end(this._reqId);
-        else ops.op_serve_respond(this._listenerId, this._reqId, 500, "", new Uint8Array(0));
+        if (this._started) this._respond(() => ops.op_serve_respond_end(this._reqId));
+        else this._respond(() => ops.op_serve_respond(this._listenerId, this._reqId, 500, "", new Uint8Array(0)));
       }
     }
     queueMicrotask(() => {
@@ -391,18 +423,21 @@ Object.assign(ServerResponse.prototype, {
       this._implicitHeader();
       this._started = true;
       this._header = this._headerPairs();
-      if (this._listenerId !== null && this._reqId !== null) {
-        ops.op_serve_respond(this._listenerId, this._reqId, this.statusCode, this._header, body);
+      if (this._listenerId !== null && this._reqId !== null &&
+          !this._respond(() => ops.op_serve_respond(this._listenerId, this._reqId, this.statusCode, this._header, body))) {
+        if (cb) queueMicrotask(cb);
+        return this;
       }
     } else {
       if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
       this._ended = true;
       (this._writePromise ?? Promise.resolve()).then(() => {
-        if (this._reqId !== null) ops.op_serve_respond_end(this._reqId);
+        if (this._destroyed) return cb && cb();
+        if (this._reqId !== null && !this._respond(() => ops.op_serve_respond_end(this._reqId))) return cb && cb();
         if (cb) cb();
         this._finish();
       }, error => {
-        if (this._reqId !== null) ops.op_serve_respond_end(this._reqId);
+        if (this._reqId !== null) this._respond(() => ops.op_serve_respond_end(this._reqId));
         if (cb) cb(error);
       });
       return this;

@@ -374,6 +374,11 @@ fn http_incoming_headers() {
 }
 
 #[test]
+fn http_client_gone() {
+  run_fixture("nextjs_compat/http_client_gone.cjs");
+}
+
+#[test]
 fn cjs_interop() {
   run_fixture("cjs_main.js");
 }

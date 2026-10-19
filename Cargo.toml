@@ -1,6 +1,6 @@
 [package]
 name = "malia"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "A JavaScript/TypeScript and WebAssembly runtime built in Rust"
 repository = "https://github.com/loreste/malia"

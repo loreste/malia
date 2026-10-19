@@ -1,6 +1,6 @@
 {
   "name": "@malia/darwin-arm64",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "macOS ARM64 (Apple Silicon) native binary for Malia runtime",
   "os": [
     "darwin"

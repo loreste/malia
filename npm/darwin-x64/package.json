@@ -1,6 +1,6 @@
 {
   "name": "@malia/darwin-x64",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "macOS x64 (Intel) native binary for Malia runtime",
   "os": [
     "darwin"
