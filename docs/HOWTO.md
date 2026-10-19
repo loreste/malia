@@ -279,6 +279,17 @@ app.post("/ingest", async (req, res) => {
 The channel applies backpressure automatically. Under load, `send()`
 waits instead of growing memory without bound.
 
+### Hot reload via require.cache
+
+Test runners and dev tools clear `require.cache` to force a module
+to reload. This works the same as Node:
+
+```javascript
+const resolved = require.resolve("./config.js");
+delete require.cache[resolved];
+const fresh = require("./config.js"); // re-reads and re-executes the file
+```
+
 ---
 
 ## 4. Standalone executables
