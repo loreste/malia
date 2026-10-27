@@ -392,6 +392,7 @@
     }
 
     clone() {
+      if (this._bodyUsed) throw new TypeError("Cannot clone a disturbed Request");
       return new Request(this.url, {
         method: this.method,
         headers: new Headers(this.headers),
@@ -501,7 +502,39 @@
     }
 
     clone() {
-      const cloned = new Response(this._nullBody || !this._bodyBytes ? null : this._bodyBytes.slice(), {
+      if (this._bodyUsed) throw new TypeError("Cannot clone a disturbed Response");
+      let body;
+      if (this._nullBody) {
+        body = null;
+      } else if (this._bodyBytes) {
+        body = this._bodyBytes.slice();
+      } else if (this._fetchId != null) {
+        // Streaming fetch body: drain to bytes so both original and clone can read.
+        // This materializes the body, but clone() on an unconsumed streaming response
+        // is the only way to preserve both copies without tee (which we don't have).
+        const id = this._fetchId;
+        const chunks = [];
+        const drain = (async () => {
+          for (;;) {
+            const chunk = await ops.op_fetch_read(id);
+            if (chunk.length === 0) break;
+            chunks.push(chunk);
+          }
+          const len = chunks.reduce((n, c) => n + c.length, 0);
+          const buf = new Uint8Array(len);
+          let off = 0;
+          for (const c of chunks) { buf.set(c, off); off += c.length; }
+          return buf;
+        })();
+        // Replace the streaming body with the materialized bytes on both responses.
+        this._bodyBytes = null;
+        this._fetchId = null;
+        this._bodyIter = (async function*() { yield await drain; })();
+        body = (async function*() { yield await drain; })();
+      } else {
+        body = null;
+      }
+      const cloned = new Response(body, {
         status: this.status,
         statusText: this.statusText,
         headers: new Headers(this.headers),
