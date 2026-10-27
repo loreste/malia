@@ -1711,10 +1711,14 @@ pub async fn op_serve_respond_chunk(
   let (tx, timeout_ms) = {
     let mut state = state.borrow_mut();
     let table = serve_table(&mut state);
-    let (lid, sender) = table.streams.get(&req_id)
+    let (lid, sender) = table
+      .streams
+      .get(&req_id)
       .map(|(lid, tx)| (*lid, tx.clone()))
       .ok_or_else(|| JsErrorBox::generic("response stream is closed"))?;
-    let timeout = table.listeners.get(&lid)
+    let timeout = table
+      .listeners
+      .get(&lid)
       .map(|l| l.limits.request_timeout_ms)
       .unwrap_or(300_000);
     (sender, timeout)
