@@ -880,6 +880,9 @@
   }
 
 Buffer.from = function (value, offsetOrEncoding, length) {
+      if (typeof value === "number") {
+        throw __jse.invalidArgType("value", "string or an instance of Buffer, ArrayBuffer, or Array", value);
+      }
       // from(arraybuffer, byteOffset, length) shares memory (Node semantics).
       if (value instanceof ArrayBuffer && (offsetOrEncoding !== undefined || length !== undefined)) {
         const offset = offsetOrEncoding ?? 0;

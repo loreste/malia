@@ -160,6 +160,7 @@ Object.assign(IncomingMessage.prototype, {
     this.complete = true;
     this.readable = false;
     this.emit("end");
+    queueMicrotask(() => this.emit("close"));
   },
 
   _maybeEmitBody() {
@@ -519,6 +520,12 @@ class Server extends EventEmitter {
         try {
           const req = new IncomingMessage(raw);
           const res = new ServerResponse(this.#listenerId, raw.id);
+          // Emit 'close' on the request when the response finishes,
+          // as Node does (on-finished, Morgan, Koa depend on this).
+          res.on("finish", () => {
+            if (!req.complete) { req.complete = true; req.readable = false; }
+            if (!req.destroyed) queueMicrotask(() => req.emit("close"));
+          });
           this.emit("request", req, res);
         } catch (err) {
           ops.op_log(3, "node:http", `Uncaught error in request listener for ${raw.method} ${raw.url}: ${err?.stack || err}`);
