@@ -2140,7 +2140,7 @@ async fn execute_dns_query(host: &str, qtype: u16) -> Result<Vec<u8>, String> {
       continue;
     }
     match tokio::time::timeout(
-      std::time::Duration::from_millis(1500),
+      std::time::Duration::from_millis(5000),
       socket.recv_from(&mut buf),
     )
     .await
