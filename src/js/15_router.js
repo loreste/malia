@@ -120,7 +120,8 @@
       const middlewares = this.#middlewares;
 
       return async (req) => {
-        const url = new URL(req.url);
+        const raw = req.url;
+        const url = raw.startsWith("/") ? new URL(raw, "http://localhost") : new URL(raw);
         const path = url.pathname;
         const method = req.method;
 
