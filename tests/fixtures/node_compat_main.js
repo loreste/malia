@@ -102,7 +102,7 @@ assert(os.totalmem() > 0, "totalmem");
 assert(os.freemem() > 0, "freemem");
 assert(os.hostname().length > 0, "hostname");
 assert(os.type().length > 0, "os.type");
-assert(os.devNull === "/dev/null", "devNull");
+assert(process.platform === "win32" ? os.devNull === "\\\\.\\NUL" : os.devNull === "/dev/null", "devNull");
 assert(os.endianness() === "LE" || os.endianness() === "BE", "endianness");
 const cpu = os.cpus()[0];
 assert(cpu && cpu.times && typeof cpu.times.idle === "number", "cpus.times");
