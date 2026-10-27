@@ -880,7 +880,10 @@
   }
 
 Buffer.from = function (value, offsetOrEncoding, length) {
-      if (typeof value === "number") {
+      if (typeof value === "number" || typeof value === "boolean" || typeof value === "symbol" || typeof value === "bigint") {
+        throw __jse.invalidArgType("value", "string or an instance of Buffer, ArrayBuffer, or Array", value);
+      }
+      if (value === undefined || value === null) {
         throw __jse.invalidArgType("value", "string or an instance of Buffer, ArrayBuffer, or Array", value);
       }
       // from(arraybuffer, byteOffset, length) shares memory (Node semantics).
