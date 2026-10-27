@@ -13,12 +13,17 @@ export const promises = {
       if (signal?.aborted) {
         return reject(signal.reason ?? new Error("The operation was aborted"));
       }
-      const timer = globalThis.setTimeout(() => resolve(value), delay);
+      let onAbort;
+      const timer = globalThis.setTimeout(() => {
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      }, delay);
       if (signal) {
-        signal.addEventListener("abort", () => {
+        onAbort = () => {
           globalThis.clearTimeout(timer);
           reject(signal.reason ?? new Error("The operation was aborted"));
-        }, { once: true });
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
       }
     });
   },
@@ -28,18 +33,28 @@ export const promises = {
       if (signal?.aborted) {
         return reject(signal.reason ?? new Error("The operation was aborted"));
       }
-      const imm = globalThis.setImmediate(() => resolve(value));
+      let onAbort;
+      const imm = globalThis.setImmediate(() => {
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      });
       if (signal) {
-        signal.addEventListener("abort", () => {
+        onAbort = () => {
           globalThis.clearImmediate(imm);
           reject(signal.reason ?? new Error("The operation was aborted"));
-        }, { once: true });
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
       }
     });
   },
   async *setInterval(delay = 0, value, options = {}) {
-    while (true) {
-      await promises.setTimeout(delay, undefined, options);
+    const signal = options?.signal;
+    while (!signal?.aborted) {
+      try {
+        await promises.setTimeout(delay, undefined, options);
+      } catch {
+        return; // abort signal: end the iterator gracefully
+      }
       yield value;
     }
   },

@@ -163,6 +163,20 @@
       this.#changed();
     }
 
+    // Internal: replace all pairs from a query string without firing #changed.
+    _reparse(query) {
+      this.#pairs = [];
+      if (query && query !== "?") {
+        const q = query.startsWith("?") ? query.slice(1) : query;
+        for (const piece of q.split("&")) {
+          if (piece === "") continue;
+          const eq = piece.indexOf("=");
+          if (eq === -1) this.#pairs.push([urlDecode(piece), ""]);
+          else this.#pairs.push([urlDecode(piece.slice(0, eq)), urlDecode(piece.slice(eq + 1))]);
+        }
+      }
+    }
+
     toString() {
       return this.#pairs.map(([n, v]) => urlEncode(n) + "=" + urlEncode(v)).join("&");
     }
@@ -205,7 +219,10 @@
       this.#href = ops.op_url_set_part(this.#href, part, String(value));
       // Re-parse so normalizations (default ports, case, etc.) are reflected.
       this.#parts = ops.op_url_parse(this.#href, undefined);
-      this.#searchParams = null;
+      // Keep the same searchParams object (WHATWG requires identity stability).
+      if (this.#searchParams !== null) {
+        this.#searchParams._reparse(this.#parts.search);
+      }
     }
 
     get href() {
@@ -214,7 +231,9 @@
     set href(value) {
       this.#parts = ops.op_url_parse(String(value), undefined);
       this.#href = this.#parts.href;
-      this.#searchParams = null;
+      if (this.#searchParams !== null) {
+        this.#searchParams._reparse(this.#parts.search);
+      }
     }
     get protocol() {
       return this.#parts.protocol;

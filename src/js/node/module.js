@@ -228,7 +228,14 @@ export function createRequire(filename) {
 
     if (resolved.endsWith(".json")) {
       const content = Deno.core.ops.op_read_text_file_sync(resolved);
-      const parsed = JSON.parse(content);
+      let parsed;
+      try {
+        parsed = JSON.parse(content);
+      } catch (err) {
+        const wrapped = new SyntaxError(`${resolved}: ${err.message}`);
+        wrapped.code = "ERR_INVALID_PACKAGE_CONFIG";
+        throw wrapped;
+      }
       cache[resolved] = { exports: parsed };
       return parsed;
     }

@@ -127,8 +127,19 @@ performance.getEntriesByName = function (name) { return _entries.filter(e => e.n
 performance.getEntriesByType = function (type) { return _entries.filter(e => e.entryType === type); };
 performance.clearMarks = function (name) {
   if (name) { _marks.delete(name); } else { _marks.clear(); }
+  for (let i = _entries.length - 1; i >= 0; i--) {
+    if (_entries[i].entryType === "mark" && (name === undefined || _entries[i].name === name)) {
+      _entries.splice(i, 1);
+    }
+  }
 };
-performance.clearMeasures = function () {};
+performance.clearMeasures = function (name) {
+  for (let i = _entries.length - 1; i >= 0; i--) {
+    if (_entries[i].entryType === "measure" && (name === undefined || _entries[i].name === name)) {
+      _entries.splice(i, 1);
+    }
+  }
+};
 
 export function monitorEventLoopDelay() {
   return { enable() {}, disable() {}, reset() {}, get min() { return 0; }, get max() { return 0; }, get mean() { return 0; }, get stddev() { return 0; }, percentile() { return 0; }, percentiles: new Map() };

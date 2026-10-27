@@ -16,18 +16,16 @@ function parse(str, sep = "&", eq = "=", options = {}) {
   const obj = Object.create(null);
   if (typeof str !== "string" || str === "") return obj;
   const maxKeys = options.maxKeys ?? 1000;
-  let keys = 0;
-  for (const piece of str.split(sep)) {
+  const parts = str.split(sep);
+  const limit = maxKeys > 0 ? Math.min(parts.length, maxKeys) : parts.length;
+  for (let i = 0; i < limit; i++) {
+    const piece = parts[i];
     if (piece === "") continue;
     const idx = piece.indexOf(eq);
     const rawKey = idx === -1 ? piece : piece.slice(0, idx);
     const rawValue = idx === -1 ? "" : piece.slice(idx + eq.length);
     const key = unescape(rawKey);
     const value = unescape(rawValue);
-    if (maxKeys > 0 && !(key in obj)) {
-      keys += 1;
-      if (keys > maxKeys) return obj;
-    }
     if (key in obj) {
       if (Array.isArray(obj[key])) obj[key].push(value);
       else obj[key] = [obj[key], value];

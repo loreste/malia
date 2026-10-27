@@ -107,10 +107,7 @@ export function isNumberObject(v) {
 }
 
 export function isPromise(v) {
-  return (
-    v instanceof Promise ||
-    (v !== null && typeof v === "object" && typeof v.then === "function" && typeof v.catch === "function")
-  );
+  return v instanceof Promise;
 }
 
 export function isProxy(_v) {

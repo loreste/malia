@@ -15,12 +15,31 @@ function isIPv4(input) {
   });
 }
 
-const IPV6_RE =
-  /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(([0-9a-fA-F]{1,4}:){1,7}|:)::(([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4})?|::(ffff:)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
-
 function isIPv6(input) {
-  if (typeof input !== "string") return false;
-  return IPV6_RE.test(input);
+  if (typeof input !== "string" || input === "") return false;
+  const parts = input.split(":");
+  if (parts.length < 3 || parts.length > 8) return false;
+  let emptyCount = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] === "") {
+      emptyCount++;
+      if (emptyCount > 1 && i !== 0 && i !== parts.length - 1) {
+        // Multiple :: groups — only one allowed, plus edges for leading/trailing
+      }
+    } else if (!/^[0-9a-fA-F]{1,4}$/.test(parts[i])) {
+      // Allow IPv4-mapped suffix in last part
+      if (i === parts.length - 1 && isIPv4(parts[i])) continue;
+      return false;
+    }
+  }
+  // Count the :: compression (consecutive empty parts)
+  const compressed = input.includes("::");
+  if (compressed) {
+    // :: can appear at most once
+    if (input.indexOf("::") !== input.lastIndexOf("::")) return false;
+    return true;
+  }
+  return parts.length === 8;
 }
 
 function isIP(input) {
@@ -96,7 +115,8 @@ Socket.prototype.connect = function (port, host, cb) {
     opts = { port, host: host || "localhost" };
   }
   if (opts.path) {
-    const path = String(opts.path);
+    let path = String(opts.path);
+    if (process.platform !== "win32" && !/^[/.]/.test(path)) path = `./${path}`;
     this.connecting = true;
     this.readyState = "opening";
     if (typeof cb === "function") this.once("connect", cb);
@@ -180,6 +200,7 @@ Socket.prototype._read = function () {
     (chunk) => {
       this._reading = false;
       if (this.destroyed) return;
+      this._refreshTimeout?.();
       if (!chunk || chunk.byteLength === 0) {
         this.push(null);
         // Node's default: the readable FIN closes the writable side too, so
@@ -199,10 +220,15 @@ Socket.prototype._read = function () {
 };
 
 Socket.prototype._write = function (chunk, encoding, cb) {
+  if (this.destroyed || (this._id === null && !this.connecting)) {
+    cb(new Error("This socket has been ended by the other party"));
+    return;
+  }
   const bytes = toBytes(chunk, encoding);
   const go = () => {
+    if (this._id === null) { cb(new Error("Socket is closed")); return; }
     this.bytesWritten += bytes.byteLength;
-    ops.op_net_write(this._id, bytes).then(() => cb(), cb);
+    ops.op_net_write(this._id, bytes).then(() => { this._refreshTimeout?.(); cb(); }, cb);
   };
   if (this._id === null) this.once("connect", go);
   else go();
@@ -250,14 +276,18 @@ Socket.prototype.setKeepAlive = function () {
 };
 Socket.prototype.setTimeout = function (msecs, cb) {
   if (typeof cb === "function") this.once("timeout", cb);
+  this._timeoutMs = msecs;
+  this._refreshTimeout();
+  return this;
+};
+Socket.prototype._refreshTimeout = function () {
   if (this._timeoutId) clearTimeout(this._timeoutId);
-  if (msecs > 0) {
+  if (this._timeoutMs > 0 && !this.destroyed) {
     this._timeoutId = setTimeout(() => {
       this.emit("timeout");
-    }, msecs);
+    }, this._timeoutMs);
     if (typeof this._timeoutId?.unref === "function") this._timeoutId.unref();
   }
-  return this;
 };
 Socket.prototype.ref = function () {
   return this;
@@ -374,13 +404,16 @@ Server.prototype._accept = async function () {
     }
     if (!info) break;
     const sock = attachAccepted(new Socket({ allowHalfOpen: !!this._options.allowHalfOpen }), info);
+    // Prevent client disconnect errors from crashing the server if the
+    // user hasn't attached their own error handler yet.
+    sock.on("error", () => {});
     this.emit("connection", sock);
   }
 };
 
 Server.prototype.address = function () {
   if (!this.listening) return null;
-  return { address: this._host, family: "IPv4", port: this._port };
+  return { address: this._host, family: this._host?.includes(":") ? "IPv6" : "IPv4", port: this._port };
 };
 
 Server.prototype.close = function (cb) {
@@ -435,7 +468,19 @@ class BlockList {
     this._rules.push({ type: "subnet", net, prefix, family: type });
   }
   check(address, type = "ipv4") {
-    return this._rules.some((r) => r.address === address);
+    return this._rules.some((r) => {
+      if (r.family !== type) return false;
+      if (r.type === "address") return r.address === address;
+      if (r.type === "range") return address >= r.start && address <= r.end;
+      if (r.type === "subnet") {
+        // IP-to-number comparison for IPv4 subnet matching
+        const toNum = (ip) => ip.split(".").reduce((a, o) => (a << 8) + Number(o), 0) >>> 0;
+        if (type !== "ipv4") return false;
+        const mask = r.prefix === 0 ? 0 : (~0 << (32 - r.prefix)) >>> 0;
+        return (toNum(address) & mask) === (toNum(r.net) & mask);
+      }
+      return false;
+    });
   }
 }
 

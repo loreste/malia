@@ -74,14 +74,21 @@ export class Interface extends EventEmitter {
     const queue = [];
     const waiters = [];
     let done = this.closed;
-    this.on("line", (line) => {
+    const onLine = (line) => {
       if (waiters.length) waiters.shift()({ done: false, value: line });
       else queue.push(line);
-    });
-    this.once("close", () => {
+    };
+    const onClose = () => {
       done = true;
+      cleanup();
       while (waiters.length) waiters.shift()({ done: true, value: undefined });
-    });
+    };
+    const cleanup = () => {
+      this.removeListener("line", onLine);
+      this.removeListener("close", onClose);
+    };
+    this.on("line", onLine);
+    this.on("close", onClose);
     return {
       next: () => {
         if (queue.length) return Promise.resolve({ done: false, value: queue.shift() });
@@ -89,6 +96,7 @@ export class Interface extends EventEmitter {
         return new Promise((resolve) => waiters.push(resolve));
       },
       return: () => {
+        cleanup();
         this.close();
         return Promise.resolve({ done: true, value: undefined });
       },

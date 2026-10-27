@@ -23,7 +23,13 @@ export function deserialize(buffer) {
       return ops.op_deserialize(buffer, undefined, undefined, undefined, false);
     } catch (_) {}
   }
-  return JSON.parse(buffer.toString());
+  try {
+    return JSON.parse(buffer.toString());
+  } catch (err) {
+    const wrapped = new Error(`Could not deserialize buffer: ${err.message}`);
+    wrapped.code = "ERR_INVALID_ARG_TYPE";
+    throw wrapped;
+  }
 }
 
 export class Serializer {

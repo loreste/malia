@@ -19,7 +19,14 @@ export async function text(stream, encoding = "utf8") {
 
 export async function json(stream) {
   const str = await text(stream);
-  return JSON.parse(str);
+  try {
+    return JSON.parse(str);
+  } catch (err) {
+    const preview = str.length > 100 ? str.slice(0, 100) + "..." : str;
+    const wrapped = new SyntaxError(`Invalid JSON in stream: ${err.message} (input: ${JSON.stringify(preview)})`);
+    wrapped.code = "ERR_INVALID_ARG_TYPE";
+    throw wrapped;
+  }
 }
 
 export async function arrayBuffer(stream) {

@@ -268,6 +268,8 @@ export class ServerHttp2Stream extends Duplex {
   }
 
   end(chunk, encoding, callback) {
+    if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
+    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
     if (chunk) this.write(chunk, encoding);
     super.end(callback);
     this._finalizeResponse();
@@ -325,6 +327,7 @@ export class ClientHttp2Stream extends Duplex {
   async _sendRequest() {
     if (this._started) return;
     this._started = true;
+    let fetchId = null;
     try {
       const url = `${this.session.authority}${this.reqHeaders[":path"] || "/"}`;
       const method = this.reqHeaders[":method"] || "GET";
@@ -336,6 +339,7 @@ export class ClientHttp2Stream extends Duplex {
       }
       const body = this._requestChunks.length > 0 ? Buffer.concat(this._requestChunks) : undefined;
       const respHead = await ops.op_fetch_start(url, method, headers, body, "follow", 0);
+      fetchId = respHead.id;
       const respHeaders = {
         ":status": respHead.status,
       };
@@ -345,7 +349,7 @@ export class ClientHttp2Stream extends Duplex {
       this.emit("response", respHeaders, 0);
 
       while (true) {
-        const chunk = await ops.op_fetch_read(respHead.id);
+        const chunk = await ops.op_fetch_read(fetchId);
         if (!chunk || chunk.length === 0) break;
         this.push(Buffer.from(chunk));
       }
@@ -354,6 +358,8 @@ export class ClientHttp2Stream extends Duplex {
       this.emit("close");
     } catch (err) {
       this.emit("error", err);
+    } finally {
+      if (fetchId !== null) ops.op_fetch_close(fetchId);
     }
   }
 }
@@ -417,10 +423,11 @@ export class Http2Server extends EventEmitter {
   }
 
   address() {
+    const addr = this._host || "127.0.0.1";
     return {
-      address: this._host || "127.0.0.1",
+      address: addr,
       port: this._boundPort || 0,
-      family: "IPv4",
+      family: addr.includes(":") ? "IPv6" : "IPv4",
     };
   }
 

@@ -115,9 +115,8 @@ class Cluster extends EventEmitter {
     this.workers[id] = worker;
 
     child.on("spawn", () => {
-      worker.state = "online";
-      worker.emit("online");
-      this.emit("online", worker);
+      // Worker is spawned but not yet online; the 'online' event fires
+      // when the worker sends its NODE_CLUSTER online message via IPC.
     });
 
     child.on("message", (msg) => {

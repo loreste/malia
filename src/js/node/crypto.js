@@ -154,7 +154,7 @@ class Hmac {
     if (this.#digested) throw hashFinalized();
     this.#digested = true;
     const out = Buffer.from(ops.op_hmac_digest(this.#id));
-    return encoding === undefined ? out : out.toString(encoding);
+    return encoding === undefined || encoding === "buffer" ? out : out.toString(encoding);
   }
 }
 
@@ -163,11 +163,7 @@ function createHmac(algorithm, key) {
 }
 
 function randomUUID() {
-  const bytes = randomBytes(16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return crypto.randomUUID();
 }
 
 function randomFillSync(buf, offset = 0, size) {
@@ -408,8 +404,9 @@ function pemDecode(text) {
 }
 
 function pemEncode(label, der) {
-  const b64 = Buffer.from(der).toString("base64").match(/.{1,64}/g).join("\n");
-  return `-----BEGIN ${label}-----\n${b64}\n-----END ${label}-----\n`;
+  const b64 = Buffer.from(der).toString("base64");
+  const lines = b64.match(/.{1,64}/g) || [];
+  return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
 }
 
 const HASH_NAMES = { sha1: "sha1", sha256: "sha256", sha384: "sha384", sha512: "sha512" };

@@ -64,8 +64,7 @@ Writable.toWeb = function (nodeWritable) {
   return new WritableStream({
     write(chunk) {
       return new Promise((resolve, reject) => {
-        const ok = nodeWritable.write(chunk, (err) => (err ? reject(err) : resolve()));
-        if (ok) resolve();
+        nodeWritable.write(chunk, (err) => (err ? reject(err) : resolve()));
       });
     },
     close() {

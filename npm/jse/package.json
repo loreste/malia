@@ -1,6 +1,6 @@
 {
   "name": "jse",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "A JavaScript/TypeScript and WebAssembly runtime built in Rust",
   "main": "./bin/jse.js",
   "bin": {

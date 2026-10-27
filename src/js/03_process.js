@@ -102,7 +102,11 @@
       return true;
     };
     ee.addListener = ee.on;
-    ee.prependListener = ee.on;
+    ee.prependListener = function (ev, fn) {
+      const list = this._listeners[ev] || (this._listeners[ev] = []);
+      list.unshift(fn);
+      return this;
+    };
     return Object.assign(ee, {
       fd,
       writable: true,
@@ -266,9 +270,9 @@
   }
 
   function hrtime(prev) {
-    const now = ops.op_now() * 1e6; // microseconds
-    const sec = Math.floor(now / 1e6);
-    const nsec = Math.floor((now % 1e6) * 1000);
+    const now = ops.op_now() * 1e6; // nanoseconds
+    const sec = Math.floor(now / 1e9);
+    const nsec = Math.floor(now % 1e9);
     if (prev) {
       let ds = sec - prev[0];
       let dn = nsec - prev[1];
@@ -558,7 +562,7 @@
         stdinEmit("end");
         return;
       }
-      stdinEmit("data", new Uint8Array(buf.buffer || buf));
+      stdinEmit("data", Buffer.from(buf.buffer || buf));
       if (!stdinState._paused) queueMicrotask(stdinPump);
       else stdinState._reading = false;
     }, () => {
@@ -573,7 +577,14 @@
     get isTTY() { return ops.op_isatty(0); },
     on: stdinOn,
     addListener: stdinOn,
-    prependListener: stdinOn,
+    prependListener(ev, fn) {
+      const list = stdinState._listeners[ev] || (stdinState._listeners[ev] = []);
+      list.unshift(fn);
+      if ((ev === "data" || ev === "readable") && !stdinState._reading && !stdinState._ended) {
+        process.stdin.resume();
+      }
+      return process.stdin;
+    },
     once(ev, fn) {
       const w = (...a) => { process.stdin.removeListener(ev, w); fn(...a); };
       w._orig = fn;

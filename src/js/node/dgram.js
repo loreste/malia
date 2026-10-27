@@ -59,14 +59,18 @@ class Socket extends EventEmitter {
   }
 
   send(msg, offset, length, port, address, callback) {
+    // Long form: send(msg, offset, length, port[, address][, callback])
+    // Short form: send(msg, port[, address][, callback])
     if (typeof offset === "number" && typeof length === "number") {
       msg = Buffer.isBuffer(msg) ? msg.subarray(offset, offset + length) : Buffer.from(msg).subarray(offset, offset + length);
     } else {
-      callback = address;
-      address = port;
+      // Short form: offset=port, length=address, port=callback
+      callback = port;
+      address = length;
       port = offset;
     }
-    if (typeof address === "function") { callback = address; address = "127.0.0.1"; }
+    if (typeof address === "function") { callback = address; address = undefined; }
+    if (typeof callback !== "function") callback = undefined;
     address = address || "127.0.0.1";
     const data = Buffer.isBuffer(msg) ? msg : Buffer.from(String(msg));
     const doSend = (id) => {

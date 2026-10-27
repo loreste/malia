@@ -373,7 +373,8 @@
         return makeKey("secret", extractable, { name: "HMAC", hash: alg.hash, length }, usages, u8(ops.op_crypto_random_bytes(length / 8)));
       }
       if (alg.name.startsWith("AES-")) {
-        if (![128, 192, 256].includes(alg.length)) throw new DOMException("AES key length must be 128, 192, or 256", "OperationError");
+        const validLengths = alg.name === "AES-GCM" ? [128, 256] : [128, 192, 256];
+        if (!validLengths.includes(alg.length)) throw new DOMException(`AES key length must be one of ${validLengths.join(", ")}`, "OperationError");
         return makeKey("secret", extractable, { name: alg.name, length: alg.length }, usages, u8(ops.op_crypto_random_bytes(alg.length / 8)));
       }
       const kind = ASYM_TYPE[alg.name];
@@ -523,7 +524,13 @@
       checkKey(unwrappingKey, alg, "unwrapKey");
       const key = makeKey(unwrappingKey.type, true, unwrappingKey.algorithm, ["decrypt"], unwrappingKey[kMaterial], unwrappingKey[kInfo]);
       const bytes = await subtle.decrypt(alg, key, wrappedKey);
-      const data = format === "jwk" ? JSON.parse(new TextDecoder().decode(bytes)) : bytes;
+      let data;
+      if (format === "jwk") {
+        try { data = JSON.parse(new TextDecoder().decode(bytes)); }
+        catch { throw new DOMException("Failed to parse unwrapped JWK", "DataError"); }
+      } else {
+        data = bytes;
+      }
       return subtle.importKey(format, data, unwrappedKeyAlgorithm, extractable, usages);
     },
   };

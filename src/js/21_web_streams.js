@@ -40,8 +40,8 @@
     enqueue(chunk) {
       if (this._closeRequested) throw new TypeError("Cannot enqueue after close requested");
       if (this._pendingPulls.length > 0) {
-        const resolver = this._pendingPulls.shift();
-        resolver({ value: chunk, done: false });
+        const { resolve } = this._pendingPulls.shift();
+        resolve({ value: chunk, done: false });
       } else {
         this._queue.push(chunk);
       }
@@ -51,16 +51,16 @@
       if (this._closeRequested) return;
       this._closeRequested = true;
       while (this._pendingPulls.length > 0) {
-        const resolver = this._pendingPulls.shift();
-        resolver({ value: undefined, done: true });
+        const { resolve } = this._pendingPulls.shift();
+        resolve({ value: undefined, done: true });
       }
     }
 
     error(e) {
       this._stream._errored = e;
       while (this._pendingPulls.length > 0) {
-        const resolver = this._pendingPulls.shift();
-        resolver(Promise.reject(e));
+        const { reject } = this._pendingPulls.shift();
+        reject(e);
       }
     }
   }
@@ -88,7 +88,7 @@
         return { value: undefined, done: true };
       }
       return new Promise((resolve, reject) => {
-        controller._pendingPulls.push(resolve);
+        controller._pendingPulls.push({ resolve, reject });
         if (typeof controller._source.pull === "function") {
           try {
             Promise.resolve(controller._source.pull(controller)).catch(reject);

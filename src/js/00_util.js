@@ -525,7 +525,7 @@
     let str = "";
     let join = "";
     if (typeof first === "string") {
-      if (args.length === 1) return first;
+      if (args.length === 1 && !first.includes("%")) return first;
       let lastPos = 0;
       for (let i = 0; i < first.length - 1; i++) {
         if (first.charCodeAt(i) !== 37) continue; // '%'

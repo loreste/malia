@@ -25,6 +25,7 @@ export function cpus() {
 }
 
 export function homedir() {
+  if (process.platform === "win32") return process.env.USERPROFILE || process.env.HOMEDRIVE + process.env.HOMEPATH || "C:\\Users";
   return process.env.HOME || "/";
 }
 
@@ -132,8 +133,8 @@ export function getPriority(pid = 0) {
 
 export function setPriority(pid = 0, priority = 0) {}
 
-export const EOL = "\n";
-export const devNull = "/dev/null";
+export const EOL = process.platform === "win32" ? "\r\n" : "\n";
+export const devNull = process.platform === "win32" ? "\\\\.\\NUL" : "/dev/null";
 
 export default {
   platform,

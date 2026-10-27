@@ -1,6 +1,6 @@
 {
   "name": "@malia/linux-arm64-gnu",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Linux ARM64 (glibc) native binary for Malia runtime",
   "os": [
     "linux"

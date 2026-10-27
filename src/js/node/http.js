@@ -101,7 +101,7 @@ Object.assign(IncomingMessage.prototype, {
 
   pipe(dest, options) {
     this.on("data", (chunk) => dest.write(chunk));
-    this.on("end", () => dest.end());
+    if (options?.end !== false) this.on("end", () => dest.end());
     return dest;
   },
 
@@ -136,14 +136,22 @@ Object.assign(IncomingMessage.prototype, {
 
   [Symbol.asyncIterator]() {
     const req = this;
+    const queue = [];
+    const waiters = [];
     let done = false;
+    req.on("data", (chunk) => {
+      if (waiters.length) waiters.shift()({ done: false, value: chunk });
+      else queue.push(chunk);
+    });
+    req.on("end", () => {
+      done = true;
+      while (waiters.length) waiters.shift()({ done: true, value: undefined });
+    });
     return {
       next() {
+        if (queue.length) return Promise.resolve({ done: false, value: queue.shift() });
         if (done) return Promise.resolve({ done: true, value: undefined });
-        return new Promise((resolve) => {
-          req.on("data", (chunk) => resolve({ done: false, value: chunk }));
-          req.on("end", () => { done = true; resolve({ done: true, value: undefined }); });
-        });
+        return new Promise((resolve) => waiters.push(resolve));
       },
     };
   },
@@ -219,6 +227,7 @@ Object.defineProperties(ServerResponse.prototype, {
 });
 Object.assign(ServerResponse.prototype, {
   setHeader(name, value) {
+    validateHeader(name, value);
     this._headers[String(name).toLowerCase()] = Array.isArray(value) ? value.map(String) : String(value);
     return this;
   },
@@ -276,7 +285,11 @@ Object.assign(ServerResponse.prototype, {
 
   // Node internal, called by middleware (e.g. compression) before writing.
   _implicitHeader() {
-    this.writeHead(this.statusCode);
+    if (!this._started) {
+      this.writeHead(this.statusCode);
+      this._started = true;
+      this._header = this._headerPairs();
+    }
   },
 
   _headerPairs() {
@@ -302,7 +315,7 @@ Object.assign(ServerResponse.prototype, {
       return false;
     }
     if (this._ended) {
-      const err = new Error("write after end");
+      const err = Object.assign(new Error("write after end"), { code: "ERR_STREAM_WRITE_AFTER_END" });
       if (cb) queueMicrotask(() => cb(err));
       else this.emit("error", err);
       return false;
@@ -439,6 +452,7 @@ Object.assign(ServerResponse.prototype, {
       }, error => {
         if (this._reqId !== null) this._respond(() => ops.op_serve_respond_end(this._reqId));
         if (cb) cb(error);
+        this._finish();
       });
       return this;
     }
@@ -474,9 +488,11 @@ class Server extends EventEmitter {
       const envPort = globalThis.process?.env?.PORT ? Number(globalThis.process.env.PORT) : NaN;
       port = !isNaN(envPort) && envPort >= 0 ? envPort : 0;
     }
-    const [id, boundPort] = ops.op_serve_listen(hostname ?? "0.0.0.0", port, this._tls);
+    const listenHost = hostname ?? "0.0.0.0";
+    const [id, boundPort] = ops.op_serve_listen(listenHost, port, this._tls);
     this.#listenerId = id;
     this.#port = boundPort;
+    this._host = listenHost;
     if (cb) this.once("listening", cb);
     queueMicrotask(() => {
       this.emit("listening");
@@ -545,7 +561,8 @@ class Server extends EventEmitter {
   }
 
   address() {
-    return { address: "0.0.0.0", family: "IPv4", port: this.#port };
+    const addr = this._host || "0.0.0.0";
+    return { address: addr, family: addr.includes(":") ? "IPv6" : "IPv4", port: this.#port };
   }
 
   close(cb) {
@@ -553,7 +570,11 @@ class Server extends EventEmitter {
       ops.op_serve_close(this.#listenerId);
       this.#listenerId = null;
     }
-    if (cb) queueMicrotask(cb);
+    if (cb) this.once("close", cb);
+    queueMicrotask(() => {
+      this.listening = false;
+      this.emit("close");
+    });
     return this;
   }
 }
@@ -634,7 +655,7 @@ function readResponse(sock, method, onResponse, onError) {
         if (nl < 0) return;
         const size = parseInt(pending.subarray(0, nl).toString("latin1"), 16);
         if (!Number.isFinite(size)) {
-          fail(new Error("invalid chunk size"));
+          fail(Object.assign(new Error("Parse Error: Invalid chunk size"), { code: "HPE_INVALID_CHUNK_SIZE" }));
           return;
         }
         if (pending.length < nl + 2 + size + 2) return;
@@ -669,7 +690,7 @@ function readResponse(sock, method, onResponse, onError) {
   });
   sock.on("end", () => {
     if (!res || ((mode === "length" || mode === "chunked") && !res.complete)) {
-      fail(new Error("socket hang up"));
+      fail(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }));
       return;
     }
     finish();
@@ -678,23 +699,34 @@ function readResponse(sock, method, onResponse, onError) {
     if (failed || (res && res.complete)) return;
     if (!res) {
       buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
-      const idx = buf.indexOf("\r\n\r\n");
-      if (idx < 0) return;
-      const parsed = parseHead(buf.subarray(0, idx).toString("latin1"));
-      const rest = buf.subarray(idx + 4);
-      buf = Buffer.alloc(0);
-      res = new ClientResponse(parsed.statusCode, parsed.statusMessage, parsed.headers);
-      const noBody = method === "HEAD" || parsed.statusCode === 204 || parsed.statusCode === 304;
-      if (noBody) mode = "none";
-      else if ((parsed.headers["transfer-encoding"] || "").toLowerCase().includes("chunked")) mode = "chunked";
-      else if (parsed.headers["content-length"] !== undefined) {
-        mode = "length";
-        expected = Number(parsed.headers["content-length"]) || 0;
-      } else mode = "eof";
-      onResponse(res);
-      if (rest.length) pushBody(rest);
-      else if (mode === "none" || (mode === "length" && expected === 0)) finish();
-      return;
+      if (buf.length > 16384 && buf.indexOf("\r\n\r\n") < 0) {
+        fail(Object.assign(new Error("Parse Error: Header overflow"), { code: "HPE_HEADER_OVERFLOW" }));
+        return;
+      }
+      for (;;) {
+        const idx = buf.indexOf("\r\n\r\n");
+        if (idx < 0) return;
+        const parsed = parseHead(buf.subarray(0, idx).toString("latin1"));
+        const rest = buf.subarray(idx + 4);
+        buf = Buffer.alloc(0);
+        // Skip 1xx informational responses (100 Continue, 102 Processing, etc.)
+        if (parsed.statusCode >= 100 && parsed.statusCode < 200) {
+          buf = rest;
+          continue;
+        }
+        res = new ClientResponse(parsed.statusCode, parsed.statusMessage, parsed.headers);
+        const noBody = method === "HEAD" || parsed.statusCode === 204 || parsed.statusCode === 304;
+        if (noBody) mode = "none";
+        else if ((parsed.headers["transfer-encoding"] || "").toLowerCase().includes("chunked")) mode = "chunked";
+        else if (parsed.headers["content-length"] !== undefined) {
+          mode = "length";
+          expected = Number(parsed.headers["content-length"]) || 0;
+        } else mode = "eof";
+        onResponse(res);
+        if (rest.length) pushBody(rest);
+        else if (mode === "none" || (mode === "length" && expected === 0)) finish();
+        return;
+      }
     }
     pushBody(chunk);
   });
@@ -831,6 +863,10 @@ class ClientRequest extends Writable {
   destroy(err) {
     clearTimeout(this._timer);
     this._sock?.destroy();
+    if (!this._settled) {
+      this._settled = true;
+      if (this._finishCb) this._finishCb(err);
+    }
     return super.destroy(err);
   }
 
@@ -892,7 +928,9 @@ class ClientRequest extends Writable {
       this.setHeader("Host", Number(opts.port) === defaultPort ? host : `${host}:${opts.port}`);
     }
     this.removeHeader("transfer-encoding");
-    this.setHeader("Content-Length", String(payload.length));
+    if (payload.length > 0 || (opts.method !== "GET" && opts.method !== "HEAD")) {
+      this.setHeader("Content-Length", String(payload.length));
+    }
     if (!this.hasHeader("connection")) this.setHeader("Connection", "close");
     let finished = false;
     this._finishCb = (err) => {
@@ -996,7 +1034,7 @@ export const METHODS = [
   "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY", "MKCALENDAR", "MKCOL", "MOVE",
   "NOTIFY", "OPTIONS", "PATCH", "POST", "PROPFIND", "PROPPATCH", "PURGE", "PUT",
   "REBIND", "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE", "TRACE", "UNBIND",
-  "UNLINK", "LOCK", "UNSUBSCRIBE",
+  "UNLINK", "UNLOCK", "UNSUBSCRIBE",
 ];
 
 // Agent holds options only; each request opens its own connection

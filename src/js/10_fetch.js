@@ -69,8 +69,12 @@
     _joined() {
       if (this.#joinedCache === null) {
         const parts = [];
-        for (const { name, values } of this.#map.values()) {
-          parts.push(name + ": " + values.join(", "));
+        for (const [key, { name, values }] of this.#map.entries()) {
+          if (key === "set-cookie") {
+            for (const v of values) parts.push(name + ": " + v);
+          } else {
+            parts.push(name + ": " + values.join(", "));
+          }
         }
         this.#joinedCache = parts.join("\r\n");
       }
@@ -111,6 +115,7 @@
   }
 
   const sharedEncoder = new TextEncoder();
+  const EMPTY_U8 = new Uint8Array(0);
   const sharedDecoder = new TextDecoder();
 
   function toBytes(chunk) {
@@ -392,6 +397,7 @@
         headers: new Headers(this.headers),
         body: this._bodyBytes?.length ? this._bodyBytes.slice() : undefined,
         redirect: this.redirect,
+        signal: this._signal,
       });
     }
 
@@ -416,6 +422,9 @@
 
   // ---- Response ----------------------------------------------------------------
 
+  const _crlfRe = /[\r\n]/g;
+  const _sanitizeHdr = (v) => String(v).replace(_crlfRe, "");
+
   class Response extends BodyMixin {
     constructor(body = null, init = {}) {
       super();
@@ -430,7 +439,7 @@
       this.redirected = false;
       this.type = "basic";
       if (body === null || body === undefined) {
-        this._bodyBytes = new Uint8Array(0);
+        this._bodyBytes = EMPTY_U8;
       } else if (
         typeof body === "string" ||
         body instanceof Uint8Array ||
@@ -479,6 +488,9 @@
 
     static json(data, init = {}) {
       const body = JSON.stringify(data);
+      if (!init.headers) {
+        return new Response(body, { ...init, headers: { "content-type": "application/json" } });
+      }
       const headers = new Headers(init.headers);
       if (!headers.has("content-type")) headers.set("content-type", "application/json");
       return new Response(body, { ...init, headers });
@@ -521,12 +533,11 @@
       const init = this._responseHeadersInit;
       if (!init) return "";
       if (init instanceof Headers) return init._joined();
-      const sanitize = (v) => String(v).replace(/[\r\n]/g, "");
       if (Array.isArray(init)) {
-        return init.map(([name, value]) => sanitize(name) + ": " + sanitize(value)).join("\r\n");
+        return init.map(([name, value]) => _sanitizeHdr(name) + ": " + _sanitizeHdr(value)).join("\r\n");
       }
       const parts = [];
-      for (const name of Object.keys(init)) parts.push(sanitize(name) + ": " + sanitize(init[name]));
+      for (const name of Object.keys(init)) parts.push(_sanitizeHdr(name) + ": " + _sanitizeHdr(init[name]));
       return parts.join("\r\n");
     }
 
@@ -587,10 +598,16 @@
     const fetchPromise = ops.op_fetch_start(url, method, headerPairs, bodyBytes, redirect, bodyStream);
     let head;
     if (signal) {
+      let aborted = false;
       head = await Promise.race([
         fetchPromise,
         new Promise((_, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError")), { once: true });
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            // Clean up the underlying fetch resource when the op eventually settles
+            fetchPromise.then(h => { if (h?.id != null) ops.op_fetch_close(h.id); }).catch(() => {});
+            reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+          }, { once: true });
         }),
       ]);
     } else {

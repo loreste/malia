@@ -444,32 +444,42 @@
       this.dispatchEvent(new CustomEvent("pong", { detail: data }));
     }
 
+    #wrapperMap = new WeakMap();
+
+    #wrap(type, listener) {
+      let byType = this.#wrapperMap.get(listener);
+      if (!byType) { byType = new Map(); this.#wrapperMap.set(listener, byType); }
+      let handler = byType.get(type);
+      if (!handler) {
+        handler = (evt) => {
+          if (type === "message") listener(evt.data, evt.isBinary);
+          else if (type === "close") listener(evt.code, evt.reason);
+          else if (type === "error") listener(evt.error || evt);
+          else if (type === "ping" || type === "pong") listener(evt.detail);
+          else listener(evt);
+        };
+        byType.set(type, handler);
+      }
+      return handler;
+    }
+
     on(type, listener) {
-      const handler = (evt) => {
-        if (type === "message") listener(evt.data, evt.isBinary);
-        else if (type === "close") listener(evt.code, evt.reason);
-        else if (type === "error") listener(evt.error || evt);
-        else if (type === "ping" || type === "pong") listener(evt.detail);
-        else listener(evt);
-      };
-      this.addEventListener(type, handler);
+      this.addEventListener(type, this.#wrap(type, listener));
       return this;
     }
 
     once(type, listener) {
-      const handler = (evt) => {
-        if (type === "message") listener(evt.data, evt.isBinary);
-        else if (type === "close") listener(evt.code, evt.reason);
-        else if (type === "error") listener(evt.error || evt);
-        else if (type === "ping" || type === "pong") listener(evt.detail);
-        else listener(evt);
-      };
-      this.addEventListener(type, handler, { once: true });
+      this.addEventListener(type, this.#wrap(type, listener), { once: true });
       return this;
     }
 
     off(type, listener) {
-      this.removeEventListener(type, listener);
+      let byType = this.#wrapperMap.get(listener);
+      const handler = byType?.get(type);
+      if (handler) {
+        this.removeEventListener(type, handler);
+        byType.delete(type);
+      }
       return this;
     }
 

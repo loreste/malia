@@ -109,8 +109,22 @@ EventEmitter.prototype.removeListener = function (type, listener) {
 
 EventEmitter.prototype.removeAllListeners = function (type) {
   if (!this._events) return this;
-  if (type === undefined) this._events.clear();
-  else this._events.delete(type);
+  const hasRl = this._events.get("removeListener")?.length > 0;
+  if (type === undefined) {
+    if (hasRl) {
+      for (const [t, list] of this._events) {
+        if (t === "removeListener") continue;
+        for (const entry of list) this.emit("removeListener", t, entry.fn.listener ?? entry.fn);
+      }
+    }
+    this._events.clear();
+  } else {
+    if (hasRl) {
+      const list = this._events.get(type);
+      if (list) for (const entry of [...list]) this.emit("removeListener", type, entry.fn.listener ?? entry.fn);
+    }
+    this._events.delete(type);
+  }
   return this;
 };
 
@@ -225,6 +239,7 @@ EventEmitter.on = async function* (emitter, event, options = {}) {
   if (signal?.aborted) return;
   const queue = [];
   let notify = null;
+  let abortReason = null;
   const handler = (...args) => {
     queue.push(args);
     if (notify) {
@@ -232,17 +247,28 @@ EventEmitter.on = async function* (emitter, event, options = {}) {
       notify = null;
     }
   };
+  const onAbort = () => {
+    abortReason = signal.reason ?? abortError(signal);
+    if (notify) {
+      notify();
+      notify = null;
+    }
+  };
+  signal?.addEventListener?.("abort", onAbort, { once: true });
   emitter.on(event, handler);
   try {
-    while (!signal?.aborted) {
+    while (true) {
+      if (abortReason) throw abortReason;
       if (queue.length === 0) {
         await new Promise((res) => { notify = res; });
+        continue;
       }
       while (queue.length > 0) {
         yield queue.shift();
       }
     }
   } finally {
+    signal?.removeEventListener?.("abort", onAbort);
     if (typeof emitter.off === "function") {
       emitter.off(event, handler);
     } else if (typeof emitter.removeListener === "function") {

@@ -50,6 +50,9 @@ function withTls(input, options, cb) {
       rejectUnauthorized: true,
       ...(options && typeof options === "object" ? options : {}),
     };
+    if ((url.username || url.password) && !opts.auth) {
+      opts.auth = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+    }
     return { opts, cb };
   }
   const opts = {

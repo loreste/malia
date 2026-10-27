@@ -190,9 +190,10 @@
     return new Uint8Array(bytes);
   }
 
+  const HEX_TABLE = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
   function hexEncode(bytes) {
     let out = "";
-    for (const b of bytes) out += b.toString(16).padStart(2, "0");
+    for (let i = 0; i < bytes.length; i++) out += HEX_TABLE[bytes[i]];
     return out;
   }
 
@@ -262,13 +263,34 @@
     if (enc === "base64") return base64Encode(bytes);
     if (enc === "base64url") return base64UrlEncode(bytes);
     if (enc === "hex") return hexEncode(bytes);
-    if (enc === "latin1") return Array.from(bytes, (b) => String.fromCharCode(b)).join("");
-    if (enc === "ascii") return Array.from(bytes, (b) => String.fromCharCode(b & 0x7f)).join("");
+    if (enc === "latin1") {
+      // Batch String.fromCharCode in chunks of 8192 to avoid max-args limit.
+      let out = "";
+      for (let i = 0; i < bytes.length; i += 8192) {
+        out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+      }
+      return out;
+    }
+    if (enc === "ascii") {
+      let out = "";
+      for (let i = 0; i < bytes.length; i += 8192) {
+        const chunk = bytes.subarray(i, i + 8192);
+        const masked = new Uint8Array(chunk.length);
+        for (let j = 0; j < chunk.length; j++) masked[j] = chunk[j] & 0x7f;
+        out += String.fromCharCode.apply(null, masked);
+      }
+      return out;
+    }
     if (enc === "utf16le") {
       let out = "";
       const n = bytes.length - (bytes.length % 2);
       for (let i = 0; i < n; i += 2) out += String.fromCharCode(bytes[i] | (bytes[i + 1] << 8));
       return out;
+    }
+    if (enc !== "utf8" && !ENCODINGS.has(enc)) {
+      const err = new TypeError(`Unknown encoding: ${encoding}`);
+      err.code = "ERR_UNKNOWN_ENCODING";
+      throw err;
     }
     return ops.op_text_decode(bytes);
   }
@@ -457,9 +479,13 @@
     }
 
     toString(encoding = "utf8", start = 0, end = this.length) {
+      // Node clamps start/end to [0, length] (no negative wrap-around).
+      const len = this.length;
+      start = start < 0 ? 0 : start > len ? len : start;
+      end = end < 0 ? 0 : end > len ? len : end;
       // Hot path: full-range utf8 decode goes straight to the op without
       // materializing a subarray view.
-      if ((encoding === "utf8" || encoding === "utf-8") && start === 0 && end === this.length) {
+      if ((encoding === "utf8" || encoding === "utf-8") && start === 0 && end === len) {
         return ops.op_text_decode(this);
       }
       return decodeBytes(this.subarray(start, end), encoding);
@@ -499,8 +525,27 @@
       encoding = encoding || "utf8";
       const bytes = Buffer.from(string, encoding);
       const maxLen = length !== undefined ? Math.min(length, this.length - offset) : this.length - offset;
-      const toWrite = Math.min(bytes.length, Math.max(0, maxLen));
-      this.set(bytes.subarray(0, toWrite), offset);
+      let toWrite = Math.min(bytes.length, Math.max(0, maxLen));
+      // Don't split multi-byte characters at the boundary.
+      const enc = normEnc(encoding);
+      if (enc === "utf16le" && (toWrite & 1)) {
+        toWrite--; // truncate to even byte boundary
+      } else if ((enc === "utf8") && toWrite < bytes.length && toWrite > 0) {
+        // Walk back to the start of the last (potentially incomplete) character.
+        while (toWrite > 0 && (bytes[toWrite] & 0xC0) === 0x80) toWrite--;
+        // If the lead byte needs more continuation bytes than remain, drop it.
+        if (toWrite > 0) {
+          const lead = bytes[toWrite - 1];
+          const need = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+          // Check bytes[toWrite-1] is a lead byte and enough room
+          if ((lead & 0xC0) === 0xC0) {
+            // lead is at toWrite-1; the character occupies toWrite-1 .. toWrite-1+need-1
+            const charEnd = (toWrite - 1) + need;
+            if (charEnd > toWrite) toWrite = toWrite - 1; // drop the incomplete lead
+          }
+        }
+      }
+      if (toWrite > 0) this.set(bytes.subarray(0, toWrite), offset);
       return toWrite;
     }
 
@@ -849,18 +894,19 @@ Buffer.from = function (value, offsetOrEncoding, length) {
         if (enc === "utf8" || enc === "utf-8") {
           const n = value.length;
           if (n <= 64) {
-            // Pooled single-allocation path: build the Buffer view up front.
-            const buf = pooled(n);
+            // Check if pure ASCII first WITHOUT allocating from pool.
             let ascii = true;
             for (let i = 0; i < n; i++) {
-              const c = value.charCodeAt(i);
-              if (c > 127) {
+              if (value.charCodeAt(i) > 127) {
                 ascii = false;
                 break;
               }
-              buf[i] = c;
             }
-            if (ascii) return buf;
+            if (ascii) {
+              const buf = pooled(n);
+              for (let i = 0; i < n; i++) buf[i] = value.charCodeAt(i);
+              return buf;
+            }
           }
           const bytes = ops.op_text_encode(value);
           return Reflect.construct(Uint8Array, [bytes.buffer], Buffer);
@@ -870,6 +916,10 @@ Buffer.from = function (value, offsetOrEncoding, length) {
       if (value instanceof Buffer) return copyOf(value);
       if (ArrayBuffer.isView(value)) return copyOf(value);
       if (Array.isArray(value)) return copyOf(value);
+      // Array-like objects (arguments, { length, 0: ..., 1: ... })
+      if (typeof value === "object" && value !== null && typeof value.length === "number") {
+        return copyOf(Array.from(value));
+      }
       return new Buffer(value, offsetOrEncoding);
     }
 
@@ -877,6 +927,8 @@ Buffer.from = function (value, offsetOrEncoding, length) {
   Buffer.isEncoding = function (encoding) {
       return typeof encoding === "string" && encoding !== "" && ENCODINGS.has(normEnc(encoding));
     }
+
+  Buffer.poolSize = POOL_SIZE;
 
   // Node's lowercase "Uint" aliases (readUint8, writeUint32LE, ...).
   for (const name of Object.getOwnPropertyNames(Buffer.prototype)) {
@@ -919,6 +971,11 @@ Buffer.from = function (value, offsetOrEncoding, length) {
       if (length === undefined) {
         length = 0;
         for (const b of list) length += b.length;
+        // Fast path: single buffer, no copy needed - just wrap as Buffer.
+        if (list.length === 1) {
+          const sole = list[0];
+          return sole instanceof Buffer ? sole : copyOf(sole);
+        }
       }
       const out = pooled(length);
       let offset = 0;
@@ -947,7 +1004,18 @@ Buffer.from = function (value, offsetOrEncoding, length) {
 
   Buffer.byteLength = function (value, encoding = "utf8") {
       if (typeof value !== "string") return value.byteLength ?? value.length;
-      return Buffer.from(value, encoding).length;
+      const enc = normEnc(encoding);
+      if (enc === "hex") return value.length >>> 1;
+      if (enc === "base64" || enc === "base64url") {
+        let len = value.length;
+        // Subtract padding
+        if (value.length > 1 && value[len - 1] === "=") { len--; if (value[len - 1] === "=") len--; }
+        return (len * 3) >>> 2;
+      }
+      if (enc === "latin1" || enc === "ascii") return value.length;
+      if (enc === "utf16le") return value.length * 2;
+      // utf8: fast path via op
+      return ops.op_text_encode(value).length;
     }
 
   // Node's Buffer is a plain function, callable without `new` (deprecated,

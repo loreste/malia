@@ -74,6 +74,7 @@
     syncArmedRef();
     await armedPromise;
     armedPromise = null;
+    try {
     while (heap.length > 0) {
       const top = heap[0];
       // Drop buckets whose entries were all cancelled before arming on
@@ -119,8 +120,10 @@
         }
       }
     }
-    armedDeadline = Infinity;
-    pumping = false;
+    } finally {
+      armedDeadline = Infinity;
+      pumping = false;
+    }
   }
 
   function setEntryRef(entry, refed) {

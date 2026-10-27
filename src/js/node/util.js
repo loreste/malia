@@ -34,7 +34,14 @@ function callbackify(fn) {
     if (typeof cb !== "function") throw new TypeError("The last argument must be of type function");
     Promise.resolve(fn.apply(this, args))
       .then((res) => cb(null, res))
-      .catch((err) => cb(err));
+      .catch((err) => {
+        // Node wraps falsy rejection reasons so cb(null) doesn't look like success
+        if (!err && err !== false) {
+          err = new Error("Promise was rejected with a falsy value");
+          err.reason = err;
+        }
+        cb(err);
+      });
   };
 }
 

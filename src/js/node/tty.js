@@ -19,7 +19,7 @@ export class WriteStream {
     return 1;
   }
   write(s) {
-    process.stdout.write(s);
+    (this.fd === 2 ? process.stderr : process.stdout).write(s);
     return true;
   }
 }

@@ -7,6 +7,7 @@
 ((globalThis) => {
   const ops = Deno.core.ops;
   const sharedDecoder = new TextDecoder();
+  const EMPTY_U8 = new Uint8Array(0);
 
   // Decode a batch blob from op_serve_pull (see src/serve.rs pack_requests).
   function unpackServeRequests(blob) {
@@ -56,10 +57,21 @@
       return undefined;
     }
     const headers = resp._headersJoined ? resp._headersJoined() : "";
+    // Hot path: materialized body - skip _serveBody() allocation.
+    if (!resp._bodyIter && resp._fetchId == null) {
+      resp._bodyUsed = true;
+      try {
+        ops.op_serve_respond(listenerId, reqId, resp.status ?? 200, headers, resp._bodyBytes ?? EMPTY_U8);
+      } catch {
+        // Client disconnected before response was sent.
+      }
+      return undefined;
+    }
     const body = resp._serveBody();
     if (body.full !== undefined) {
-      // Whole-body hot path: one sync op, no promise at all.
-      ops.op_serve_respond(listenerId, reqId, resp.status ?? 200, headers, body.full);
+      try {
+        ops.op_serve_respond(listenerId, reqId, resp.status ?? 200, headers, body.full);
+      } catch {}
       return undefined;
     }
     return sendStream(listenerId, reqId, resp, headers, body.iter);
@@ -161,6 +173,12 @@
     }
 
     let serveReqCount = 0;
+
+    // Keep the event loop alive while the server is listening.
+    // Without this, the process exits because the async pull loop
+    // alone doesn't register as a ref-counted I/O handle.
+    const keepAlive = setInterval(() => {}, 1 << 30);
+
     // One pull loop; handlers run concurrently (not awaited here). Requests
     // are pulled in batches to amortize the op round-trip.
     server.finished = (async () => {
@@ -172,8 +190,14 @@
           handle(raw);
         }
       }
+      clearInterval(keepAlive);
     })();
 
+    const origClose = server.close;
+    server.close = () => {
+      clearInterval(keepAlive);
+      origClose();
+    };
 
     return server;
   }

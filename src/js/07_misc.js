@@ -75,11 +75,14 @@
         return typedArray;
       },
       randomUUID() {
+        const H = "0123456789abcdef";
         const b = new Uint8Array(ops.op_crypto_random_bytes(16));
-        b[6] = (b[6] & 0x0f) | 0x40; // version 4
-        b[8] = (b[8] & 0x3f) | 0x80; // variant 10
-        const hex = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+        b[6] = (b[6] & 0x0f) | 0x40;
+        b[8] = (b[8] & 0x3f) | 0x80;
+        return H[b[0]>>4]+H[b[0]&15]+H[b[1]>>4]+H[b[1]&15]+H[b[2]>>4]+H[b[2]&15]+H[b[3]>>4]+H[b[3]&15]+"-"+
+          H[b[4]>>4]+H[b[4]&15]+H[b[5]>>4]+H[b[5]&15]+"-"+H[b[6]>>4]+H[b[6]&15]+H[b[7]>>4]+H[b[7]&15]+"-"+
+          H[b[8]>>4]+H[b[8]&15]+H[b[9]>>4]+H[b[9]&15]+"-"+H[b[10]>>4]+H[b[10]&15]+H[b[11]>>4]+H[b[11]&15]+
+          H[b[12]>>4]+H[b[12]&15]+H[b[13]>>4]+H[b[13]&15]+H[b[14]>>4]+H[b[14]&15]+H[b[15]>>4]+H[b[15]&15];
       },
       // subtle: defined in 24_webcrypto.js
     };

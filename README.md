@@ -432,8 +432,8 @@ See the [Dockerfile](Dockerfile) in the repository root and
 - Windows: `node:cluster` workers cannot share a port (it relies on
   `SO_REUSEPORT`), and `chmod` only toggles the read-only attribute.
 - HTTP server request bodies are read fully into memory. The `node:http`
-  client sends buffered bodies with `Content-Length` and `Connection: close`,
-  and `http.Agent` does not pool connections.
+  client sends buffered bodies with `Connection: close`, and `http.Agent`
+  does not pool connections.
 - Small Buffers share an 8 KB slab, so `buf.buffer.byteLength` can be larger
   than `buf.length` (same as Node).
 - Standalone executables are not type-checked; TypeScript is transpiled only.

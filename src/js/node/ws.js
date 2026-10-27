@@ -42,10 +42,11 @@ export class WebSocketServer extends EventEmitter {
   }
 
   address() {
+    const addr = this.options.host || "127.0.0.1";
     return {
-      address: this.options.host || "127.0.0.1",
-      port: this.options.port || 0,
-      family: "IPv4",
+      address: addr,
+      port: this._server?.port || this.options.port || 0,
+      family: addr.includes(":") ? "IPv6" : "IPv4",
     };
   }
 

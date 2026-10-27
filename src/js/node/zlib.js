@@ -64,10 +64,19 @@ class ZlibTransform extends Transform {
       (out) => {
         if (out.byteLength) self.push(asBuffer(out));
         ops.op_zlib_close(self._id);
+        self._id = null;
         cb();
       },
-      (err) => cb(err),
+      (err) => { ops.op_zlib_close(self._id); self._id = null; cb(err); },
     );
+  }
+
+  _destroy(err, cb) {
+    if (this._id !== null) {
+      ops.op_zlib_close(this._id);
+      this._id = null;
+    }
+    cb(err);
   }
 }
 

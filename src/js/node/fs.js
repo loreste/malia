@@ -287,7 +287,7 @@ export function cpSync(src, dest, options = {}) {
       mkdirSync(to, { recursive: true });
       for (const name of readdirSync(from)) copy(path.join(from, name), path.join(to, name));
     } else if (st.isSymbolicLink()) {
-      if (existsSync(to) || lstatSync(to, { throwIfNoEntry: false })) {
+      if (lstatSync(to, { throwIfNoEntry: false })) {
         if (!force) return;
         unlinkSync(to);
       }
@@ -387,7 +387,14 @@ export const stat = callbackize(async (path, options) => {
     throw err;
   }
 });
-export const lstat = callbackize(async (path) => makeStat(await ops.op_lstat(String(path))));
+export const lstat = callbackize(async (path, options) => {
+  try {
+    return makeStat(await ops.op_lstat(String(path)));
+  } catch (err) {
+    if (options?.throwIfNoEntry === false && err.code === "ENOENT") return undefined;
+    throw err;
+  }
+});
 export const readdir = callbackize(async (path, options) => {
   options = typeof options === "string" ? { encoding: options } : options;
   // ponytail: recursive listing walks synchronously; make it async if huge
@@ -583,6 +590,11 @@ export function readSync(fd, buffer, offset = 0, length = buffer ? buffer.byteLe
     throw new TypeError("buffer must be a TypedArray or Buffer");
   }
   const pos = position === null || position === undefined ? -1.0 : Number(position);
+  if (pos !== -1.0 && pos < 0) {
+    const err = new RangeError(`The value of "position" is out of range. It must be >= 0. Received ${position}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
   const bytes = ops.op_fs_read(fd, length, pos);
   const target = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, length);
   target.set(bytes.subarray(0, length));
@@ -592,14 +604,22 @@ export function readSync(fd, buffer, offset = 0, length = buffer ? buffer.byteLe
 export function writeSync(fd, buffer, offset = 0, length = buffer ? buffer.byteLength - offset : 0, position = null) {
   let toWrite;
   if (typeof buffer === "string") {
-    toWrite = Buffer.from(buffer, typeof offset === "string" ? offset : "utf8");
-    const pos = typeof length === "number" ? length : -1.0;
+    // Node signature: writeSync(fd, string[, position[, encoding]])
+    // Here offset=position, length=encoding from the outer parameter names.
+    const enc = typeof offset === "string" ? offset : (typeof length === "string" ? length : "utf8");
+    toWrite = Buffer.from(buffer, enc);
+    const pos = typeof offset === "number" ? offset : -1.0;
     return ops.op_fs_write(fd, toWrite, pos);
   }
   if (!buffer || !ArrayBuffer.isView(buffer)) {
     throw new TypeError("buffer must be a TypedArray or Buffer");
   }
   const pos = position === null || position === undefined ? -1.0 : Number(position);
+  if (pos !== -1.0 && pos < 0) {
+    const err = new RangeError(`The value of "position" is out of range. It must be >= 0. Received ${position}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
   toWrite = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, length);
   return ops.op_fs_write(fd, toWrite, pos);
 }
@@ -681,7 +701,9 @@ export class FSWatcher extends EventEmitter {
         this.emit("change", event.kind, event.filename || path.basename(this.#path));
         this.#pump();
       },
-      () => {},
+      (err) => {
+        if (!this.#closed) this.emit("error", err);
+      },
     );
   }
 
