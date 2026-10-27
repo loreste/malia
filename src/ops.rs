@@ -1708,13 +1708,19 @@ pub async fn op_serve_respond_chunk(
   if chunk.len() > 1024 * 1024 {
     return Err(JsErrorBox::range_error("response chunk exceeds 1 MiB"));
   }
-  let tx = {
+  let (tx, timeout_ms) = {
     let mut state = state.borrow_mut();
-    serve_table(&mut state).streams.get(&req_id).map(|(_, tx)| tx.clone())
-  }
-  .ok_or_else(|| JsErrorBox::generic("response stream is closed"))?;
+    let table = serve_table(&mut state);
+    let (lid, sender) = table.streams.get(&req_id)
+      .map(|(lid, tx)| (*lid, tx.clone()))
+      .ok_or_else(|| JsErrorBox::generic("response stream is closed"))?;
+    let timeout = table.listeners.get(&lid)
+      .map(|l| l.limits.request_timeout_ms)
+      .unwrap_or(300_000);
+    (sender, timeout)
+  };
   for part in chunk.chunks(64 * 1024) {
-    match tokio::time::timeout(std::time::Duration::from_secs(30), tx.send(part.to_vec())).await {
+    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), tx.send(part.to_vec())).await {
       Ok(Ok(())) => {}
       _ => {
         serve_table(&mut state.borrow_mut()).streams.remove(&req_id);

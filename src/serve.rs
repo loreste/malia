@@ -120,6 +120,7 @@ pub struct Listener {
   pub upgrades: UpgradeMap,
   pub accept_task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
   pub conn_tasks: Arc<StdMutex<Vec<tokio::task::JoinHandle<()>>>>,
+  pub limits: ServeLimits,
 }
 
 /// Pack a batch of requests into one binary blob (no serde):
@@ -383,6 +384,7 @@ pub fn start_listener(
   let pending: PendingMap = Arc::new(StdMutex::new(HashMap::new()));
   let upgrades: UpgradeMap = Arc::new(StdMutex::new(HashMap::new()));
   let conn_tasks: Arc<StdMutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::new(StdMutex::new(Vec::new()));
+  let listener_limits = limits.clone();
   let accept_task = serve_runtime().spawn({
     let pending = pending.clone();
     let upgrades = upgrades.clone();
@@ -523,5 +525,6 @@ pub fn start_listener(
     upgrades,
     accept_task,
     conn_tasks,
+    limits: listener_limits,
   }
 }
