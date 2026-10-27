@@ -131,8 +131,8 @@
     function finish(reqId, resp) {
       if (!(resp instanceof Response)) {
         resp = resp === null || resp === undefined
-          ? new Response("Internal Server Error", { status: 500 })
-          : new Response(String(resp));
+          ? new Response("Internal Server Error\n", { status: 500, headers: { "Content-Type": "text/plain" } })
+          : new Response(String(resp), { headers: { "Content-Type": "text/plain" } });
       }
       const sent = sendResponse(id, reqId, resp);
       if (sent) {
@@ -155,7 +155,7 @@
         resp = handler(req);
       } catch (err) {
         ops.op_log(3, "http", `Error in handler for ${raw.method} ${raw.url}: ${err?.stack || err}`);
-        resp = new Response("Internal Server Error\n", { status: 500 });
+        resp = new Response("Internal Server Error\n", { status: 500, headers: { "Content-Type": "text/plain" } });
       }
       // Sync handlers complete the whole request without a single promise
       // allocation when the body is materialized (the hot path).
@@ -164,7 +164,7 @@
           (r) => finish(raw.id, r),
           (err) => {
             ops.op_log(3, "http", `Async error in handler for ${raw.method} ${raw.url}: ${err?.stack || err}`);
-            finish(raw.id, new Response("Internal Server Error\n", { status: 500 }));
+            finish(raw.id, new Response("Internal Server Error\n", { status: 500, headers: { "Content-Type": "text/plain" } }));
           },
         );
         return;

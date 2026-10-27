@@ -179,6 +179,7 @@ fn full_body(bytes: Vec<u8>) -> BoxBody<Bytes, hyper::Error> {
 fn error_response(status: u16, message: &'static str) -> Response<BoxBody<Bytes, hyper::Error>> {
   Response::builder()
     .status(status)
+    .header("content-type", "text/plain")
     .body(full_body(message.as_bytes().to_vec()))
     .unwrap()
 }
@@ -211,7 +212,7 @@ async fn handle_request(
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
   let (limits, admission) = budget;
   let Ok(permit) = admission.try_acquire_owned() else {
-    return Ok(error_response(503, "request capacity exceeded"));
+    return Ok(error_response(503, "Service Unavailable\n"));
   };
   let _pending_guard = PendingRequest {
     id,
@@ -255,8 +256,9 @@ async fn handle_request(
   .await;
   let body_bytes = match collected {
     Ok(Ok(bytes)) => bytes,
-    Ok(Err(status)) => return Ok(error_response(status, "request body rejected")),
-    Err(_) => return Ok(error_response(408, "request body deadline exceeded")),
+    Ok(Err(413)) => return Ok(error_response(413, "Payload Too Large\n")),
+    Ok(Err(status)) => return Ok(error_response(status, "Bad Request\n")),
+    Err(_) => return Ok(error_response(408, "Request Timeout\n")),
   };
   let headers: Vec<(String, String)> = parts
     .headers
@@ -276,8 +278,8 @@ async fn handle_request(
   if req_tx.try_send(served).is_err() {
     pending.lock().unwrap().remove(&id);
     let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-    crate::logger::log_http(&method, &url, 500, duration_ms, remote, 24);
-    return Ok(error_response(503, "server unavailable or request queue full"));
+    crate::logger::log_http(&method, &url, 503, duration_ms, remote, 24);
+    return Ok(error_response(503, "Service Unavailable\n"));
   }
   let (status, body_len, res) =
     match tokio::time::timeout(std::time::Duration::from_millis(limits.request_timeout_ms), rx).await {
@@ -295,9 +297,9 @@ async fn handle_request(
           "http",
           &format!("Request {id} ({method} {url}) failed: handler went away or threw unhandled error"),
         );
-        (500, 24, Ok(error_response(500, "Internal Server Error\n")))
+        (502, 16, Ok(error_response(502, "Bad Gateway\n")))
       }
-      Err(_) => (504, 0, Ok(error_response(504, "handler response deadline exceeded"))),
+      Err(_) => (504, 16, Ok(error_response(504, "Gateway Timeout\n"))),
     };
   let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
   crate::logger::log_http(&method, &url, status, duration_ms, remote, body_len);
@@ -327,7 +329,7 @@ fn build_response(resp: ServeResponse) -> Response<BoxBody<Bytes, hyper::Error>>
   };
   builder
     .body(body)
-    .unwrap_or_else(|_| error_response(500, "invalid response status or headers"))
+    .unwrap_or_else(|_| error_response(502, "Bad Gateway\n"))
 }
 
 /// Dedicated multi-thread runtime for all hyper accept/connection work.
