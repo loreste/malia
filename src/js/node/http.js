@@ -471,9 +471,13 @@ class Server extends EventEmitter {
   _tls; // set by node:https subclass
 
 
-  constructor(requestListener) {
+  constructor(options, requestListener) {
     super();
-    if (requestListener) this.on("request", requestListener);
+    if (typeof options === "function") {
+      requestListener = options;
+      options = undefined;
+    }
+    if (typeof requestListener === "function") this.on("request", requestListener);
   }
 
   listen(port, hostname, cb) {
@@ -586,8 +590,8 @@ class Server extends EventEmitter {
   }
 }
 
-function createServer(requestListener) {
-  return new Server(requestListener);
+function createServer(options, requestListener) {
+  return new Server(options, requestListener);
 }
 
 // The body is a Readable fed by readResponse via push().
