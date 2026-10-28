@@ -66,15 +66,10 @@ impl ServeLimits {
   }
   pub fn validate(&self) -> Result<(), String> {
     if self.max_body_bytes == 0
-      || self.max_body_bytes > 16 * 1024 * 1024
       || self.max_requests == 0
-      || self.max_requests > 1024
       || self.max_connections == 0
-      || self.max_connections > 4096
       || self.body_timeout_ms == 0
-      || self.body_timeout_ms > 600000
       || self.request_timeout_ms == 0
-      || self.request_timeout_ms > 600000
     {
       return Err("invalid HTTP resource limits".into());
     }
