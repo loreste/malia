@@ -1586,7 +1586,7 @@ pub fn op_serve_listen(
   #[serde] tls: Option<TlsOptions>,
   #[serde] limits: Option<crate::serve::ServeLimits>,
 ) -> Result<(u32, u32), JsErrorBox> {
-  let limits = limits.unwrap_or_default();
+  let limits = limits.unwrap_or_default().resolved();
   limits.validate().map_err(JsErrorBox::type_error)?;
   if port > 65535 {
     return Err(JsErrorBox::range_error("invalid HTTP port"));

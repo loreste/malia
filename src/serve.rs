@@ -33,13 +33,16 @@ use tokio_stream::wrappers::ReceiverStream;
 static NEXT_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Clone, serde::Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ServeLimits {
   pub max_body_bytes: usize,
   pub max_requests: usize,
   pub max_connections: usize,
   pub body_timeout_ms: u64,
   pub request_timeout_ms: u64,
+  /// Alias: users commonly write handlerTimeout or handlerTimeoutMs.
+  #[serde(alias = "handlerTimeoutMs", alias = "handlerTimeout", alias = "timeout")]
+  handler_timeout_ms: Option<u64>,
 }
 impl Default for ServeLimits {
   fn default() -> Self {
@@ -49,10 +52,18 @@ impl Default for ServeLimits {
       max_connections: 256,
       body_timeout_ms: 30000,
       request_timeout_ms: 30000,
+      handler_timeout_ms: None,
     }
   }
 }
 impl ServeLimits {
+  /// Merge the handler_timeout_ms alias into request_timeout_ms.
+  pub fn resolved(mut self) -> Self {
+    if let Some(ht) = self.handler_timeout_ms.take() {
+      self.request_timeout_ms = ht;
+    }
+    self
+  }
   pub fn validate(&self) -> Result<(), String> {
     if self.max_body_bytes == 0
       || self.max_body_bytes > 16 * 1024 * 1024
@@ -61,9 +72,9 @@ impl ServeLimits {
       || self.max_connections == 0
       || self.max_connections > 4096
       || self.body_timeout_ms == 0
-      || self.body_timeout_ms > 300000
+      || self.body_timeout_ms > 600000
       || self.request_timeout_ms == 0
-      || self.request_timeout_ms > 300000
+      || self.request_timeout_ms > 600000
     {
       return Err("invalid HTTP resource limits".into());
     }
