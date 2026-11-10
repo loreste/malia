@@ -97,6 +97,11 @@ pub struct ServeRequest {
   #[serde(with = "serde_bytes")]
   pub body: Vec<u8>,
   pub is_websocket: bool,
+  /// If true, the body is streamed via op_serve_read_body (body field is empty).
+  #[serde(skip)]
+  pub body_streaming: bool,
+  #[serde(skip)]
+  pub body_stream: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
 }
 
 pub enum ServeBody {
@@ -158,8 +163,13 @@ pub fn pack_requests(requests: &[ServeRequest]) -> Vec<u8> {
       out.extend_from_slice(b": ");
       out.extend_from_slice(value.as_bytes());
     }
-    out.extend_from_slice(&(req.body.len() as u32).to_le_bytes());
-    out.extend_from_slice(&req.body);
+    if req.body_streaming {
+      // Sentinel: body is available via op_serve_read_body
+      out.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes());
+    } else {
+      out.extend_from_slice(&(req.body.len() as u32).to_le_bytes());
+      out.extend_from_slice(&req.body);
+    }
   }
   out
 }
@@ -246,26 +256,54 @@ async fn handle_request(
   let (parts, body) = req.into_parts();
   let method = parts.method.to_string();
   let url = parts.uri.to_string();
-  let collected = tokio::time::timeout(std::time::Duration::from_millis(limits.body_timeout_ms), async {
-    let mut body = body;
-    let mut bytes = Vec::new();
-    while let Some(frame) = body.frame().await {
-      let frame = frame.map_err(|_| 400u16)?;
-      if let Ok(chunk) = frame.into_data() {
-        if chunk.len() > limits.max_body_bytes.saturating_sub(bytes.len()) {
-          return Err(413u16);
+  // Collect body: small bodies are materialized; large/chunked bodies are
+  // streamed through a channel so the JS handler can read them incrementally.
+  let content_length = parts
+    .headers
+    .get("content-length")
+    .and_then(|v| v.to_str().ok())
+    .and_then(|v| v.parse::<usize>().ok());
+  let should_stream = content_length.map_or(false, |cl| cl > limits.max_body_bytes);
+  let (body_bytes, body_stream_tx) = if should_stream {
+    // Stream large bodies: spawn a reader task that feeds chunks through mpsc.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+    let timeout_ms = limits.body_timeout_ms;
+    crate::serve::serve_runtime().spawn(async move {
+      let mut body = body;
+      let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+      while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await {
+        if let Ok(chunk) = frame.into_data() {
+          if tx.send(chunk.to_vec()).await.is_err() {
+            break; // JS side closed the stream
+          }
         }
-        bytes.extend_from_slice(&chunk);
       }
+      // Dropping tx signals EOF
+    });
+    (Vec::new(), Some(rx))
+  } else {
+    // Small bodies: collect into memory (fast path).
+    let collected = tokio::time::timeout(std::time::Duration::from_millis(limits.body_timeout_ms), async {
+      let mut body = body;
+      let mut bytes = Vec::new();
+      while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| 400u16)?;
+        if let Ok(chunk) = frame.into_data() {
+          if chunk.len() > limits.max_body_bytes.saturating_sub(bytes.len()) {
+            return Err(413u16);
+          }
+          bytes.extend_from_slice(&chunk);
+        }
+      }
+      Ok(bytes)
+    })
+    .await;
+    match collected {
+      Ok(Ok(bytes)) => (bytes, None),
+      Ok(Err(413)) => return Ok(error_response(413, "Payload Too Large\n")),
+      Ok(Err(status)) => return Ok(error_response(status, "Bad Request\n")),
+      Err(_) => return Ok(error_response(408, "Request Timeout\n")),
     }
-    Ok(bytes)
-  })
-  .await;
-  let body_bytes = match collected {
-    Ok(Ok(bytes)) => bytes,
-    Ok(Err(413)) => return Ok(error_response(413, "Payload Too Large\n")),
-    Ok(Err(status)) => return Ok(error_response(status, "Bad Request\n")),
-    Err(_) => return Ok(error_response(408, "Request Timeout\n")),
   };
   let headers: Vec<(String, String)> = parts
     .headers
@@ -274,6 +312,7 @@ async fn handle_request(
     .collect();
   let (tx, rx) = oneshot::channel();
   pending.lock().unwrap().insert(id, tx);
+  let has_stream = body_stream_tx.is_some();
   let served = ServeRequest {
     id,
     method: method.clone(),
@@ -281,6 +320,8 @@ async fn handle_request(
     headers,
     body: body_bytes,
     is_websocket,
+    body_streaming: has_stream,
+    body_stream: body_stream_tx,
   };
   if req_tx.try_send(served).is_err() {
     pending.lock().unwrap().remove(&id);

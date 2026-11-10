@@ -1527,6 +1527,8 @@ struct ServeTable {
   listeners: HashMap<u32, crate::serve::Listener>,
   /// req_id -> chunk sink for in-progress streaming responses.
   streams: HashMap<u32, (u32, mpsc::Sender<Vec<u8>>)>,
+  /// req_id -> incoming body stream receiver (for streamed request bodies).
+  body_streams: HashMap<u32, Arc<TokioMutex<mpsc::Receiver<Vec<u8>>>>>,
 }
 
 fn serve_table(state: &mut OpState) -> &mut ServeTable {
@@ -1623,7 +1625,7 @@ pub async fn op_serve_pull(state: Rc<RefCell<OpState>>, listener_id: u32, max: u
   let Some(rx) = rx else {
     return Ok(Vec::new());
   };
-  let requests = {
+  let mut requests = {
     let mut guard = rx.lock().await;
     let Some(first) = guard.recv().await else {
       return Ok(Vec::new());
@@ -1637,6 +1639,16 @@ pub async fn op_serve_pull(state: Rc<RefCell<OpState>>, listener_id: u32, max: u
     }
     requests
   };
+  // Store any body stream receivers so op_serve_read_body can access them.
+  {
+    let mut st = state.borrow_mut();
+    let table = serve_table(&mut st);
+    for req in &mut requests {
+      if let Some(body_rx) = req.body_stream.take() {
+        table.body_streams.insert(req.id, Arc::new(TokioMutex::new(body_rx)));
+      }
+    }
+  }
   Ok(crate::serve::pack_requests(&requests))
 }
 
@@ -1740,6 +1752,34 @@ pub fn op_serve_respond_end(state: &mut OpState, req_id: u32) {
   let table = serve_table(state);
   // Dropping the sender ends the body stream.
   table.streams.remove(&req_id);
+}
+
+/// Read the next chunk from a streamed request body. Returns empty vec on EOF.
+#[op2]
+#[buffer]
+pub async fn op_serve_read_body(state: Rc<RefCell<OpState>>, req_id: u32) -> Vec<u8> {
+  let rx = {
+    let st = state.borrow();
+    st.try_borrow::<ServeTable>()
+      .and_then(|t| t.body_streams.get(&req_id).cloned())
+  };
+  let Some(rx) = rx else {
+    return Vec::new();
+  };
+  let mut guard = rx.lock().await;
+  match guard.recv().await {
+    Some(chunk) if !chunk.is_empty() => chunk,
+    _ => {
+      // EOF — clean up
+      drop(guard);
+      state
+        .borrow_mut()
+        .borrow_mut::<ServeTable>()
+        .body_streams
+        .remove(&req_id);
+      Vec::new()
+    }
+  }
 }
 
 /// Close a listener: stop accepting, fail pending requests.
@@ -2387,6 +2427,7 @@ deno_core::extension!(
     op_serve_respond_start,
     op_serve_respond_chunk,
     op_serve_respond_end,
+    op_serve_read_body,
     op_serve_close,
     op_ws_connect,
     op_ws_upgrade,

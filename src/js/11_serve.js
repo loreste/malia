@@ -40,9 +40,16 @@
       }
       const bodyLen = view.getUint32(pos, true);
       pos += 4;
-      const body = blob.subarray(pos, pos + bodyLen);
-      pos += bodyLen;
-      requests.push({ id, method, url, headers, body });
+      let body, bodyStreaming = false;
+      if (bodyLen === 0xFFFFFFFF) {
+        // Body is available via streaming op_serve_read_body(id)
+        body = new Uint8Array(0);
+        bodyStreaming = true;
+      } else {
+        body = blob.subarray(pos, pos + bodyLen);
+        pos += bodyLen;
+      }
+      requests.push({ id, method, url, headers, body, bodyStreaming });
     }
     return requests;
   }

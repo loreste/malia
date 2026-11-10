@@ -411,12 +411,25 @@
       req._method = raw.method;
       req._redirect = "follow";
       req._signal = null;
-      req._nullBody = (raw.method === "GET" || raw.method === "HEAD") && !(raw.body && raw.body.byteLength);
       req._rawHeaders = raw.headers;
-      req._bodyBytes = raw.body instanceof Uint8Array ? raw.body : new Uint8Array(raw.body ?? 0);
-      req._bodyIter = null;
       req._fetchId = null;
       req._bodyUsed = false;
+      if (raw.bodyStreaming) {
+        // Large body: stream via op_serve_read_body
+        req._nullBody = false;
+        req._bodyBytes = null;
+        req._bodyIter = (async function*() {
+          for (;;) {
+            const chunk = await ops.op_serve_read_body(raw.id);
+            if (chunk.length === 0) return;
+            yield chunk;
+          }
+        })();
+      } else {
+        req._nullBody = (raw.method === "GET" || raw.method === "HEAD") && !(raw.body && raw.body.byteLength);
+        req._bodyBytes = raw.body instanceof Uint8Array ? raw.body : new Uint8Array(raw.body ?? 0);
+        req._bodyIter = null;
+      }
       return req;
     }
   }
