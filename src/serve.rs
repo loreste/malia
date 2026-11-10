@@ -263,7 +263,7 @@ async fn handle_request(
     .get("content-length")
     .and_then(|v| v.to_str().ok())
     .and_then(|v| v.parse::<usize>().ok());
-  let should_stream = content_length.map_or(false, |cl| cl > limits.max_body_bytes);
+  let should_stream = content_length.is_some_and(|cl| cl > limits.max_body_bytes);
   let (body_bytes, body_stream_tx) = if should_stream {
     // Stream large bodies: spawn a reader task that feeds chunks through mpsc.
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
@@ -272,10 +272,8 @@ async fn handle_request(
       let mut body = body;
       let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
       while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await {
-        if let Ok(chunk) = frame.into_data() {
-          if tx.send(chunk.to_vec()).await.is_err() {
-            break; // JS side closed the stream
-          }
+        if let Ok(chunk) = frame.into_data() && tx.send(chunk.to_vec()).await.is_err() {
+          break; // JS side closed the stream
         }
       }
       // Dropping tx signals EOF
