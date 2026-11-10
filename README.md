@@ -315,7 +315,7 @@ start = "jse start"
 | `jse.kv` | In-process key-value store held outside the V8 heap. Versioning, compare-and-swap, counters, TTL |
 | `jse.sql` | Embedded SQLite via tagged templates; `jse.sql.open(path)` returns a `Database` |
 | `jse.queue` | SQLite-backed task queue: `push`, `pop` with lease, `ack`, `nack`, dead-letter via `dead` |
-| `jse.trace` | Spans, W3C `traceparent` inject/extract, OTLP JSON export |
+| `jse.trace` | Spans, W3C `traceparent` inject/extract, OTLP JSON export. `autoInstrument()` wraps `fetch()` with automatic span creation; `instrumentedHandler(fn)` wraps serve handlers with inbound request tracing and trace-context propagation |
 | `jse.log` | Structured logger (text or JSON). Configured with `JSE_LOG`, `JSE_LOG_FORMAT`, `JSE_HTTP_LOG` |
 | `jse.onShutdown`, `jse.healthCheck`, `jse.metrics` | Shutdown hooks on SIGTERM/SIGINT, a health-check handler, Prometheus-format metrics |
 | `jse.optimizer` | Sets V8 Wasm tiering flags and triggers V8 memory compaction during idle turns and between request batches |
@@ -357,7 +357,7 @@ with an `AbortSignal`.
 | `domain` | `create`, `Domain` |
 | `events` | `EventEmitter`, `once`, `on` (async iterator), `getEventListeners`, `defaultMaxListeners` |
 | `fs`, `fs/promises` | Sync, callback, and promise APIs with Node's error shape (`code`, `errno`, `syscall`, `path`): read/write with `flag`, `mode`, and encodings, `stat` (`throwIfNoEntry`), `readdir` (`recursive`, `withFileTypes`), `mkdir`, `rm`, `cp`, `copyFile` (`COPYFILE_EXCL`), `rename`, `link`, `symlink`, `utimes`, `opendir`, file descriptors, `FileHandle`, streams, `watch` (native inotify/kqueue/FSEvents via notify, falls back to polling), `watchFile` |
-| `http`, `https` | `createServer`, `request`, `get`, `IncomingMessage`, `ServerResponse`, `Agent`, `globalAgent`, `STATUS_CODES`, `validateHeaderName`/`validateHeaderValue`. The server shares the hyper engine with `jse.serve`; client responses are `Readable` streams |
+| `http`, `https` | `createServer` (with options), `request`, `get`, `IncomingMessage` (async iterable body, `close` event), `ServerResponse` (`_implicitHeader`, `headersSent`, CRLF-validated `setHeader`), `Agent` (`keepAlive` connection pooling, `maxFreeSockets`), `globalAgent`, `STATUS_CODES`, `METHODS`, `validateHeaderName`/`validateHeaderValue`. The server shares the hyper engine with `jse.serve`; client responses are `Readable` streams; request bodies > `maxBodyBytes` stream through a channel |
 | `http2` | Server and client; ALPN `h2` and cleartext `h2c` with prior knowledge |
 | `inspector` | `Session` (connects to the running V8 inspector over WebSocket), `open`, `close`, `url`. See [Debugging](#debugging) |
 | `module` | `createRequire`, `builtinModules`, `isBuiltin`, `Module` |
@@ -431,9 +431,10 @@ See the [Dockerfile](Dockerfile) in the repository root and
   RSA-PSS salt length must equal the digest length.
 - Windows: `node:cluster` workers cannot share a port (it relies on
   `SO_REUSEPORT`), and `chmod` only toggles the read-only attribute.
-- HTTP server request bodies are read fully into memory. The `node:http`
-  client sends buffered bodies with `Connection: close`, and `http.Agent`
-  does not pool connections.
+- HTTP server request bodies under `maxBodyBytes` (default 10 MB) are
+  collected in memory; larger bodies are streamed through a channel.
+  The `node:http` client supports `http.Agent({ keepAlive: true })` for
+  connection pooling.
 - Small Buffers share an 8 KB slab, so `buf.buffer.byteLength` can be larger
   than `buf.length` (same as Node).
 - Standalone executables are not type-checked; TypeScript is transpiled only.
