@@ -220,6 +220,65 @@
     },
   };
 
+  // ---- Auto-instrumentation -----------------------------------------------
+  // When enabled, wraps fetch() and jse.serve() to automatically create spans.
+
+  let autoEnabled = false;
+
+  traceEngine.autoInstrument = function (enabled = true) {
+    if (autoEnabled === enabled) return;
+    autoEnabled = enabled;
+
+    if (enabled) {
+      // Wrap fetch
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = function instrumentedFetch(input, init) {
+        const url = typeof input === "string" ? input : input?.url || String(input);
+        const method = init?.method || (input instanceof Request ? input.method : "GET");
+        return traceEngine.startSpan(`HTTP ${method}`, {
+          attributes: { "http.method": method, "http.url": url },
+        }, async (span) => {
+          // Inject traceparent into outgoing request
+          const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+          traceEngine.inject(span, headers);
+          const res = await originalFetch(input, { ...init, headers });
+          span.setAttribute("http.status_code", res.status);
+          if (res.status >= 400) span.setStatus("ERROR", `HTTP ${res.status}`);
+          return res;
+        });
+      };
+      globalThis.fetch.__original = originalFetch;
+    } else {
+      // Restore original fetch
+      if (globalThis.fetch.__original) {
+        globalThis.fetch = globalThis.fetch.__original;
+      }
+    }
+  };
+
+  traceEngine.instrumentedHandler = function (handler) {
+    return async (req) => {
+      const method = req.method;
+      const url = req.url;
+      const extracted = traceEngine.extract(req.headers);
+      const opts = extracted ? { parentSpanId: extracted.parentSpanId, traceId: extracted.traceId, flags: extracted.flags } : {};
+      opts.attributes = { "http.method": method, "http.target": url, "http.flavor": "1.1" };
+
+      return traceEngine.startSpan(`${method} ${url.split("?")[0]}`, opts, async (span) => {
+        try {
+          const res = await handler(req);
+          const status = res?.status ?? 200;
+          span.setAttribute("http.status_code", status);
+          if (status >= 500) span.setStatus("ERROR", `HTTP ${status}`);
+          return res;
+        } catch (err) {
+          span.setAttribute("http.status_code", 500);
+          throw err;
+        }
+      });
+    };
+  };
+
   globalThis.jse = globalThis.jse || {};
   globalThis.jse.trace = traceEngine;
 })();
