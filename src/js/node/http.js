@@ -902,6 +902,21 @@ class ClientRequest extends Writable {
   _connect() {
     if (this._sock || this.destroyed) return this._sock;
     const opts = this._opts;
+    const agent = opts.agent !== false ? (opts.agent || globalAgent) : null;
+    const name = agent?.getName(opts);
+
+    // Try to reuse a pooled connection.
+    const pooled = name && agent?._takeSocket(name);
+    if (pooled) {
+      this._sock = pooled;
+      this._connected = true;
+      this._poolName = name;
+      this._agent = agent;
+      this.socket = this.connection = pooled;
+      this.emit("socket", pooled);
+      return pooled;
+    }
+
     const sock = this._sock = net.connect({
       host: opts.hostname,
       port: opts.port,
@@ -910,6 +925,8 @@ class ClientRequest extends Writable {
       rejectUnauthorized: opts.rejectUnauthorized !== false,
     });
     this._connected = false;
+    this._poolName = name;
+    this._agent = agent;
     sock.on("connect", () => {
       this._connected = true;
       const send = this._onConnect;
@@ -942,7 +959,10 @@ class ClientRequest extends Writable {
     if (payload.length > 0 || (opts.method !== "GET" && opts.method !== "HEAD")) {
       this.setHeader("Content-Length", String(payload.length));
     }
-    if (!this.hasHeader("connection")) this.setHeader("Connection", "close");
+    const agent = opts.agent !== false ? (opts.agent || globalAgent) : null;
+    if (!this.hasHeader("connection")) {
+      this.setHeader("Connection", agent?.keepAlive ? "keep-alive" : "close");
+    }
     let finished = false;
     this._finishCb = (err) => {
       if (finished) return;
@@ -967,9 +987,19 @@ class ClientRequest extends Writable {
         opts.method,
         (res) => {
           this._settled = true;
-          // Like Node: the request closes once its response is complete.
           res.once("end", () => {
-            if (!this.destroyed) this.destroy();
+            // Return socket to pool if keepAlive, otherwise destroy.
+            if (this._agent?.keepAlive && this._poolName && !sock.destroyed) {
+              // Detach listeners so the socket can be reused cleanly.
+              sock.removeAllListeners("data");
+              sock.removeAllListeners("end");
+              sock.removeAllListeners("error");
+              sock.on("error", () => {});
+              this._agent._returnSocket(this._poolName, sock);
+              this._sock = null;
+            } else if (!this.destroyed) {
+              this.destroy();
+            }
           });
           this.emit("response", res);
         },
@@ -1048,9 +1078,9 @@ export const METHODS = [
   "UNLINK", "UNLOCK", "UNSUBSCRIBE",
 ];
 
-// Agent holds options only; each request opens its own connection
-// (no pooling by agent).
 class Agent extends EventEmitter {
+  #pool = new Map(); // name -> [{ sock, busy }]
+
   constructor(options = {}) {
     super();
     this.options = { ...options };
@@ -1068,7 +1098,35 @@ class Agent extends EventEmitter {
     return `${options.host ?? options.hostname ?? "localhost"}:${options.port ?? ""}:${options.localAddress ?? ""}`;
   }
 
-  destroy() {}
+  // Return an idle pooled socket for this name, or null.
+  _takeSocket(name) {
+    if (!this.keepAlive) return null;
+    const list = this.#pool.get(name);
+    if (!list) return null;
+    while (list.length > 0) {
+      const entry = list.pop();
+      if (!entry.sock.destroyed && entry.sock.readyState === "open") {
+        return entry.sock;
+      }
+    }
+    return null;
+  }
+
+  // Return a socket to the pool for reuse.
+  _returnSocket(name, sock) {
+    if (!this.keepAlive || sock.destroyed || sock.readyState !== "open") return;
+    let list = this.#pool.get(name);
+    if (!list) { list = []; this.#pool.set(name, list); }
+    if (list.length >= this.maxFreeSockets) { sock.destroy(); return; }
+    list.push({ sock });
+  }
+
+  destroy() {
+    for (const [, list] of this.#pool) {
+      for (const entry of list) entry.sock.destroy();
+    }
+    this.#pool.clear();
+  }
 }
 
 const globalAgent = new Agent();
