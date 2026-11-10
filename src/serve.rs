@@ -47,7 +47,7 @@ pub struct ServeLimits {
 impl Default for ServeLimits {
   fn default() -> Self {
     Self {
-      max_body_bytes: 1024 * 1024,
+      max_body_bytes: 10 * 1024 * 1024,
       max_requests: 128,
       max_connections: 256,
       body_timeout_ms: 30000,
