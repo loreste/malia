@@ -272,7 +272,9 @@ async fn handle_request(
       let mut body = body;
       let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
       while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await {
-        if let Ok(chunk) = frame.into_data() && tx.send(chunk.to_vec()).await.is_err() {
+        if let Ok(chunk) = frame.into_data()
+          && tx.send(chunk.to_vec()).await.is_err()
+        {
           break; // JS side closed the stream
         }
       }
