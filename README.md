@@ -319,6 +319,7 @@ start = "jse start"
 | `jse.log` | Structured logger (text or JSON). Configured with `JSE_LOG`, `JSE_LOG_FORMAT`, `JSE_HTTP_LOG` |
 | `jse.onShutdown`, `jse.healthCheck`, `jse.metrics` | Shutdown hooks on SIGTERM/SIGINT, a health-check handler, Prometheus-format metrics |
 | `jse.optimizer` | Sets V8 Wasm tiering flags and triggers V8 memory compaction during idle turns and between request batches |
+| `malia.ai` | Built-in AI toolkit. Auto-detects local Ollama/vLLM/LM Studio. `malia.ai("prompt")` for one-shot chat, `ai.stream("prompt")` for streaming tokens, `ai.embed("text")` for vectors, `AI.similarity(a, b)` for cosine distance. Conversation memory, system prompts, configurable models. No npm packages needed |
 
 Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 `btoa`, `atob`, `crypto.getRandomValues`, `crypto.randomUUID`,
