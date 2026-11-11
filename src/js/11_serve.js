@@ -115,6 +115,8 @@
     if (typeof handler !== "function") {
       throw new TypeError("jse.serve: handler must be a function");
     }
+    // Mutable handler slot for hot reload.
+    let _activeHandler = handler;
     const hostname = options?.hostname ?? (globalThis.process?.env?.HOST || "0.0.0.0");
     const envPort = globalThis.process?.env?.PORT ? Number(globalThis.process.env.PORT) : NaN;
     const port = options?.port ?? (!isNaN(envPort) && envPort >= 0 ? envPort : 8000);
@@ -127,12 +129,90 @@
     }
     const [id, boundPort] = ops.op_serve_listen(hostname, port, tls, options?.limits);
 
+    let _hotWatcher = null;
+    let _hotVersion = 0;
+
     const server = {
       port: boundPort,
       hostname,
       close() {
+        if (_hotWatcher) { _hotWatcher.close(); _hotWatcher = null; }
         ops.op_serve_close(id);
       },
+
+      // Hot-swap the handler. In-flight requests finish with the old one.
+      // New requests use the new handler immediately. No restart.
+      reload(newHandler) {
+        if (typeof newHandler !== "function") throw new TypeError("reload: handler must be a function");
+        _activeHandler = newHandler;
+        _hotVersion++;
+        return server;
+      },
+
+      // Watch a module file and hot-reload when it changes.
+      // The module must export a default function or a 'handler' named export.
+      async hot(modulePath) {
+        const path = await import("node:path");
+        const fs = await import("node:fs");
+        const resolved = path.resolve(String(modulePath));
+
+        async function load() {
+          _hotVersion++;
+          try {
+            // Read and eval the module. Wraps in a function scope so
+            // export default works via return.
+            const code = fs.readFileSync(resolved, "utf8");
+            // Extract default export: supports "export default fn" and
+            // "module.exports = fn" patterns.
+            const wrapped = `(function(){
+              let __default, __handler, __fetch;
+              const module = { exports: {} };
+              const exports = module.exports;
+              ${code.replace(/export\s+default\s+/g, "__default = ")}
+              return __default || module.exports.default || module.exports.handler || module.exports;
+            })()`;
+            const result = (0, eval)(wrapped);
+            const fn = typeof result === "function" ? result
+              : typeof result?.default === "function" ? result.default
+              : typeof result?.handler === "function" ? result.handler
+              : typeof result?.fetch === "function" ? result.fetch
+              : null;
+            if (typeof fn !== "function") {
+              ops.op_log(2, "hot", `${modulePath}: no handler export found`);
+              return false;
+            }
+            _activeHandler = fn;
+            ops.op_log(1, "hot", `reloaded ${modulePath} (v${_hotVersion})`);
+            return true;
+          } catch (err) {
+            ops.op_log(3, "hot", `failed to reload ${modulePath}: ${err?.message || err}`);
+            return false;
+          }
+        }
+
+        // Initial load
+        await load();
+
+        // Watch for changes
+        try {
+          _hotWatcher = fs.watch(resolved, { persistent: false });
+          _hotWatcher.on("change", () => {
+            // Debounce: ignore rapid successive events
+            if (server._hotDebounce) return;
+            server._hotDebounce = true;
+            setTimeout(async () => {
+              server._hotDebounce = false;
+              await load();
+            }, 50);
+          });
+        } catch (err) {
+          ops.op_log(2, "hot", `cannot watch ${modulePath}: ${err?.message || err}`);
+        }
+
+        return server;
+      },
+
+      get version() { return _hotVersion; },
     };
 
     function finish(reqId, resp) {
@@ -159,7 +239,7 @@
         const req = Request._fromServe(raw);
         req._rawListenerId = id;
         req._rawId = raw.id;
-        resp = handler(req);
+        resp = _activeHandler(req);
       } catch (err) {
         ops.op_log(3, "http", `Error in handler for ${raw.method} ${raw.url}: ${err?.stack || err}`);
         resp = new Response("Internal Server Error\n", { status: 500, headers: { "Content-Type": "text/plain" } });
