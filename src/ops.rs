@@ -2616,6 +2616,7 @@ deno_core::extension!(
     "22_blob.js",
     "23_broadcast_channel.js",
     "24_webcrypto.js",
+    "25_ai.js",
   ],
 
   options = {
