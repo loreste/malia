@@ -91,9 +91,12 @@ jobs:
               cargo build --locked --release --target ${{ matrix.target }} --bins'
             sudo chown -R "$(id -u):$(id -g)" target
           elif [ "${{ matrix.musl_docker }}" = "true" ]; then
-            docker run --rm -v "$PWD":/src -w /src rust:alpine sh -c '
+            docker run --rm -v "$PWD":/src -w /src \
+              -e RUSTUP_HOME=/usr/local/rustup \
+              -e CARGO_HOME=/usr/local/cargo \
+              rust:1.97-bookworm bash -c '
               set -e
-              apk add --no-cache musl-dev pkgconf perl make
+              apt-get update && apt-get install -y musl-tools
               rustup target add ${{ matrix.target }}
               cargo build --locked --release --target ${{ matrix.target }} --bins'
             sudo chown -R "$(id -u):$(id -g)" target
