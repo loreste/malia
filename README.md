@@ -13,6 +13,8 @@ Memory          35% less RSS, 62% less heap
 
 **What Node can't do, Malia does out of the box:**
 
+- `malia.ai` — built-in AI: `await malia.ai("summarize this")` with auto-detected local/cloud LLMs
+- Hot reload — `server.hot("./handler.mjs")` swaps code on a live server, zero downtime, zero dropped connections
 - `WorkerPool` — parallel CPU work in one line: `await pool.map(items)`
 - Bounded channels — `chan(10)` with backpressure, `for await` consumption
 - HTTP on a separate thread pool — network I/O never blocks your JS
@@ -340,6 +342,63 @@ ECDSA, Ed25519), `encrypt`/`decrypt` (AES-GCM, AES-CBC, AES-CTR, RSA-OAEP),
 `hasRef`, `refresh`); `setImmediate` runs after I/O and before later timers.
 `sleep(ms)` returns a promise; `sleep(ms, { signal })` can be cancelled
 with an `AbortSignal`.
+
+## AI Toolkit (`malia.ai`)
+
+Built-in AI with zero configuration. Auto-detects local LLMs and cloud
+providers. No npm packages, no API keys for local models.
+
+```javascript
+// One-liner — auto-detects Ollama, vLLM, LM Studio, or llama.cpp
+const reply = await malia.ai("What is quantum computing?");
+
+// Streaming
+const ai = malia.ai({ model: "llama3", system: "Be concise" });
+for await (const token of ai.stream("Explain gravity")) {
+  process.stdout.write(token);
+}
+
+// Frontier models — auto-detects provider from model name + env var
+const ai = malia.ai("gpt-4o");              // uses OPENAI_API_KEY
+const ai = malia.ai("claude-sonnet-4-20250514");     // uses ANTHROPIC_API_KEY
+const ai = malia.ai("gemini-2.0-flash");    // uses GOOGLE_API_KEY
+const ai = malia.ai("grok-3");              // uses XAI_API_KEY
+const ai = malia.ai("mistral-large-latest");// uses MISTRAL_API_KEY
+
+// Embeddings + similarity
+const vec = await ai.embed("search query");
+const score = malia.ai.similarity(vecA, vecB);
+
+// Conversation memory
+const ai = malia.ai({ system: "You are a helpful assistant" });
+await ai.chat("My name is Alice");
+await ai.chat("What is my name?");  // remembers: "Alice"
+ai.clear();  // reset conversation
+```
+
+Supported providers: OpenAI, Anthropic (native Messages API), Google
+Gemini, Mistral, Groq, DeepSeek, Together, Fireworks, Perplexity, xAI,
+plus any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, llama.cpp).
+
+## Hot Module Replacement
+
+Zero-downtime code swaps on a running server. The HTTP socket stays
+open, keep-alive connections persist, in-flight requests complete with
+the old handler. No restart, no port rebind, no dropped requests.
+
+```javascript
+// Watch a handler file — edits are picked up automatically
+const server = jse.serve({ port: 3000 }, initialHandler);
+await server.hot("./handler.mjs");  // watches file, reloads on change
+
+// Or swap programmatically
+server.reload(newHandler);  // instant, zero downtime
+```
+
+How it works: the hyper HTTP server runs on a separate thread pool. The
+JS handler is a mutable reference — `reload()` atomically swaps it.
+New requests immediately use the new handler; in-flight requests finish
+with the handler that was active when they started.
 
 ## Node builtins
 
