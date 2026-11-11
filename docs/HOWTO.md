@@ -410,6 +410,31 @@ jse.serve({ port: 8000, hostname: "0.0.0.0" }, (req) => {
 });
 ```
 
+### Server options
+
+```javascript
+jse.serve({
+  port: 3000,
+  hostname: "0.0.0.0",
+  limits: {
+    maxBodyBytes: 50 * 1024 * 1024,  // 50 MB (default: 10 MB)
+    requestTimeoutMs: 120000,         // 2 minutes (or: timeout, handlerTimeout)
+  },
+}, handler);
+```
+
+Large request bodies (> `maxBodyBytes`) are streamed through a channel
+instead of being rejected. The handler reads them via `req.body` or
+`await req.text()`.
+
+### Hot reload (see also [section 16](#16-hot-module-replacement))
+
+```javascript
+const server = jse.serve({ port: 3000 }, handler);
+await server.hot("./handler.mjs");   // watch file, reload on change
+server.reload(newHandler);            // programmatic swap
+```
+
 ### Router
 
 ```javascript
