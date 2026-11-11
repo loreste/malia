@@ -81,7 +81,13 @@ jobs:
 
       - name: Install musl tools (if needed)
         if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update && sudo apt-get install -y musl-tools && break
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          musl-gcc --version
 
       - name: Build release binaries
         shell: bash
