@@ -2,7 +2,7 @@
 name = "malia"
 version = "0.1.8"
 edition = "2024"
-description = "A JavaScript/TypeScript and WebAssembly runtime built in Rust"
+description = "Drop-in Node.js replacement built in Rust. 3x faster HTTP, built-in AI, hot reload, zero-config TypeScript."
 repository = "https://github.com/loreste/malia"
 homepage = "https://github.com/loreste/malia"
 license = "MIT"

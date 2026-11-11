@@ -1,7 +1,7 @@
 {
   "name": "jse",
   "version": "0.1.8",
-  "description": "A JavaScript/TypeScript and WebAssembly runtime built in Rust",
+  "description": "Drop-in Node.js replacement built in Rust. 3x faster HTTP, built-in AI, hot reload, zero-config TypeScript.",
   "main": "./bin/jse.js",
   "bin": {
     "jse": "./bin/jse.js"
@@ -17,12 +17,19 @@
   "keywords": [
     "javascript",
     "typescript",
-    "webassembly",
     "runtime",
-    "v8",
+    "node",
+    "nodejs",
+    "node-alternative",
     "node-replacement",
-    "http2",
-    "websockets",
+    "v8",
+    "rust",
+    "ai",
+    "llm",
+    "hot-reload",
+    "performance",
+    "server",
+    "webassembly",
     "sqlite"
   ],
   "author": "Antigravity Team",
