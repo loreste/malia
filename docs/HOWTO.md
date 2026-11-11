@@ -19,6 +19,8 @@ Examples for common tasks. `malia` and `jse` are the same binary, and the
 12. [Container deployment](#12-container-deployment)
 13. [Debugging](#13-debugging)
 14. [UDP sockets](#14-udp-sockets)
+15. [AI toolkit](#15-ai-toolkit)
+16. [Hot module replacement](#16-hot-module-replacement)
 
 ---
 
@@ -951,10 +953,164 @@ and `size`.
 
 See [the compatibility matrix](engineering/compatibility-matrix.md) before deployment. Entry-source executables are not complete application bundles. Wasm source containers execute JavaScript only through Malia. TLS server accept, TLS socket upgrades, custom roots and VM timeouts are currently unsupported and rejected.
 
-HTTP incoming bodies are buffered with configurable `jse.serve({ limits: { maxBodyBytes, maxRequests, maxConnections, bodyTimeoutMs, requestTimeoutMs } }, handler)` limits. Defaults are 1 MiB, 128 requests, 256 connections, 30 seconds to read a body and 30 seconds for response initiation. Full responses are capped at 8 MiB; stream larger output. Await streaming writes; a stream has eight 64 KiB native chunks of capacity, and each submitted chunk may be at most 1 MiB. Node HTTP response writers must respect `write()` returning false and wait for `drain`; queuing more than 1 MiB rejects. These are per-listener limits, not a whole-process RSS guarantee.
+HTTP incoming bodies under `maxBodyBytes` (default 10 MiB) are buffered in memory; larger bodies are streamed through a channel so handlers can process them incrementally. Configure limits with `jse.serve({ limits: { maxBodyBytes, maxRequests, maxConnections, bodyTimeoutMs, requestTimeoutMs } }, handler)`. `handlerTimeout`, `handlerTimeoutMs`, and `timeout` are accepted as aliases for `requestTimeoutMs`. Defaults are 10 MiB body, 128 requests, 256 connections, 30 seconds to read a body and 30 seconds for handler response. No upper cap on timeouts or body size -- the application decides. Full responses are capped at 8 MiB; stream larger output. Await streaming writes; a stream has eight 64 KiB native chunks of capacity, and each submitted chunk may be at most 1 MiB. Node HTTP response writers must respect `write()` returning false and wait for `drain`; queuing more than 1 MiB rejects. `http.Agent({ keepAlive: true })` enables connection pooling for outbound requests. These are per-listener limits, not a whole-process RSS guarantee.
 
 WorkerPool defaults: 1024 queued jobs, 64 buffered replies per stream and 30-second active job deadline. Options are `maxQueue`, `maxBuffered`, `timeoutMs`, and `size` (maximum 256). `run(value, { signal })` and `stream(value, { signal })` support cancellation; cancellation terminates and replaces the worker. Worker channels each hold at most 64 messages of at most 1 MiB. The legacy stream completion value `{ __done: true }` remains reserved.
 
 KV defaults are 100000 keys and 64 MiB of logical key, value, entry and expiry-index storage. Capacity errors preserve existing values. Expiry sweeps remove at most 128 keys per 100 ms and per operation; allocator and hash-table overhead are not RSS-accounted by this budget. It is process-local and nonpersistent.
 
 Set `MALIA_NO_MODIFY_PATH=1` when installing into a disposable destination to keep shell profiles untouched.
+
+---
+
+## 15. AI toolkit
+
+`malia.ai` provides built-in AI with zero npm packages. It auto-detects
+local LLMs (Ollama, vLLM, LM Studio, llama.cpp) and cloud providers
+(OpenAI, Anthropic, Google, Mistral, Groq, xAI, DeepSeek, Together,
+Fireworks, Perplexity).
+
+### One-liner chat
+
+```javascript
+// Auto-detect local Ollama or cloud provider from env vars
+const reply = await malia.ai("Summarize this quarter's revenue trends");
+console.log(reply);
+```
+
+### Streaming
+
+```javascript
+const ai = malia.ai({ model: "llama3", system: "You are a data analyst" });
+for await (const token of ai.stream("What drives customer churn?")) {
+  process.stdout.write(token);
+}
+```
+
+### Frontier models
+
+The provider is inferred from the model name. Set the corresponding
+environment variable:
+
+```javascript
+// OpenAI
+const ai = malia.ai("gpt-4o");               // OPENAI_API_KEY
+
+// Anthropic
+const ai = malia.ai("claude-sonnet-4-20250514");      // ANTHROPIC_API_KEY
+
+// Google Gemini
+const ai = malia.ai("gemini-2.0-flash");     // GOOGLE_API_KEY
+
+// Groq (fast inference)
+const ai = malia.ai("llama-3.3-70b-versatile"); // GROQ_API_KEY
+
+// xAI
+const ai = malia.ai("grok-3");               // XAI_API_KEY
+
+// Or explicit
+const ai = malia.ai({
+  provider: "anthropic",
+  model: "claude-sonnet-4-20250514",
+  apiKey: process.env.MY_KEY,
+  system: "You are a helpful assistant",
+});
+```
+
+### Embeddings and similarity
+
+```javascript
+const ai = malia.ai();
+const vecA = await ai.embed("machine learning");
+const vecB = await ai.embed("artificial intelligence");
+const score = malia.ai.similarity(vecA, vecB);
+console.log("similarity:", score);  // ~0.85
+```
+
+### Conversation memory
+
+```javascript
+const ai = malia.ai({ system: "You are a tutor" });
+await ai.chat("My name is Alice");
+await ai.chat("What is my name?");  // "Alice"
+console.log(ai.history);            // [{role, content}, ...]
+ai.clear();                         // reset
+```
+
+### AI-powered API endpoint
+
+```javascript
+const ai = malia.ai({ system: "You are a customer support agent" });
+
+jse.serve({ port: 3000 }, async (req) => {
+  const { message } = await req.json();
+  const reply = await ai.chat(message);
+  return Response.json({ reply });
+});
+```
+
+---
+
+## 16. Hot module replacement
+
+Zero-downtime code swaps on a running server. The HTTP socket stays open,
+keep-alive connections persist, in-flight requests complete with the old
+handler.
+
+### File watching
+
+```javascript
+const server = jse.serve({ port: 3000 }, (req) => new Response("initial"));
+
+// Watch handler file -- edits are picked up automatically
+await server.hot("./handler.mjs");
+```
+
+`handler.mjs`:
+
+```javascript
+export default (req) => {
+  return Response.json({ status: "live", version: 2 });
+};
+```
+
+Edit the file, save, and the server picks it up in ~50ms. No restart, no
+port rebind, no dropped connections. The log shows:
+
+```
+[INFO] [hot] reloaded ./handler.mjs (v2)
+```
+
+### Programmatic reload
+
+```javascript
+const server = jse.serve({ port: 3000 }, handlerV1);
+
+// Later -- deploy new code without restarting
+server.reload(handlerV2);
+
+// Check version
+console.log(server.version);  // increments on each reload
+```
+
+### How it works
+
+The hyper HTTP server runs on a dedicated Rust thread pool. The JS
+handler is a mutable function reference in the serve event loop.
+`reload()` atomically swaps the reference. Requests that were already
+dispatched to the old handler complete normally; new requests immediately
+use the new handler.
+
+### Production deployment pattern
+
+```javascript
+const server = jse.serve({ port: 3000 }, handler);
+
+// Health check signals readiness
+jse.healthCheck(() => ({ status: "ok", version: server.version }));
+
+// Watch handler in development
+if (process.env.NODE_ENV !== "production") {
+  await server.hot("./src/handler.mjs");
+}
+```
