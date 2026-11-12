@@ -35,7 +35,7 @@ fn node_runtime_compat() {
 #[test]
 fn process_exit_semantics() {
   let run = |code: &str| {
-    std::process::Command::new(env!("CARGO_BIN_EXE_jse"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_malia"))
       .args(["eval", code])
       .output()
       .unwrap()
@@ -121,7 +121,7 @@ fn killer_features_production_adversarial() {
 
 #[test]
 fn config_file_system_cli() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let tmp_dir = std::env::temp_dir().join(format!("jse_config_test_{}", std::process::id()));
   let _ = std::fs::remove_dir_all(&tmp_dir);
   std::fs::create_dir_all(&tmp_dir).unwrap();
@@ -289,7 +289,7 @@ fn config_file_system_cli() {
 
 #[test]
 fn wasm_cli_one_flag() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let tmp_dir = std::env::temp_dir().join(format!("jse_wasm_cli_{}", std::process::id()));
   let _ = std::fs::create_dir_all(&tmp_dir);
   let src_file = tmp_dir.join("test_app.js");
@@ -577,7 +577,7 @@ fn npm_packages() {
 /// explicit flags grant.
 #[test]
 fn permissions_cli() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
   let run = |args: &[&str]| {
@@ -645,7 +645,7 @@ fn permissions_cannot_be_bypassed() {
 
   let ok = dir.join("ok");
   let port = (20000 + std::process::id() % 20000).to_string();
-  let out = std::process::Command::new(env!("CARGO_BIN_EXE_jse"))
+  let out = std::process::Command::new(env!("CARGO_BIN_EXE_malia"))
     .args([
       "run",
       &format!("--allow-read={}", ok.display()),
@@ -694,7 +694,7 @@ fn express_app() {
     eprintln!("skipping: examples/express_demo/node_modules not installed");
     return;
   }
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let app = demo.join("app.js").to_string_lossy().into_owned();
   let out = std::process::Command::new(jse)
     .args(["run", "--allow-all", &app, "--selftest"])
@@ -724,7 +724,7 @@ fn node_compat() {
 /// `jse eval` runs a snippet as an ES module, including top-level await.
 #[test]
 fn eval_cli() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let run = |args: &[&str]| std::process::Command::new(jse).args(args).output().unwrap();
 
   let out = run(&["eval", "--allow-all", "console.log(6*7)"]);
@@ -738,7 +738,7 @@ fn eval_cli() {
   let out = run(&["eval", "--allow-all", "console.log(process.argv.join(' '))", "user-arg"]);
   let stdout = String::from_utf8_lossy(&out.stdout);
   assert!(
-    out.status.success() && stdout.contains("jse -e user-arg"),
+    out.status.success() && stdout.contains("malia -e user-arg"),
     "stdout: {stdout} stderr: {}",
     String::from_utf8_lossy(&out.stderr)
   );
@@ -763,7 +763,7 @@ fn websocket_roundtrip() {
 
 #[test]
 fn npm_compatibility_and_portability() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let tmp_dir = std::env::temp_dir().join(format!("jse_npm_portability_test_{}", std::process::id()));
   let _ = std::fs::remove_dir_all(&tmp_dir);
   std::fs::create_dir_all(&tmp_dir).unwrap();
@@ -915,7 +915,7 @@ fn npm_compatibility_and_portability() {
 /// global environment, CommonJS require, and WHATWG streams.
 #[test]
 fn node_dropin_compatibility_builtins() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let fixture_path = root.join("tests").join("fixtures").join("node_full_compatibility.js");
 
@@ -941,7 +941,7 @@ fn node_dropin_compatibility_builtins() {
 /// Running `jse <dir>`, `jse run <dir>`, or `jse .` inside project directory.
 #[test]
 fn node_directory_and_package_entry_resolution() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let express_demo_dir = root.join("examples").join("express_demo");
   if !express_demo_dir.join("node_modules/express").is_dir() {
@@ -993,7 +993,7 @@ fn node_directory_and_package_entry_resolution() {
 /// `-e` (eval), `-p` (print), `-r` (require preload), `--no-warnings`, `--max-old-space-size`.
 #[test]
 fn node_cli_emulation_flags() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let preload_fixture = root.join("tests").join("fixtures").join("preload_test.js");
 
@@ -1051,7 +1051,7 @@ fn node_cli_emulation_flags() {
     .output()
     .expect("failed to execute jse -v");
   assert!(out_version.status.success());
-  assert!(String::from_utf8_lossy(&out_version.stdout).contains(&format!("jse {}", env!("CARGO_PKG_VERSION"))));
+  assert!(String::from_utf8_lossy(&out_version.stdout).contains(&format!("malia {}", env!("CARGO_PKG_VERSION"))));
 
   // 6. NODE_OPTIONS environment variable
   let out_node_options = std::process::Command::new(jse)
@@ -1094,7 +1094,7 @@ fn node_cli_emulation_flags() {
 
 #[test]
 fn database_compatibility() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let fixture = root.join("tests").join("fixtures").join("database_compatibility.js");
 
@@ -1114,7 +1114,7 @@ fn database_compatibility() {
 
 #[test]
 fn container_nosql_microservice() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
   let out = std::process::Command::new(jse)
@@ -1133,7 +1133,7 @@ fn container_nosql_microservice() {
 
 #[test]
 fn advanced_enterprise_features() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let fixture = root.join("tests").join("fixtures").join("adv_new_features.js");
 
@@ -1153,7 +1153,7 @@ fn advanced_enterprise_features() {
 
 #[test]
 fn standalone_compilation() {
-  let jse = env!("CARGO_BIN_EXE_jse");
+  let jse = env!("CARGO_BIN_EXE_malia");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let ts_fixture = root.join("tests").join("fixtures").join("ts_standalone.ts");
   let out_bin = std::env::temp_dir().join(format!("jse_standalone_test_{}", std::process::id()));
@@ -1186,7 +1186,6 @@ fn standalone_compilation() {
 #[test]
 fn malia_dual_binary_and_global_namespace() {
   let malia_bin = env!("CARGO_BIN_EXE_malia");
-  let jse_bin = env!("CARGO_BIN_EXE_jse");
 
   // 1. Version output check
   let malia_ver = std::process::Command::new(malia_bin)
@@ -1197,16 +1196,6 @@ fn malia_dual_binary_and_global_namespace() {
   assert_eq!(
     String::from_utf8_lossy(&malia_ver.stdout).trim(),
     format!("malia {}", env!("CARGO_PKG_VERSION"))
-  );
-
-  let jse_ver = std::process::Command::new(jse_bin)
-    .arg("--version")
-    .output()
-    .expect("failed to execute jse --version");
-  assert!(jse_ver.status.success());
-  assert_eq!(
-    String::from_utf8_lossy(&jse_ver.stdout).trim(),
-    format!("jse {}", env!("CARGO_PKG_VERSION"))
   );
 
   // 2. Both globals malia and jse available and identical in malia binary
@@ -1232,16 +1221,6 @@ fn malia_dual_binary_and_global_namespace() {
     String::from_utf8_lossy(&malia_eval.stderr)
   );
 
-  // 3. Both globals available and identical in jse binary
-  let jse_eval = std::process::Command::new(jse_bin)
-    .args(["-e", script.as_str()])
-    .output()
-    .expect("failed to evaluate script via jse");
-  assert!(
-    jse_eval.status.success() && String::from_utf8_lossy(&jse_eval.stdout).contains("MALIA_DUAL_GLOBALS_OK"),
-    "jse eval failed: {}",
-    String::from_utf8_lossy(&jse_eval.stderr)
-  );
 }
 
 fn run_framework_test(script_name: &str) {

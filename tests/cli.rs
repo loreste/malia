@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-const JSE: &str = env!("CARGO_BIN_EXE_jse");
+const JSE: &str = env!("CARGO_BIN_EXE_malia");
 
 #[test]
 fn mal_007_invalid_permissions_fail_before_execution() {

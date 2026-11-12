@@ -56,7 +56,7 @@ esac
             prepare()
             self.assertEqual(run().returncode, 0)
             self.assertEqual(run().returncode, 0)
-            self.assertTrue((install / "bin/jse").is_file())
+            self.assertTrue((install / "bin/malia").is_file())
             before = (install / "bin/malia").read_bytes()
             sums.write_text("bad checksum")
             self.assertNotEqual(run().returncode, 0)
