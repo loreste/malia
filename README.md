@@ -1,40 +1,47 @@
 # Malia
 
-A drop-in Node.js replacement built in Rust. Runs your existing JavaScript
-and TypeScript with the same V8 engine, same npm packages, same APIs — but
-with real parallelism, lower memory, and faster I/O.
+JavaScript and TypeScript runtime built in Rust. Same V8 engine as Node,
+runs npm packages, ships its own package manager. HTTP is handled by hyper
+on a dedicated thread pool, which is where the speed comes from — your JS
+still runs on V8, same as Node.
+
+Our internal benchmarks against Node 22 (see `bench/`):
 
 ```
-Startup         3x faster than Node
-HTTP throughput 3.3x faster
-Worker dispatch 120x faster
-Memory          35% less RSS, 62% less heap
+Startup         ~3x faster    (V8 snapshot, no bootup overhead)
+HTTP throughput ~3x faster    (hyper thread pool, not libuv)
+Worker dispatch ~120x faster  (isolate reuse vs fork)
+Memory          ~35% less RSS (HTTP server workload)
 ```
 
-**What Node can't do, Malia does out of the box:**
+Not everything works yet. TLS servers, N-API native addons, and some
+`node:cluster` edge cases are documented in [Limitations](#limitations).
+If your app uses those, test before switching.
 
-- **Built-in npm** — `npm install`, `npx`, lockfiles, audit, publish -- no Node.js install needed
-- **Auto `.env`** — loads `.env` files at startup, zero config, replaces `dotenv`
-- **`malia.parallel`** — concurrent map/filter/reduce with controlled parallelism
-- **`malia.cron`** — built-in cron scheduler, replaces `node-cron`
-- **Security toolkit** — `malia scan`, `malia secrets`, `malia sbom`, `malia permissions`
-- **`jse.secure()`** — built-in security headers (replaces `helmet`)
-- **`jse.rateLimit()`** — built-in rate limiting (replaces `express-rate-limit`)
-- **`jse.cors()`** — built-in CORS middleware
-- **`malia.ai`** — built-in AI: `await malia.ai("summarize this")` with auto-detected local/cloud LLMs
-- **Hot reload** — `server.hot("./handler.mjs")` swaps code live, zero downtime
-- **`WorkerPool`** — parallel CPU work in one line: `await pool.map(items)`
-- **Bounded channels** — `chan(10)` with backpressure, `for await` consumption
-- **HTTP on a separate thread pool** — network I/O never blocks your JS
-- **Permissions** — deny-by-default filesystem, network, env, subprocess access
-- **`malia.cache`** — LRU cache with TTL, size limits, cache-aside (`getOrSet`), memoize
-- **`malia.pubsub`** — in-process pub/sub with pattern matching and message history
-- **`malia deploy`** — generate Dockerfile, docker-compose.yml, systemd service
-- **`malia profile`** — V8 CPU profiling with top-functions report
-- **`malia migrate`** — database migration runner (create, up, down, status)
-- **`malia env-encrypt`** — AES-256-GCM encrypted `.env` files, safe for git
-- **Built-in SQLite, KV store, task queue, router, tracing, metrics**
-- **TypeScript runs directly** — no build step, no config
+**Things you don't need to install separately:**
+
+- Package manager (`npm install`, `npx`, lockfiles, publish)
+- `.env` loading (auto at startup)
+- Cron (`malia.cron("*/5 * * * *", fn)`)
+- Concurrency control (`malia.parallel.map`, mutex, semaphore)
+- LRU cache with TTL (`malia.cache`)
+- Pub/sub (`malia.pubsub`)
+- Security headers, rate limiting, CORS (`jse.secure`, `jse.rateLimit`, `jse.cors`)
+- Security scanning (`malia scan`, `malia secrets`, `malia sbom`)
+- Deployment scaffolding (`malia deploy` -> Dockerfile, systemd)
+- CPU profiling (`malia profile`)
+- Database migrations (`malia migrate`)
+- Encrypted env files (`malia env-encrypt`)
+- SQLite, KV store, task queue, router, tracing, structured logging
+- TypeScript (transpiled at load, cached on disk)
+
+**Architectural differences from Node:**
+
+- HTTP server runs on hyper (Rust) on its own thread pool, not on the JS event loop
+- Workers get real OS threads with their own V8 isolates
+- Permissions are deny-by-default (like Deno, unlike Node)
+- Bounded channels (`chan()`) with backpressure for async coordination
+- Hot reload swaps handlers on a live server without restarting
 
 The binary is available under two names, `malia` and `jse`. They are the
 same program. In code, the `malia.*` and `jse.*` globals are also the same.
@@ -150,7 +157,7 @@ malia run app.wasm
 | `malia x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
 | `malia npm <args>` | Pass arguments through to npm |
 | `malia config [show\|get <key>]` | Print the resolved configuration |
-| `malia compile <file>` | Embed entry source in the host runtime, or create a Malia source container with `--wasm` |
+| `malia compile <file>` | Embed source in the runtime binary. `--wasm` wraps source in a Wasm container (still needs malia to run — this is packaging, not JS-to-Wasm compilation) |
 | `malia build` | Embed the configured entry source in the host runtime |
 | `malia bench <file>` | Run a file and print its wall-clock time |
 | `malia serve [dir]` | Instant static file server with directory listing, ETags, MIME types |
@@ -494,9 +501,9 @@ with the handler that was active when they started.
 
 ## Concurrency (`malia.parallel`)
 
-Built-in concurrent execution -- what `Promise.all` should have been.
-`Promise.all(urls.map(fetch))` fires everything at once and overwhelms
-servers. `malia.parallel.map` gives you controlled parallelism.
+`Promise.all(urls.map(fetch))` fires every request at once. If you have
+1000 URLs, that's 1000 simultaneous connections. `malia.parallel.map`
+lets you set a concurrency limit.
 
 ```javascript
 // Fetch 100 URLs, 10 at a time (not 100 at once)
@@ -562,7 +569,8 @@ console.log(job.runCount);     // times executed
 
 ## Security
 
-Malia is secure by default -- more so than Node.js.
+Malia defaults to denying filesystem, network, and subprocess access.
+You grant permissions explicitly per run.
 
 **Deny-by-default permissions** (see [Permissions](#permissions)): scripts
 cannot read files, access the network, or spawn processes without explicit
@@ -747,11 +755,10 @@ Features: LRU eviction, per-key TTL, `staleWhileRevalidate`, `onEvict`
 callback, `purge()`, `stats()` (hits, misses, hitRate), bulk operations
 (`setMany`, `getMany`, `deleteMany`), iteration, `forEach`.
 
-## npm Packages Replaced
+## npm packages you can drop
 
-Malia includes built-in replacements for popular npm packages. Fewer
-dependencies means faster installs, smaller `node_modules`, fewer supply
-chain risks.
+These are built in. Download numbers are from npm to give a sense of how
+common the need is.
 
 | npm package | Weekly downloads | Malia built-in |
 |---|---|---|
@@ -832,16 +839,19 @@ service containers and requires all of them to pass.
 
 ## Frameworks
 
-Tested with modern framework packages (npm packages executed end-to-end):
+We test against specific parts of these frameworks, not their entire
+surface area. If you're running Express routing or React SSR, you're
+probably fine. If you're deep into Next.js ISR or Angular Zone.js,
+test your app first.
 
-- **Angular**: `@angular/core` (Signals, `signal()`, `computed()`, Dependency Injection, `Injector`, `InjectionToken`) and `rxjs` (`Observable`, `map`, `filter`)
-- **Vue 3**: `vue` + `@vue/server-renderer` (Server-Side Rendering via `createSSRApp` and `renderToString`)
-- **React 19**: `react` + `react-dom/server` (`renderToString` component tree rendering)
-- **Preact**: `preact` + `preact-render-to-string` (SSR component rendering)
-- **Svelte 5**: `svelte/compiler` (compiling Svelte 5 components) + `svelte/server` (`render`)
-- **Fastify 5**: `fastify` (route registration and request dispatch via `inject`)
-- **Express 5**: `express` (routing, query parsing, middleware, static files)
-- **Next.js 16**: `next build` standalone output (`node server.js`): App Router SSR with streaming, proxy/middleware, nonce-based CSP, static files
+- **Express 5**: routing, query parsing, middleware, static files
+- **Fastify 5**: route registration, request dispatch via `inject()`
+- **React 19**: `renderToString` server-side rendering
+- **Vue 3**: SSR via `createSSRApp` + `renderToString`
+- **Svelte 5**: compiler + server-side `render()`
+- **Angular**: Signals, DI, rxjs (not Zone.js or full SSR)
+- **Preact**: `preact-render-to-string`
+- **Next.js 16**: standalone `next build` output with App Router SSR
 
 ## Containers
 
