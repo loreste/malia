@@ -20,6 +20,7 @@ All notable changes to Malia are documented here.
 - **Database migrations**: `malia migrate create/up/down/status` with SQLite-tracked state
 - **Env encryption**: `malia env-encrypt encrypt/decrypt` AES-256-GCM for `.env` files
 - **Pub/Sub**: `malia.pubsub()` in-process pub/sub with pattern matching, history, async iterators
+- **Cache**: `malia.cache()` LRU with TTL, size limits, `getOrSet` cache-aside with dedup, `memoize`
 - **Node.js APIs**: `EventEmitter.captureRejections`/`errorMonitor`/`setMaxListeners`/`addAbortListener`, `crypto.hkdf`/`hkdfSync`/`X509Certificate`, `util.parseArgs`/`styleText`/`MIMEType`, `Module._resolveFilename`/`_load`, `process.report`/`getBuiltinModule`/`abort`/`allowedNodeEnvironmentFlags`, `ChildProcess.ref`/`unref`, `test.mock`, `Buffer.allocUnsafeSlow`/`swap64`, `fs.chown`/`chownSync`
 
 ### Security

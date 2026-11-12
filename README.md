@@ -27,6 +27,7 @@ Memory          35% less RSS, 62% less heap
 - **Bounded channels** — `chan(10)` with backpressure, `for await` consumption
 - **HTTP on a separate thread pool** — network I/O never blocks your JS
 - **Permissions** — deny-by-default filesystem, network, env, subprocess access
+- **`malia.cache`** — LRU cache with TTL, size limits, cache-aside (`getOrSet`), memoize
 - **`malia.pubsub`** — in-process pub/sub with pattern matching and message history
 - **`malia deploy`** — generate Dockerfile, docker-compose.yml, systemd service
 - **`malia profile`** — V8 CPU profiling with top-functions report
@@ -412,6 +413,7 @@ start = "jse start"
 | `jse.rateLimit` | Per-IP rate limiting with `Retry-After` and `X-RateLimit` headers |
 | `jse.cors` | CORS middleware with preflight support, configurable origin/methods/credentials |
 | `malia.pubsub` | In-process pub/sub: `subscribe(pattern, fn)`, `publish(topic, msg)`, pattern matching (`events:*`), message history for late joiners, `once()` promises, async iterators |
+| `malia.cache` | LRU cache with TTL, size limits, `getOrSet(key, fn)` cache-aside with automatic dedup, `cache.memoize(fn)`, bulk ops, hit/miss stats, `onEvict` callbacks. Replaces `lru-cache` (100M/week) |
 
 Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 `btoa`, `atob`, `crypto.getRandomValues`, `crypto.randomUUID`,
@@ -702,6 +704,49 @@ unsub();  // remove this subscription
 bus.clear();  // remove all subscriptions and history
 ```
 
+## Cache (`malia.cache`)
+
+LRU cache with TTL, size-based eviction, and the cache-aside pattern that
+every production app needs. Replaces `lru-cache` (100M weekly downloads).
+
+```javascript
+// Basic cache
+const cache = malia.cache({ max: 1000, ttl: 60000 });
+cache.set("user:123", userData);
+const user = cache.get("user:123");  // hit
+
+// Cache-aside: fetch on miss, serve from cache on hit
+const user = await cache.getOrSet("user:123", async () => {
+  return await db.query("SELECT * FROM users WHERE id = 123");
+}, { ttl: 30000 });
+
+// Image / Buffer caching with byte-size limits
+const images = malia.cache({
+  max: 500,
+  maxSize: 50 * 1024 * 1024,  // 50 MB
+  sizeOf: (buf) => buf.length,
+});
+const avatar = await images.getOrSet("avatar:" + id, async () => {
+  return Buffer.from(await (await fetch(url)).arrayBuffer());
+});
+
+// Memoize any async function
+const getUser = malia.cache.memoize(
+  async (id) => await db.getUser(id),
+  { max: 500, ttl: 60000 }
+);
+const user = await getUser(123);  // cached after first call
+
+// Automatic dedup: 20 concurrent callers for the same key = 1 computation
+const results = await Promise.all(
+  userIds.map(id => cache.getOrSet("user:" + id, () => db.getUser(id)))
+);
+```
+
+Features: LRU eviction, per-key TTL, `staleWhileRevalidate`, `onEvict`
+callback, `purge()`, `stats()` (hits, misses, hitRate), bulk operations
+(`setMany`, `getMany`, `deleteMany`), iteration, `forEach`.
+
 ## npm Packages Replaced
 
 Malia includes built-in replacements for popular npm packages. Fewer
@@ -721,6 +766,8 @@ chain risks.
 | `helmet` | 6M | `jse.secure(handler)` |
 | `express-rate-limit` | 3M | `jse.rateLimit(handler, {max})` |
 | `cors` | 14M | `jse.cors(handler, {origin})` |
+| `lru-cache` | 100M | `malia.cache({ max, ttl })` |
+| `node-cache` | 5M | `malia.cache({ max, ttl })` |
 | `http-server` / `serve` | 5M | `malia serve .` |
 | `pm2` / `forever` | 5M | `malia deploy systemd` + cluster |
 | `snyk` / `npm audit` | - | `malia scan` + `malia secrets` + `malia audit` |

@@ -31,6 +31,7 @@ Examples for common tasks. `malia` and `jse` are the same binary, and the
 24. [Database migrations](#24-database-migrations)
 25. [Env encryption](#25-env-encryption)
 26. [Pub/Sub](#26-pubsub)
+27. [Caching](#27-caching)
 
 ---
 
@@ -1623,3 +1624,111 @@ bus.subscribe("chat", (msg) => {
   const data = JSON.stringify(msg);
   for (const ws of clients) ws.send(data);
 });
+
+---
+
+## 27. Caching
+
+### LRU cache with TTL
+
+```javascript
+const cache = malia.cache({ max: 1000, ttl: 60000 }); // 1000 entries, 60s TTL
+
+cache.set("session:abc", { userId: 1, role: "admin" });
+const session = cache.get("session:abc");
+
+// Per-key TTL overrides
+cache.set("temp", "value", { ttl: 5000 });  // expires in 5 seconds
+```
+
+### Cache-aside pattern
+
+The most common caching pattern: check cache first, compute on miss, store
+the result. `getOrSet` does it in one call with automatic deduplication.
+
+```javascript
+const userCache = malia.cache({ max: 500, ttl: 30000 });
+
+// This is the pattern every production app needs:
+async function getUser(id) {
+  return userCache.getOrSet("user:" + id, async () => {
+    // Only runs on cache miss
+    return await db.query("SELECT * FROM users WHERE id = ?", id);
+  });
+}
+
+// 20 concurrent requests for the same user = 1 database query
+const users = await malia.parallel.map(requestIds, id => getUser(id));
+```
+
+### Image and file caching
+
+```javascript
+const imageCache = malia.cache({
+  max: 200,
+  maxSize: 100 * 1024 * 1024,  // 100 MB total
+  sizeOf: (buf) => buf.length,  // track byte size
+  onEvict: (key, buf) => console.log(`Evicted ${key} (${buf.length} bytes)`),
+});
+
+async function getImage(url) {
+  return imageCache.getOrSet(url, async () => {
+    const res = await fetch(url);
+    return Buffer.from(await res.arrayBuffer());
+  }, { ttl: 3600000 }); // 1 hour
+}
+```
+
+### Memoize functions
+
+```javascript
+// Wrap any async function with caching
+const fetchPrice = malia.cache.memoize(async (symbol) => {
+  const res = await fetch(`https://api.example.com/price/${symbol}`);
+  return res.json();
+}, { max: 100, ttl: 10000 }); // cache 100 symbols for 10 seconds
+
+const btc = await fetchPrice("BTC");
+const eth = await fetchPrice("ETH");
+fetchPrice.cache.stats(); // { hits: 0, misses: 2, hitRate: 0, size: 2 }
+```
+
+### Cache with HTTP server
+
+```javascript
+const apiCache = malia.cache({ max: 1000, ttl: 15000 });
+
+jse.serve({ port: 3000 }, async (req) => {
+  const url = new URL(req.url, "http://localhost");
+
+  if (url.pathname.startsWith("/api/")) {
+    const data = await apiCache.getOrSet(url.pathname + url.search, async () => {
+      // Expensive computation or external API call
+      return await fetchFromUpstream(url.pathname);
+    });
+    return new Response(JSON.stringify(data), {
+      headers: { "Content-Type": "application/json", "X-Cache": "HIT" },
+    });
+  }
+
+  return new Response("Not Found", { status: 404 });
+});
+```
+
+### Cache stats and monitoring
+
+```javascript
+const cache = malia.cache({ max: 1000, ttl: 60000 });
+
+// Periodic stats logging
+malia.cron.every("1m", () => {
+  const s = cache.stats();
+  console.log(`Cache: ${s.size}/${s.max} entries, ${(s.hitRate * 100).toFixed(1)}% hit rate`);
+});
+
+// Purge expired entries periodically
+malia.cron.every("5m", () => {
+  const purged = cache.purge();
+  if (purged > 0) console.log(`Purged ${purged} expired entries`);
+});
+```
