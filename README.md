@@ -2,21 +2,37 @@
 
 JavaScript and TypeScript runtime built in Rust. Same V8 engine as Node,
 runs npm packages, ships its own package manager. HTTP is handled by hyper
-on a dedicated thread pool, which is where the speed comes from — your JS
+on a dedicated thread pool, which is where the speed comes from -- your JS
 still runs on V8, same as Node.
 
-Our internal benchmarks against Node 22 (see `bench/`):
+**What's actually faster (independently verified):**
 
-```
-Startup         ~3x faster    (V8 snapshot, no bootup overhead)
-HTTP throughput ~3x faster    (hyper thread pool, not libuv)
-Worker dispatch ~120x faster  (isolate reuse vs fork)
-Memory          ~35% less RSS (HTTP server workload)
-```
+- **Startup: ~2.4x faster** -- V8 heap snapshot, no bootstrap overhead.
+  Confirmed by independent testing (median 9.5ms vs 23ms).
+- **Worker spawn: ~2.5x faster** -- isolate reuse, not fork. First message
+  arrives in ~3.6ms vs ~9ms on Node.
+- **Connection churn: on par** -- hyper handles new-connection-per-request
+  as fast as Node's libuv.
 
-Not everything works yet. N-API native addons are not supported and some
-edge cases are documented in [Limitations](#limitations). If your app
-depends on native addons (e.g. `bcrypt`, `sharp`), those won't work.
+**What depends on hardware:**
+
+- **HTTP keep-alive throughput** -- our thread pool architecture benefits
+  from multiple cores. On a 2-core machine, Node's single-threaded event
+  loop can be faster for keep-alive workloads because there's no
+  cross-thread channel hop. On machines with 4+ cores, the thread pool
+  has room to spread. Benchmark on your target hardware.
+- **Memory** -- with identical JS workloads the heap is the same (same V8).
+  RSS is slightly lower (~5-10%) due to a leaner process. The larger
+  savings come from using malia-specific features (KV store, off-heap
+  caching) instead of JS objects.
+
+**What's the same:** CPU-bound JavaScript runs at the same speed -- it's
+the same V8 engine. Malia doesn't make your JS faster, it makes the
+surrounding infrastructure (startup, HTTP, workers) faster.
+
+N-API native addons are not supported. If your app depends on native
+addons (e.g. `bcrypt`, `sharp`), those won't work. See
+[Limitations](#limitations).
 
 **Things you don't need to install separately:**
 
