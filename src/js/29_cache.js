@@ -50,10 +50,13 @@
 
       // Check expiry
       if (entry.expires && Date.now() > entry.expires) {
-        // Stale-while-revalidate: return stale value if within window
         if (this.#staleWhileRevalidate && Date.now() < entry.expires + this.#staleWhileRevalidate) {
+          // Stale-while-revalidate: return stale value AND mark for revalidation.
+          // The revalidation loader is set by getOrSet(); plain get() returns
+          // stale but cannot revalidate (no loader). getOrSet() checks the
+          // _stale flag and kicks off a background refresh.
           this.#hits++;
-          // Move to front (LRU touch) but mark as stale
+          entry._stale = true;
           this.#touch(key, entry);
           return entry.value;
         }
@@ -71,6 +74,11 @@
       const ttl = options.ttl ?? this.#ttl;
       const expires = ttl > 0 ? Date.now() + ttl : 0;
       const size = this.#sizeOf ? this.#sizeOf(value, key) : 1;
+
+      // Reject entries that alone exceed maxSize
+      if (this.#maxSize && size > this.#maxSize) {
+        return this;
+      }
 
       // If key exists, remove old entry first
       if (this.#map.has(key)) {
@@ -94,9 +102,39 @@
     // Cache-aside: get from cache, or compute and store
     async getOrSet(key, fn, options = {}) {
       // Check cache first
-      const cached = this.get(key);
-      if (cached !== undefined) return cached;
-
+      const entry = this.#map.get(key);
+      if (entry) {
+        const now = Date.now();
+        if (!entry.expires || now <= entry.expires) {
+          // Fresh hit
+          this.#hits++;
+          this.#touch(key, entry);
+          return entry.value;
+        }
+        if (this.#staleWhileRevalidate && now < entry.expires + this.#staleWhileRevalidate) {
+          // Stale but within revalidation window: return stale value and
+          // kick off background refresh so the next caller gets fresh data.
+          this.#hits++;
+          this.#touch(key, entry);
+          const staleValue = entry.value;
+          if (!this.#pending.has(key)) {
+            const refresh = (async () => {
+              try {
+                const fresh = await fn(key);
+                this.set(key, fresh, options);
+              } catch (_) {
+                // Revalidation failed; stale entry stays until it fully expires
+              } finally {
+                this.#pending.delete(key);
+              }
+            })();
+            this.#pending.set(key, refresh);
+          }
+          return staleValue;
+        }
+        // Fully expired
+        this.#evict(key);
+      }
       // Dedup: if another caller is already computing this key, wait for it
       if (this.#pending.has(key)) {
         return this.#pending.get(key);
