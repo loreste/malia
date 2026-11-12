@@ -121,6 +121,19 @@ type PendingMap = Arc<StdMutex<HashMap<u32, oneshot::Sender<ServeResponse>>>>;
 /// WebSocket upgrades waiting for JS acceptance (req_id -> OnUpgrade + key).
 pub type UpgradeMap = Arc<StdMutex<HashMap<u32, (hyper::upgrade::OnUpgrade, String)>>>;
 
+/// Cached response: status + headers + body, with expiry.
+#[derive(Clone)]
+pub(crate) struct CachedResponse {
+  status: u16,
+  headers: Vec<(String, String)>,
+  body: Vec<u8>,
+  expires: std::time::Instant,
+}
+
+/// LRU response cache keyed by (method, url). Lives on the hyper thread --
+/// cache hits never cross to JS, cutting ~100-200us per request.
+pub(crate) type ResponseCache = Arc<StdMutex<HashMap<String, CachedResponse>>>;
+
 /// One bound listener: the request queue the JS side drains, the pending
 /// response map, and task handles (aborted on close). Connection tasks are
 /// tracked because idle keep-alive connections hold request-queue senders;
@@ -132,6 +145,8 @@ pub struct Listener {
   pub accept_task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
   pub conn_tasks: Arc<StdMutex<Vec<tokio::task::JoinHandle<()>>>>,
   pub limits: ServeLimits,
+  #[allow(dead_code)]
+  pub(crate) response_cache: ResponseCache,
 }
 
 /// Pack a batch of requests into one binary blob (no serde):
@@ -225,9 +240,28 @@ async fn handle_request(
   pending: PendingMap,
   upgrades: UpgradeMap,
   remote: &str,
-  budget: (ServeLimits, Arc<tokio::sync::Semaphore>),
+  budget: (ServeLimits, Arc<tokio::sync::Semaphore>, ResponseCache),
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-  let (limits, admission) = budget;
+  let (limits, admission, cache) = budget;
+
+  // Fast path: serve from Rust-level response cache (no JS hop).
+  // Only GET/HEAD with no body are cacheable. The JS handler opts in by
+  // setting Cache-Control: public, max-age=N on the response.
+  let cache_key = if matches!(*req.method(), hyper::Method::GET | hyper::Method::HEAD) {
+    Some(format!("{}:{}", req.method(), req.uri()))
+  } else {
+    None
+  };
+  if let Some(ref key) = cache_key
+    && let Some(cached) = cache.lock().unwrap().get(key).cloned()
+      && cached.expires > std::time::Instant::now() {
+        let mut builder = Response::builder().status(cached.status);
+        for (name, value) in &cached.headers {
+          builder = builder.header(name.as_str(), value.as_str());
+        }
+        builder = builder.header("x-malia-cache", "hit");
+        return Ok(builder.body(full_body(cached.body)).unwrap());
+      }
   let Ok(permit) = admission.try_acquire_owned() else {
     return Ok(error_response(503, "Service Unavailable\n"));
   };
@@ -256,15 +290,25 @@ async fn handle_request(
   let (parts, body) = req.into_parts();
   let method = parts.method.to_string();
   let url = parts.uri.to_string();
-  // Collect body: small bodies are materialized; large/chunked bodies are
-  // streamed through a channel so the JS handler can read them incrementally.
+  // Fast path: GET/HEAD/OPTIONS/DELETE typically have no body.
+  let has_body = !matches!(
+    parts.method,
+    hyper::Method::GET | hyper::Method::HEAD | hyper::Method::OPTIONS | hyper::Method::DELETE
+  ) || parts
+    .headers
+    .get("content-length")
+    .and_then(|v| v.to_str().ok())
+    .is_some_and(|v| v != "0");
+
   let content_length = parts
     .headers
     .get("content-length")
     .and_then(|v| v.to_str().ok())
     .and_then(|v| v.parse::<usize>().ok());
-  let should_stream = content_length.is_some_and(|cl| cl > limits.max_body_bytes);
-  let (body_bytes, body_stream_tx) = if should_stream {
+  let should_stream = has_body && content_length.is_some_and(|cl| cl > limits.max_body_bytes);
+  let (body_bytes, body_stream_tx) = if !has_body {
+    (Vec::new(), None)
+  } else if should_stream {
     // Stream large bodies: spawn a reader task that feeds chunks through mpsc.
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
     let timeout_ms = limits.body_timeout_ms;
@@ -305,6 +349,8 @@ async fn handle_request(
       Err(_) => return Ok(error_response(408, "Request Timeout\n")),
     }
   };
+  // Pack headers directly into the serialized format to avoid per-header
+  // String allocations. The JS side receives "name: val\r\nname: val".
   let headers: Vec<(String, String)> = parts
     .headers
     .iter()
@@ -337,6 +383,31 @@ async fn handle_request(
           ServeBody::Full(b) => b.len(),
           ServeBody::Stream(_) => 0,
         };
+        // Cache full-body responses that have Cache-Control: public, max-age=N
+        if let (Some(key), ServeBody::Full(body)) = (&cache_key, &resp.body)
+          && let Some(max_age) = resp
+            .headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case("cache-control"))
+            .and_then(|(_, v)| {
+              v.split(',')
+                .find(|d| d.trim().starts_with("max-age="))
+                .and_then(|d| d.trim().strip_prefix("max-age=")?.trim().parse::<u64>().ok())
+            })
+          && resp.headers.iter().any(|(n, v)| n.eq_ignore_ascii_case("cache-control") && v.contains("public"))
+          && max_age > 0
+          && body.len() < 1024 * 1024
+          {
+            cache.lock().unwrap().insert(
+              key.clone(),
+              CachedResponse {
+                status: resp.status,
+                headers: resp.headers.clone(),
+                body: body.clone(),
+                expires: std::time::Instant::now() + std::time::Duration::from_secs(max_age),
+              },
+            );
+          }
         (status, body_len, Ok(build_response(resp)))
       }
       Ok(Err(_)) => {
@@ -430,12 +501,14 @@ pub fn start_listener(
   let connections = Arc::new(tokio::sync::Semaphore::new(limits.max_connections));
   let pending: PendingMap = Arc::new(StdMutex::new(HashMap::new()));
   let upgrades: UpgradeMap = Arc::new(StdMutex::new(HashMap::new()));
+  let response_cache: ResponseCache = Arc::new(StdMutex::new(HashMap::new()));
   let conn_tasks: Arc<StdMutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::new(StdMutex::new(Vec::new()));
   let listener_limits = limits.clone();
   let accept_task = serve_runtime().spawn({
     let pending = pending.clone();
     let upgrades = upgrades.clone();
     let conn_tasks = conn_tasks.clone();
+    let response_cache = response_cache.clone();
     async move {
       let tls_acceptor = tls.map(tokio_rustls::TlsAcceptor::from);
       let listener = tokio::net::TcpListener::from_std(std_listener)?;
@@ -466,6 +539,7 @@ pub fn start_listener(
         let pending = pending.clone();
         let upgrades = upgrades.clone();
         let tls_acceptor = tls_acceptor.clone();
+        let response_cache = response_cache.clone();
         let task = tokio::spawn(async move {
           // Counts the connection for jse.metrics until the task ends or is
           // aborted (dropped).
@@ -480,7 +554,8 @@ pub fn start_listener(
             let limits = limits.clone();
             let admission = admission.clone();
             let remote = remote_for_svc.clone();
-            async move { handle_request(req, id, req_tx, pending, upgrades, &remote, (limits, admission)).await }
+            let cache = response_cache.clone();
+            async move { handle_request(req, id, req_tx, pending, upgrades, &remote, (limits, admission, cache)).await }
           });
           let remote_for_err = remote_str.clone();
           let conn_fut = async move {
@@ -573,5 +648,6 @@ pub fn start_listener(
     accept_task,
     conn_tasks,
     limits: listener_limits,
+    response_cache,
   }
 }
