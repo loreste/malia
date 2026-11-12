@@ -110,7 +110,7 @@ fn mal_013_native_addons_reject_explicitly() {
   let out = jse(&dir, &["run", "main.mjs"]);
   assert!(!out.status.success());
   assert!(
-    String::from_utf8_lossy(&out.stderr).contains("ERR_NATIVE_ADDON_UNSUPPORTED"),
+    String::from_utf8_lossy(&out.stderr).contains("ERR_DLOPEN_FAILED"),
     "{}",
     describe(&out)
   );

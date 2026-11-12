@@ -8,6 +8,7 @@ pub mod inspector_server;
 pub mod kv;
 pub mod loader;
 pub mod logger;
+pub mod napi;
 pub mod ops;
 pub mod optimizer;
 pub mod panic;

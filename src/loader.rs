@@ -824,14 +824,15 @@ impl JseModuleLoader {
       .map_err(|_| err(format!("Only file:// URLs are supported, got {spec_str}")))?;
 
     if path.extension().is_some_and(|extension| extension == "node") {
-      // Return a module that throws on require/import, so try/catch
-      // fallback patterns (like Next.js SWC native → WASM) work.
-      let msg = format!(
-        "ERR_NATIVE_ADDON_UNSUPPORTED: Cannot load native addon: {}",
-        path.display()
-      );
-      let code = format!("throw Object.assign(new Error({msg:?}), {{ code: 'ERR_DLOPEN_FAILED' }});");
-      return Ok(module_source(ModuleType::JavaScript, code, specifier, None));
+      match crate::napi::load_native_addon(&path) {
+        Ok(code) => return Ok(module_source(ModuleType::JavaScript, code, specifier, None)),
+        Err(e) => {
+          // Fallback: throw so try/catch patterns (Next.js SWC native -> WASM) work.
+          let msg = format!("ERR_DLOPEN_FAILED: {e}");
+          let code = format!("throw Object.assign(new Error({msg:?}), {{ code: 'ERR_DLOPEN_FAILED' }});");
+          return Ok(module_source(ModuleType::JavaScript, code, specifier, None));
+        }
+      }
     }
 
     // JSON modules requested with `with { type: "json" }`.
