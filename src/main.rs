@@ -344,6 +344,29 @@ enum Command {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
   },
+  /// Diagnose project health: deps, security, config, versions.
+  Doctor,
+  /// Start a static file server for a directory.
+  Serve {
+    /// Directory to serve (default: current directory).
+    dir: Option<String>,
+    /// Port to listen on (default: 3000).
+    #[arg(long, default_value = "3000")]
+    port: u16,
+    /// Bind address (default: 0.0.0.0).
+    #[arg(long, default_value = "0.0.0.0")]
+    host: String,
+  },
+  /// Remove node_modules, caches, and temp files.
+  Clean {
+    /// Also remove the global cache (~/.malia/cache).
+    #[arg(long)]
+    all: bool,
+  },
+  /// Self-update malia to the latest version.
+  Upgrade,
+  /// Show resolved environment variables from .env files and config.
+  Env,
   /// Run custom scripts defined in jse.json / package.json or execute files directly.
   #[command(external_subcommand)]
   Custom(Vec<String>),
@@ -607,6 +630,21 @@ async fn supervise_cluster(entry: PathBuf, workers: usize, args: Vec<String>) ->
 /// Load .env files automatically. Order (later overrides earlier):
 ///   .env, .env.local, .env.<NODE_ENV>, .env.<NODE_ENV>.local
 /// Only sets vars that aren't already in the environment (existing vars win).
+fn dir_size(path: &Path) -> u64 {
+  let mut total = 0;
+  if let Ok(entries) = std::fs::read_dir(path) {
+    for entry in entries.flatten() {
+      let p = entry.path();
+      if p.is_dir() {
+        total += dir_size(&p);
+      } else if let Ok(meta) = p.metadata() {
+        total += meta.len();
+      }
+    }
+  }
+  total
+}
+
 fn load_dotenv(dir: &Path) {
   let node_env = std::env::var("NODE_ENV").unwrap_or_default();
   let files: Vec<PathBuf> = [
@@ -1735,6 +1773,391 @@ pub fn run() -> anyhow::Result<()> {
     Some(Command::X { command, args }) => std::process::exit(run_package_bin(&current_dir, &command, &args)?),
 
     Some(Command::Npm { args }) => std::process::exit(run_tool("npm", &args)?),
+
+    Some(Command::Doctor) => {
+      println!("Malia Doctor\n");
+      let mut issues = 0u32;
+      let mut warnings = 0u32;
+
+      // 1. Check malia version
+      println!("  malia version: {}", env!("CARGO_PKG_VERSION"));
+
+      // 2. Check package.json
+      let pkg_path = current_dir.join("package.json");
+      if pkg_path.exists() {
+        println!("  package.json: found");
+        if let Ok(content) = std::fs::read_to_string(&pkg_path) {
+          if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+            let name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("(unnamed)");
+            let ver = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("(no version)");
+            println!("  project: {name}@{ver}");
+
+            // Check for missing fields
+            if pkg.get("name").is_none() {
+              println!("  WARN: package.json missing 'name'");
+              warnings += 1;
+            }
+            if pkg.get("version").is_none() {
+              println!("  WARN: package.json missing 'version'");
+              warnings += 1;
+            }
+            if pkg.get("main").is_none() && pkg.get("exports").is_none() {
+              println!("  WARN: package.json missing 'main' or 'exports'");
+              warnings += 1;
+            }
+          } else {
+            println!("  ERROR: package.json is invalid JSON");
+            issues += 1;
+          }
+        }
+      } else {
+        println!("  package.json: not found");
+      }
+
+      // 3. Check node_modules
+      let nm = current_dir.join("node_modules");
+      if nm.exists() {
+        let count = std::fs::read_dir(&nm)
+          .map(|d| {
+            d.filter_map(|e| e.ok())
+              .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+              .count()
+          })
+          .unwrap_or(0);
+        println!("  node_modules: {count} packages");
+      } else if pkg_path.exists() {
+        println!("  WARN: node_modules missing (run 'malia install')");
+        warnings += 1;
+      }
+
+      // 4. Check lockfile
+      if current_dir.join("package-lock.json").exists() {
+        println!("  lockfile: package-lock.json");
+      } else if current_dir.join("yarn.lock").exists() {
+        println!("  lockfile: yarn.lock");
+      } else if current_dir.join("pnpm-lock.yaml").exists() {
+        println!("  lockfile: pnpm-lock.yaml");
+      } else if pkg_path.exists() {
+        println!("  WARN: no lockfile found");
+        warnings += 1;
+      }
+
+      // 5. Check .env
+      for env_file in &[".env", ".env.local"] {
+        if current_dir.join(env_file).exists() {
+          println!("  {env_file}: found");
+        }
+      }
+
+      // 6. Check for common security issues
+      let gitignore = current_dir.join(".gitignore");
+      if gitignore.exists() {
+        let content = std::fs::read_to_string(&gitignore).unwrap_or_default();
+        if !content.contains("node_modules") {
+          println!("  WARN: .gitignore doesn't exclude node_modules");
+          warnings += 1;
+        }
+        if !content.contains(".env") {
+          println!("  WARN: .gitignore doesn't exclude .env files");
+          warnings += 1;
+        }
+      } else if pkg_path.exists() {
+        println!("  WARN: no .gitignore found");
+        warnings += 1;
+      }
+
+      // 7. Check for vulnerable patterns
+      if current_dir.join(".env").exists() {
+        if let Ok(env_content) = std::fs::read_to_string(current_dir.join(".env")) {
+          for line in env_content.lines() {
+            let line = line.trim();
+            if line.contains("password") || line.contains("secret") || line.contains("token") || line.contains("key") {
+              if line.contains("=") && !line.starts_with('#') {
+                let key = line.split('=').next().unwrap_or("");
+                let key_lower = key.to_lowercase();
+                if key_lower.contains("password") || key_lower.contains("secret") || key_lower.contains("private_key") {
+                  // Don't print the value, just warn
+                  println!("  INFO: .env contains sensitive key: {key}");
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 8. System info
+      println!("\n  System:");
+      println!("    platform: {}", std::env::consts::OS);
+      println!("    arch: {}", std::env::consts::ARCH);
+      if let Ok(cwd) = std::env::current_dir() {
+        println!("    cwd: {}", cwd.display());
+      }
+
+      println!("\n  {} issues, {} warnings", issues, warnings);
+      if issues > 0 {
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Serve { dir, port, host }) => {
+      let serve_dir = dir.map(PathBuf::from).unwrap_or_else(|| current_dir.clone());
+      if !serve_dir.is_dir() {
+        eprintln!("error: {} is not a directory", serve_dir.display());
+        std::process::exit(1);
+      }
+      let serve_dir_abs = serve_dir.canonicalize().unwrap_or(serve_dir.clone());
+      println!("Serving {} on http://{}:{}", serve_dir_abs.display(), host, port);
+      println!("Press Ctrl+C to stop.\n");
+
+      // Use the JS serve infrastructure with a file-serving handler
+      let code = format!(
+        r#"
+        import path from "node:path";
+        import fs from "node:fs";
+        const ROOT = {root};
+
+        const MIME = {{
+          ".html": "text/html", ".css": "text/css", ".js": "application/javascript",
+          ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml",
+          ".ico": "image/x-icon", ".woff2": "font/woff2", ".woff": "font/woff",
+          ".ttf": "font/ttf", ".txt": "text/plain", ".xml": "application/xml",
+          ".pdf": "application/pdf", ".mp4": "video/mp4", ".webm": "video/webm",
+          ".wasm": "application/wasm", ".map": "application/json",
+          ".mjs": "application/javascript", ".ts": "text/plain",
+        }};
+
+        jse.serve({{ port: {port}, hostname: "{host}" }}, (req) => {{
+          const url = new URL(req.url, "http://localhost");
+          let filePath = path.join(ROOT, decodeURIComponent(url.pathname));
+
+          // Security: prevent traversal
+          const resolved = path.resolve(filePath);
+          if (!resolved.startsWith(ROOT)) {{
+            return new Response("Forbidden", {{ status: 403 }});
+          }}
+
+          try {{
+            const stat = fs.statSync(filePath);
+            if (stat.isDirectory()) {{
+              // Try index.html
+              const idx = path.join(filePath, "index.html");
+              if (fs.existsSync(idx)) {{
+                filePath = idx;
+              }} else {{
+                // Directory listing
+                const entries = fs.readdirSync(filePath, {{ withFileTypes: true }});
+                const html = entries.map(e => {{
+                  const name = e.name + (e.isDirectory() ? "/" : "");
+                  return `<li><a href="${{url.pathname === "/" ? "" : url.pathname}}/${{name}}">${{name}}</a></li>`;
+                }}).join("\n");
+                const title = url.pathname;
+                return new Response(
+                  `<!DOCTYPE html><html><head><title>Index of ${{title}}</title><style>body{{font-family:monospace;padding:20px}}a{{text-decoration:none}}li{{padding:2px 0}}</style></head><body><h1>Index of ${{title}}</h1><ul>${{html}}</ul></body></html>`,
+                  {{ headers: {{ "Content-Type": "text/html" }} }}
+                );
+              }}
+            }}
+
+            const ext = path.extname(filePath);
+            const contentType = MIME[ext] || "application/octet-stream";
+            const body = fs.readFileSync(filePath);
+            const etag = `"${{stat.size.toString(36)}}-${{stat.mtimeMs.toString(36)}}"`;
+
+            if (req.headers.get("if-none-match") === etag) {{
+              return new Response(null, {{ status: 304 }});
+            }}
+
+            return new Response(body, {{
+              headers: {{
+                "Content-Type": contentType,
+                "ETag": etag,
+                "Cache-Control": "public, max-age=0",
+              }},
+            }});
+          }} catch (e) {{
+            if (e.code === "ENOENT") {{
+              return new Response("Not Found", {{ status: 404, headers: {{ "Content-Type": "text/plain" }} }});
+            }}
+            return new Response("Internal Server Error", {{ status: 500 }});
+          }}
+        }});
+        "#,
+        root = serde_json::to_string(&serve_dir_abs.to_string_lossy().to_string()).unwrap(),
+        port = port,
+        host = host,
+      );
+
+      js_engine::permissions::set_permissions(js_engine::permissions::Permissions {
+        read: js_engine::permissions::Allow::All,
+        write: js_engine::permissions::Allow::Deny,
+        net: js_engine::permissions::Allow::All,
+        run: js_engine::permissions::Allow::Deny,
+        env: true,
+        allow_all: false,
+      });
+      let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+      let result = tokio_rt.block_on(supervise(move || js_engine::runtime::run_code_blocking(&code)));
+      if let Err(e) = result {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Clean { all }) => {
+      let mut freed = 0u64;
+
+      // Remove node_modules
+      let nm = current_dir.join("node_modules");
+      if nm.exists() {
+        let size = dir_size(&nm);
+        std::fs::remove_dir_all(&nm).map_err(|e| anyhow::anyhow!("Cannot remove node_modules: {e}"))?;
+        freed += size;
+        println!("  removed node_modules ({:.1} MB)", size as f64 / 1_048_576.0);
+      }
+
+      // Remove common temp/cache dirs
+      for dir_name in &[".cache", "dist", "build", ".next", ".nuxt", ".turbo"] {
+        let d = current_dir.join(dir_name);
+        if d.exists() && d.is_dir() {
+          let size = dir_size(&d);
+          std::fs::remove_dir_all(&d).ok();
+          freed += size;
+          println!("  removed {dir_name} ({:.1} MB)", size as f64 / 1_048_576.0);
+        }
+      }
+
+      // Remove package-lock.json (regenerated on install)
+      for lock in &["package-lock.json"] {
+        let p = current_dir.join(lock);
+        if p.exists() {
+          std::fs::remove_file(&p).ok();
+          println!("  removed {lock}");
+        }
+      }
+
+      if all {
+        if let Err(e) = js_engine::pkg::cache_clean() {
+          eprintln!("  warn: {e}");
+        }
+      }
+
+      println!("\n  Freed {:.1} MB", freed as f64 / 1_048_576.0);
+      std::process::exit(0);
+    }
+
+    Some(Command::Upgrade) => {
+      println!("Current version: {}", env!("CARGO_PKG_VERSION"));
+      println!("Checking for updates...");
+
+      // Fetch latest release tag from GitHub
+      let output = std::process::Command::new("curl")
+        .args([
+          "-fsSL",
+          "--max-time",
+          "10",
+          "https://api.github.com/repos/loreste/malia/releases/latest",
+        ])
+        .output();
+
+      match output {
+        Ok(out) if out.status.success() => {
+          let body = String::from_utf8_lossy(&out.stdout);
+          if let Some(tag) = body.split("\"tag_name\"").nth(1).and_then(|s| s.split('"').nth(1)) {
+            let latest = tag.trim_start_matches('v');
+            let current = env!("CARGO_PKG_VERSION");
+            if latest == current {
+              println!("Already on the latest version ({current}).");
+            } else {
+              println!("New version available: {latest} (current: {current})");
+              println!("\nTo upgrade, run:");
+              if cfg!(windows) {
+                println!("  irm https://raw.githubusercontent.com/loreste/malia/main/scripts/install.ps1 | iex");
+              } else {
+                println!("  curl -fsSL https://raw.githubusercontent.com/loreste/malia/main/scripts/install.sh | sh");
+              }
+            }
+          }
+        }
+        _ => {
+          eprintln!("Could not check for updates. Run the install script manually:");
+          if cfg!(windows) {
+            eprintln!("  irm https://raw.githubusercontent.com/loreste/malia/main/scripts/install.ps1 | iex");
+          } else {
+            eprintln!("  curl -fsSL https://raw.githubusercontent.com/loreste/malia/main/scripts/install.sh | sh");
+          }
+        }
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Env) => {
+      println!("Resolved environment:\n");
+
+      // Show .env files
+      let node_env = std::env::var("NODE_ENV").unwrap_or_default();
+      for name in &[
+        ".env",
+        ".env.local",
+        &format!(".env.{node_env}"),
+        &format!(".env.{node_env}.local"),
+      ] {
+        let p = current_dir.join(name);
+        if p.exists() {
+          println!("  From {name}:");
+          if let Ok(content) = std::fs::read_to_string(&p) {
+            for line in content.lines() {
+              let line = line.trim();
+              if line.is_empty() || line.starts_with('#') {
+                continue;
+              }
+              if let Some((key, val)) = line.split_once('=') {
+                let key = key.trim();
+                // Mask sensitive values
+                let display = if key.to_lowercase().contains("password")
+                  || key.to_lowercase().contains("secret")
+                  || key.to_lowercase().contains("token")
+                  || key.to_lowercase().contains("private")
+                {
+                  "********"
+                } else {
+                  val.trim()
+                };
+                println!("    {key}={display}");
+              }
+            }
+            println!();
+          }
+        }
+      }
+
+      // Show config file env
+      if let Some((path, cfg)) = &discovered_config {
+        if let Some(env_map) = &cfg.env {
+          println!("  From {}:", path.display());
+          for (k, v) in env_map {
+            println!("    {k}={v}");
+          }
+          println!();
+        }
+      }
+
+      // Show key runtime vars
+      println!("  Runtime:");
+      for var in &["NODE_ENV", "PORT", "HOST", "PATH", "HOME", "SHELL", "TERM", "LANG"] {
+        if let Ok(val) = std::env::var(var) {
+          let display = if val.len() > 80 {
+            format!("{}...", &val[..77])
+          } else {
+            val
+          };
+          println!("    {var}={display}");
+        }
+      }
+      std::process::exit(0);
+    }
 
     Some(Command::Run {
       file,
