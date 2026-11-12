@@ -2366,17 +2366,11 @@ include!("ops_extra.rs");
 // N-API: load native addon and call its init function with a V8 scope.
 // ---------------------------------------------------------------------------
 
-/// N-API: placeholder op. The actual init happens via dlopen in loader.rs.
-/// This op returns a marker object; the loaded addon's exports are already
-/// wired up by the generated CJS wrapper.
+/// N-API: returns addon marker. Init runs at dlopen time via loader.rs.
 #[op2]
 #[serde]
 pub fn op_napi_init(#[string] path: String) -> Result<serde_json::Value, JsErrorBox> {
-  Ok(serde_json::json!({
-    "__napi": true,
-    "path": path,
-    "loaded": true,
-  }))
+  Ok(serde_json::json!({ "__napi": true, "path": path, "loaded": true }))
 }
 
 // ---------------------------------------------------------------------------
