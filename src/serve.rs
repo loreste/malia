@@ -254,14 +254,15 @@ async fn handle_request(
   };
   if let Some(ref key) = cache_key
     && let Some(cached) = cache.lock().unwrap().get(key).cloned()
-      && cached.expires > std::time::Instant::now() {
-        let mut builder = Response::builder().status(cached.status);
-        for (name, value) in &cached.headers {
-          builder = builder.header(name.as_str(), value.as_str());
-        }
-        builder = builder.header("x-malia-cache", "hit");
-        return Ok(builder.body(full_body(cached.body)).unwrap());
-      }
+    && cached.expires > std::time::Instant::now()
+  {
+    let mut builder = Response::builder().status(cached.status);
+    for (name, value) in &cached.headers {
+      builder = builder.header(name.as_str(), value.as_str());
+    }
+    builder = builder.header("x-malia-cache", "hit");
+    return Ok(builder.body(full_body(cached.body)).unwrap());
+  }
   let Ok(permit) = admission.try_acquire_owned() else {
     return Ok(error_response(503, "Service Unavailable\n"));
   };
@@ -394,20 +395,23 @@ async fn handle_request(
                 .find(|d| d.trim().starts_with("max-age="))
                 .and_then(|d| d.trim().strip_prefix("max-age=")?.trim().parse::<u64>().ok())
             })
-          && resp.headers.iter().any(|(n, v)| n.eq_ignore_ascii_case("cache-control") && v.contains("public"))
+          && resp
+            .headers
+            .iter()
+            .any(|(n, v)| n.eq_ignore_ascii_case("cache-control") && v.contains("public"))
           && max_age > 0
           && body.len() < 1024 * 1024
-          {
-            cache.lock().unwrap().insert(
-              key.clone(),
-              CachedResponse {
-                status: resp.status,
-                headers: resp.headers.clone(),
-                body: body.clone(),
-                expires: std::time::Instant::now() + std::time::Duration::from_secs(max_age),
-              },
-            );
-          }
+        {
+          cache.lock().unwrap().insert(
+            key.clone(),
+            CachedResponse {
+              status: resp.status,
+              headers: resp.headers.clone(),
+              body: body.clone(),
+              expires: std::time::Instant::now() + std::time::Duration::from_secs(max_age),
+            },
+          );
+        }
         (status, body_len, Ok(build_response(resp)))
       }
       Ok(Err(_)) => {
