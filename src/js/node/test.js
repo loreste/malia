@@ -154,6 +154,63 @@ function scheduleDrain() {
   });
 }
 
+// mock: simple test double utilities (like Node 22 test.mock)
+const _mocks = [];
+
+function mock(target, method, impl) {
+  if (typeof target === "function" && method === undefined) {
+    // mock.fn() -- create a standalone mock function
+    const calls = [];
+    const mockFn = function (...args) {
+      calls.push({ args, this: this });
+      if (typeof impl === "function") return impl.apply(this, args);
+      if (typeof target === "function") return target.apply(this, args);
+      return undefined;
+    };
+    mockFn.mock = {
+      calls,
+      get callCount() { return calls.length; },
+      resetCalls() { calls.length = 0; },
+    };
+    return mockFn;
+  }
+
+  if (typeof target === "object" && typeof method === "string") {
+    // mock.method(obj, name, impl?) -- replace a method, track calls
+    const original = target[method];
+    const calls = [];
+    const replacement = function (...args) {
+      calls.push({ args, this: this });
+      if (typeof impl === "function") return impl.apply(this, args);
+      return undefined;
+    };
+    replacement.mock = {
+      calls,
+      get callCount() { return calls.length; },
+      resetCalls() { calls.length = 0; },
+      restore() { target[method] = original; },
+    };
+    target[method] = replacement;
+    _mocks.push(replacement);
+    return replacement;
+  }
+
+  throw new TypeError("mock(fn) or mock(obj, method, impl)");
+}
+
+mock.fn = (impl) => mock(impl || (() => {}));
+mock.method = (obj, name, impl) => mock(obj, name, impl);
+mock.reset = () => {
+  for (const m of _mocks) m.mock?.restore?.();
+  _mocks.length = 0;
+};
+
+// assert inside test context
+function createAssert() {
+  const assert = require("node:assert/strict");
+  return assert;
+}
+
 test.test = test;
 test.it = it;
 test.describe = describe;
@@ -162,5 +219,7 @@ test.before = before;
 test.after = after;
 test.beforeEach = beforeEach;
 test.afterEach = afterEach;
+test.mock = mock;
 
+export { mock };
 export default test;

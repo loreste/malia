@@ -604,6 +604,57 @@ async fn supervise_cluster(entry: PathBuf, workers: usize, args: Vec<String>) ->
 /// Run an external tool with inherited stdio; returns its exit code.
 /// Package-manager launchers are .cmd scripts on Windows, and Command only
 /// tries appending .exe.
+/// Load .env files automatically. Order (later overrides earlier):
+///   .env, .env.local, .env.<NODE_ENV>, .env.<NODE_ENV>.local
+/// Only sets vars that aren't already in the environment (existing vars win).
+fn load_dotenv(dir: &Path) {
+  let node_env = std::env::var("NODE_ENV").unwrap_or_default();
+  let files: Vec<PathBuf> = [
+    Some(".env".to_string()),
+    Some(".env.local".to_string()),
+    if !node_env.is_empty() {
+      Some(format!(".env.{node_env}"))
+    } else {
+      None
+    },
+    if !node_env.is_empty() {
+      Some(format!(".env.{node_env}.local"))
+    } else {
+      None
+    },
+  ]
+  .into_iter()
+  .flatten()
+  .map(|f| dir.join(f))
+  .collect();
+
+  for file in &files {
+    if let Ok(content) = std::fs::read_to_string(file) {
+      for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+          continue;
+        }
+        if let Some((key, val)) = line.split_once('=') {
+          let key = key.trim();
+          let val = val.trim();
+          // Strip surrounding quotes
+          let val = if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+            &val[1..val.len() - 1]
+          } else {
+            val
+          };
+          // Only set if not already present (existing env wins)
+          if std::env::var(key).is_err() {
+            // Safety: called once at startup before any threads are spawned.
+            unsafe { std::env::set_var(key, val) };
+          }
+        }
+      }
+    }
+  }
+}
+
 fn tool_program(program: &str) -> String {
   match program {
     "npm" | "npx" | "yarn" | "pnpm" if cfg!(windows) => format!("{program}.cmd"),
@@ -1080,6 +1131,10 @@ pub fn run() -> anyhow::Result<()> {
       raw_args.extend(opts);
     }
   }
+
+  // Auto-load .env files (like dotenv, but built-in and zero-config).
+  // Loads .env, .env.local, .env.<NODE_ENV>, .env.<NODE_ENV>.local
+  load_dotenv(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
   let cli = match Cli::try_parse_from(&raw_args) {
     Ok(c) => c,

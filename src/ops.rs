@@ -2618,6 +2618,7 @@ deno_core::extension!(
     "24_webcrypto.js",
     "25_ai.js",
     "26_parallel.js",
+    "27_cron.js",
   ],
 
   options = {
