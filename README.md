@@ -13,14 +13,22 @@ Memory          35% less RSS, 62% less heap
 
 **What Node can't do, Malia does out of the box:**
 
-- `malia.ai` — built-in AI: `await malia.ai("summarize this")` with auto-detected local/cloud LLMs
-- Hot reload — `server.hot("./handler.mjs")` swaps code on a live server, zero downtime, zero dropped connections
-- `WorkerPool` — parallel CPU work in one line: `await pool.map(items)`
-- Bounded channels — `chan(10)` with backpressure, `for await` consumption
-- HTTP on a separate thread pool — network I/O never blocks your JS
-- Permissions — deny-by-default filesystem, network, env, subprocess access
-- Built-in SQLite, KV store, task queue, router, tracing, metrics
-- TypeScript runs directly — no build step, no config
+- **Built-in npm** — `npm install`, `npx`, lockfiles, audit, publish -- no Node.js install needed
+- **Auto `.env`** — loads `.env` files at startup, zero config, replaces `dotenv`
+- **`malia.parallel`** — concurrent map/filter/reduce with controlled parallelism
+- **`malia.cron`** — built-in cron scheduler, replaces `node-cron`
+- **Security toolkit** — `malia scan`, `malia secrets`, `malia sbom`, `malia permissions`
+- **`jse.secure()`** — built-in security headers (replaces `helmet`)
+- **`jse.rateLimit()`** — built-in rate limiting (replaces `express-rate-limit`)
+- **`jse.cors()`** — built-in CORS middleware
+- **`malia.ai`** — built-in AI: `await malia.ai("summarize this")` with auto-detected local/cloud LLMs
+- **Hot reload** — `server.hot("./handler.mjs")` swaps code live, zero downtime
+- **`WorkerPool`** — parallel CPU work in one line: `await pool.map(items)`
+- **Bounded channels** — `chan(10)` with backpressure, `for await` consumption
+- **HTTP on a separate thread pool** — network I/O never blocks your JS
+- **Permissions** — deny-by-default filesystem, network, env, subprocess access
+- **Built-in SQLite, KV store, task queue, router, tracing, metrics**
+- **TypeScript runs directly** — no build step, no config
 
 The binary is available under two names, `malia` and `jse`. They are the
 same program. In code, the `malia.*` and `jse.*` globals are also the same.
@@ -38,9 +46,9 @@ tools required.
 curl -fsSL https://raw.githubusercontent.com/loreste/malia/main/scripts/install.sh | sh
 ```
 
-Installs `malia`, `jse`, `npm`, and `npx` to `~/.malia/bin` and adds it to `PATH`.
-The `npm` and `npx` commands are built into malia -- no separate Node.js
-installation required.
+Installs `malia`, `jse`, `npm`, `npx`, and `node` to `~/.malia/bin` and adds
+it to `PATH`. The `npm`, `npx`, and `node` commands are built into malia --
+no separate Node.js installation required.
 
 **Debian / Ubuntu (.deb)**
 
@@ -130,12 +138,25 @@ malia run app.wasm
 | `malia install -g <pkg>` | Install a package globally to `~/.malia/bin` |
 | `malia uninstall` / `rm` | Remove packages from `node_modules` and `package.json` |
 | `malia list` / `ls` | List installed packages |
+| `malia outdated` | Show packages with newer versions available |
+| `malia audit` | Check installed packages for known vulnerabilities |
+| `malia link [dir]` | Symlink a local package into `node_modules` or globally |
 | `malia x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
 | `malia npm <args>` | Pass arguments through to npm |
 | `malia config [show\|get <key>]` | Print the resolved configuration |
 | `malia compile <file>` | Embed entry source in the host runtime, or create a Malia source container with `--wasm` |
 | `malia build` | Embed the configured entry source in the host runtime |
 | `malia bench <file>` | Run a file and print its wall-clock time |
+| `malia serve [dir]` | Instant static file server with directory listing, ETags, MIME types |
+| `malia doctor` | Diagnose project health: deps, lockfile, config, security checks |
+| `malia clean [--all]` | Remove `node_modules`, caches, temp files; `--all` clears global cache |
+| `malia upgrade` | Check for and install the latest malia version |
+| `malia env` | Show resolved environment variables from `.env` files and config |
+| `malia scan [path]` | Scan source code for security vulnerabilities |
+| `malia secrets [path]` | Find leaked API keys, tokens, and credentials |
+| `malia permissions <file>` | Show what permissions a script needs before running it |
+| `malia sbom` | Generate a CycloneDX SBOM for compliance audits |
+| `malia deps [--tree] [--licenses]` | Dependency tree with sizes and license breakdown |
 | `malia <script>` | Run a script defined in the config file or `package.json` |
 
 ### Package management
@@ -162,19 +183,25 @@ malia uninstall lodash
 malia list
 ```
 
-The installer fetches packages from the npm registry, resolves dependencies,
-and extracts them to `node_modules`. If an external package manager (npm,
-yarn, pnpm) is available, malia delegates to it for full lockfile support.
-Otherwise the built-in installer handles everything.
+The built-in package manager supports the full npm workflow: lockfile
+generation (`package-lock.json` v3), semver resolution, peer dependencies,
+optional dependencies, bundled dependencies, download caching
+(`~/.malia/cache`), and `.npmrc` auth for private registries. Lifecycle
+scripts (`postinstall`) are disabled by default for security -- set
+`MALIA_SCRIPTS=1` to enable.
 
-Set `NPM_REGISTRY` to use a private registry (e.g. Artifactory, Verdaccio):
+If an external package manager (npm, yarn, pnpm) is detected via lockfile,
+malia delegates to it. Otherwise the built-in installer handles everything.
+
+All 25 npm commands are supported: `install`, `uninstall`, `update`, `list`,
+`outdated`, `audit`, `init`, `link`, `pack`, `publish`, `prune`, `dedupe`,
+`rebuild`, `cache`, `config`, `info`, `fund`, `whoami`, `prefix`, `root`,
+`exec`, `run`, `test`, `start`, `version`.
 
 ```sh
-NPM_REGISTRY=https://registry.internal.com malia install
+NPM_REGISTRY=https://registry.internal.com malia install   # private registries
+MALIA_INSTALL_SHIMS=1 # create npm/npx/node shims even if system versions exist
 ```
-
-Set `MALIA_INSTALL_SHIMS=1` during installation to create the `npm`/`npx`
-shims even if a system npm already exists.
 
 ### Node-compatible flags
 
@@ -365,6 +392,16 @@ start = "jse start"
 | `jse.onShutdown`, `jse.healthCheck`, `jse.metrics` | Shutdown hooks on SIGTERM/SIGINT, a health-check handler, Prometheus-format metrics |
 | `jse.optimizer` | Sets V8 Wasm tiering flags and triggers V8 memory compaction during idle turns and between request batches |
 | `malia.ai` | Built-in AI toolkit. Auto-detects local Ollama/vLLM/LM Studio. `malia.ai("prompt")` for one-shot chat, `ai.stream("prompt")` for streaming tokens, `ai.embed("text")` for vectors, `AI.similarity(a, b)` for cosine distance. Conversation memory, system prompts, configurable models. No npm packages needed |
+| `malia.parallel` | Concurrent execution with controlled parallelism. `parallel.map(items, fn, {concurrency})`, `parallel.filter`, `parallel.each`, `parallel.reduce`, `parallel.pool`, `parallel.pipeline`, `parallel.race`, `parallel.any`. See [Concurrency](#concurrency-maliaparallel) |
+| `malia.mutex`, `malia.semaphore` | Async mutex and counting semaphore for protecting shared state |
+| `malia.cron` | Built-in cron scheduler. 5/6-field expressions, ranges, steps, day/month names. `cron.every("5m", fn)`, `cron.daily()`, `cron.weekly()`. See [Cron](#cron-scheduler-maliacron) |
+| `malia.retry` | Retry with exponential backoff: `retry(fn, {attempts, delay, backoff})` |
+| `malia.timeout` | Deadline enforcement: `timeout(promise, ms)` |
+| `malia.batch` | Chunked processing: `batch(items, size, fn)` |
+| `malia.debounce`, `malia.throttle` | Function rate limiting utilities |
+| `jse.secure` | Security headers middleware: HSTS, noSniff, frameOptions, CSP, COOP, CORP, referrer policy |
+| `jse.rateLimit` | Per-IP rate limiting with `Retry-After` and `X-RateLimit` headers |
+| `jse.cors` | CORS middleware with preflight support, configurable origin/methods/credentials |
 
 Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 `btoa`, `atob`, `crypto.getRandomValues`, `crypto.randomUUID`,
@@ -443,6 +480,157 @@ JS handler is a mutable reference — `reload()` atomically swaps it.
 New requests immediately use the new handler; in-flight requests finish
 with the handler that was active when they started.
 
+## Concurrency (`malia.parallel`)
+
+Built-in concurrent execution -- what `Promise.all` should have been.
+`Promise.all(urls.map(fetch))` fires everything at once and overwhelms
+servers. `malia.parallel.map` gives you controlled parallelism.
+
+```javascript
+// Fetch 100 URLs, 10 at a time (not 100 at once)
+const data = await malia.parallel.map(urls, url => fetch(url).then(r => r.json()), {
+  concurrency: 10
+});
+
+// Concurrent filter
+const live = await malia.parallel.filter(hosts, async h => {
+  try { await fetch(h); return true; } catch { return false; }
+}, { concurrency: 20 });
+
+// Async mutex -- protect shared state
+const lock = malia.mutex();
+await lock.run(async () => { /* critical section */ });
+
+// Semaphore -- limit concurrent access
+const sem = malia.semaphore(5);
+await sem.run(async () => { /* max 5 concurrent */ });
+
+// Retry with exponential backoff
+const result = await malia.retry(() => fetch(url), {
+  attempts: 3, delay: 100, backoff: 2
+});
+
+// Deadline enforcement
+await malia.timeout(fetch(url), 5000, "API call timed out");
+
+// Reusable concurrent executor
+const pool = malia.parallel.pool(url => fetch(url).then(r => r.json()), {
+  concurrency: 5
+});
+const data = await pool.submit("https://api.example.com/data");
+```
+
+Also available: `malia.parallel.each`, `malia.parallel.reduce`,
+`malia.parallel.race`, `malia.parallel.any`, `malia.parallel.pipeline`,
+`malia.batch`, `malia.debounce`, `malia.throttle`.
+
+## Cron Scheduler (`malia.cron`)
+
+Built-in cron with no npm packages. Supports 5-field (minute) and 6-field
+(second) expressions, ranges, steps, day/month names.
+
+```javascript
+malia.cron("*/5 * * * *", () => console.log("every 5 minutes"));
+malia.cron("0 9 * * MON-FRI", () => sendDailyReport());
+malia.cron("*/30 * * * * *", () => checkHealth());  // every 30 seconds
+
+// Shorthand helpers
+malia.cron.every("10s", fn);   // every 10 seconds
+malia.cron.every("5m", fn);    // every 5 minutes
+malia.cron.daily(9, 0, fn);    // daily at 9:00
+malia.cron.weekly(1, 8, fn);   // Mondays at 8:00
+
+// Job control
+const job = malia.cron("0 * * * *", handler);
+job.stop();                    // pause
+job.start();                   // resume
+job.trigger();                 // fire immediately
+console.log(job.runCount);     // times executed
+```
+
+## Security
+
+Malia is secure by default -- more so than Node.js.
+
+**Deny-by-default permissions** (see [Permissions](#permissions)): scripts
+cannot read files, access the network, or spawn processes without explicit
+flags.
+
+**Built-in security middleware** (replaces `helmet` + `express-rate-limit` + `cors`):
+
+```javascript
+// Security headers: HSTS, X-Content-Type-Options, X-Frame-Options, CSP, COOP, CORP
+const server = jse.serve({ port: 3000 }, jse.secure(handler));
+
+// Rate limiting: per-IP, with Retry-After and X-RateLimit headers
+const server = jse.serve({ port: 3000 }, jse.rateLimit(handler, {
+  window: 60000, max: 100
+}));
+
+// CORS: configurable origin, methods, credentials, preflight
+const server = jse.serve({ port: 3000 }, jse.cors(handler, {
+  origin: "https://app.example.com"
+}));
+
+// Compose them:
+jse.serve({ port: 3000 }, jse.secure(jse.rateLimit(jse.cors(handler))));
+```
+
+**Security hardening** vs Node.js:
+
+- `setTimeout("string")` blocked (eval-based code injection)
+- Package `postinstall` scripts disabled by default (supply-chain defense)
+- Tarball extraction rejects symlinks and path traversal
+- HTTP request smuggling mitigated (conflicting CL+TE headers resolved per RFC 7230)
+- Hot-reload restricted to project directory
+
+**Security CLI tools** for security engineers:
+
+```sh
+malia scan .              # Static analysis: 30+ vuln patterns (XSS, injection, secrets, TLS bypass)
+malia secrets .           # Detect leaked API keys: AWS, GitHub, Stripe, OpenAI, Slack, SSH, JWT
+malia permissions app.js  # Show what permissions a script needs BEFORE running it
+malia sbom                # Generate CycloneDX 1.5 SBOM for compliance
+malia deps --licenses     # License audit across all dependencies
+malia audit               # Check npm advisory database for known CVEs
+```
+
+## Developer & Sysadmin Tools
+
+```sh
+malia doctor              # Check project health: deps, lockfile, config, .gitignore, secrets
+malia serve .             # Instant static file server: directory listing, ETags, MIME types
+malia clean               # Remove node_modules, .cache, dist, build, lockfile
+malia clean --all         # Also clear global download cache
+malia upgrade             # Check for updates, show install command
+malia env                 # Show resolved env vars (secrets auto-masked)
+```
+
+**Auto `.env` loading**: malia loads `.env`, `.env.local`, `.env.<NODE_ENV>`,
+`.env.<NODE_ENV>.local` at startup. No `dotenv` package needed. Existing
+environment variables take precedence.
+
+## npm Packages Replaced
+
+Malia includes built-in replacements for popular npm packages. Fewer
+dependencies means faster installs, smaller `node_modules`, fewer supply
+chain risks.
+
+| npm package | Weekly downloads | Malia built-in |
+|---|---|---|
+| `dotenv` | 160M | Auto `.env` loading at startup |
+| `p-limit` / `p-map` | 200M+ | `malia.parallel.map(items, fn, {concurrency})` |
+| `p-retry` | 30M | `malia.retry(fn, {attempts, backoff})` |
+| `p-timeout` | 30M | `malia.timeout(promise, ms)` |
+| `async-mutex` | 5M | `malia.mutex()` / `malia.semaphore(n)` |
+| `lodash.debounce` | 15M | `malia.debounce(fn, ms)` |
+| `lodash.throttle` | 10M | `malia.throttle(fn, ms)` |
+| `node-cron` | 4M | `malia.cron("*/5 * * * *", fn)` |
+| `helmet` | 6M | `jse.secure(handler)` |
+| `express-rate-limit` | 3M | `jse.rateLimit(handler, {max})` |
+| `cors` | 14M | `jse.cors(handler, {origin})` |
+| `http-server` / `serve` | 5M | `malia serve .` |
+
 ## Node builtins
 
 | Module | Implemented |
@@ -453,28 +641,28 @@ with the handler that was active when they started.
 | `child_process` | `spawn`, `exec`, `execFile`, their `*Sync` forms, `fork` with IPC |
 | `cluster` | `isPrimary`, `isWorker`, `fork`, lifecycle events, IPC. Workers bind the same port with `SO_REUSEPORT` |
 | `console` | `log`, `info`, `warn`, `error`, `debug`, `trace`, `assert`, `time`, `timeEnd`, `timeLog`, `count`, `countReset`, `table`, `dir`, `group`, `groupEnd`, `groupCollapsed`, `clear` |
-| `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`, `scrypt`; ciphers `aes-{128,192,256}-{cbc,ctr}`, `aes-{128,256}-gcm`, `chacha20-poly1305`; `KeyObject`, `createPrivateKey`/`createPublicKey`/`createSecretKey` (PEM, DER, JWK; PKCS#1, PKCS#8, SEC1, SPKI), `generateKeyPair(Sync)` for RSA, EC (P-256/384/521), Ed25519; `sign`/`verify`, `createSign`/`createVerify` (RSA PKCS#1 v1.5 and PSS, ECDSA DER or IEEE P1363, Ed25519); `publicEncrypt`/`privateDecrypt` (OAEP, PKCS#1 v1.5); `createECDH` (P-256, P-384, P-521, X25519), `diffieHellman`; `webcrypto` |
+| `crypto` | `createHash` and `hash` (md5, sha1, sha224, sha256, sha384, sha512, sha512-256; `copy()`), `createHmac`, `randomBytes`, `randomInt`, `randomUUID`, `timingSafeEqual`, `pbkdf2`, `scrypt`, `hkdf`, `hkdfSync`; ciphers `aes-{128,192,256}-{cbc,ctr}`, `aes-{128,256}-gcm`, `chacha20-poly1305`; `KeyObject`, `createPrivateKey`/`createPublicKey`/`createSecretKey` (PEM, DER, JWK; PKCS#1, PKCS#8, SEC1, SPKI), `generateKeyPair(Sync)` for RSA, EC (P-256/384/521), Ed25519; `sign`/`verify`, `createSign`/`createVerify` (RSA PKCS#1 v1.5 and PSS, ECDSA DER or IEEE P1363, Ed25519); `publicEncrypt`/`privateDecrypt` (OAEP, PKCS#1 v1.5); `createECDH` (P-256, P-384, P-521, X25519), `diffieHellman`; `X509Certificate`; `webcrypto` |
 | `diagnostics_channel` | `channel`, `subscribe`, `unsubscribe`, `hasSubscribers`, `tracingChannel` (`traceSync`, `tracePromise`, `traceCallback`) |
 | `dgram` | UDP sockets: `createSocket`, `bind`, `send`, `close`, message events, auto-bind on send |
 | `dns`, `dns/promises` | `lookup`, `lookupService`, `resolve4`, `resolve6`, `resolveTxt`, `resolveSrv`, `resolveMx`, `resolveNs`, `resolveCname`, `resolvePtr`, `reverse` |
 | `domain` | `create`, `Domain` |
-| `events` | `EventEmitter`, `once`, `on` (async iterator with `AbortSignal`), `getEventListeners`, `removeAllListeners` (emits `removeListener`), `prependListener`, `prependOnceListener`, `defaultMaxListeners` |
+| `events` | `EventEmitter`, `once`, `on` (async iterator with `AbortSignal`), `getEventListeners`, `removeAllListeners` (emits `removeListener`), `prependListener`, `prependOnceListener`, `defaultMaxListeners`, `captureRejections`, `errorMonitor`, `setMaxListeners` (static), `addAbortListener` |
 | `fs`, `fs/promises` | Sync, callback, and promise APIs with Node's error shape (`code`, `errno`, `syscall`, `path`): read/write with `flag`, `mode`, and encodings, `stat` (`throwIfNoEntry`), `readdir` (`recursive`, `withFileTypes`), `mkdir`, `rm`, `cp`, `copyFile` (`COPYFILE_EXCL`), `rename`, `link`, `symlink`, `utimes`, `opendir`, file descriptors, `FileHandle`, streams, `watch` (native inotify/kqueue/FSEvents via notify, falls back to polling), `watchFile` |
 | `http`, `https` | `createServer` (with options), `request`, `get`, `IncomingMessage` (async iterable body, `close` event), `ServerResponse` (`_implicitHeader`, `headersSent`, CRLF-validated `setHeader`), `Agent` (`keepAlive` connection pooling, `maxFreeSockets`), `globalAgent`, `STATUS_CODES`, `METHODS`, `validateHeaderName`/`validateHeaderValue`. The server shares the hyper engine with `jse.serve`; client responses are `Readable` streams; request bodies > `maxBodyBytes` stream through a channel |
 | `http2` | Server and client; ALPN `h2` and cleartext `h2c` with prior knowledge |
 | `inspector` | `Session` (connects to the running V8 inspector over WebSocket), `open`, `close`, `url`. See [Debugging](#debugging) |
-| `module` | `createRequire`, `builtinModules`, `isBuiltin`, `Module` |
+| `module` | `createRequire`, `builtinModules`, `isBuiltin`, `Module`, `Module._resolveFilename`, `Module._load`, `Module._cache`, `Module._nodeModulePaths` |
 | `net`, `tls` | TCP, Unix domain sockets and Windows named pipes; rustls TLS clients. TLS servers, socket upgrades and unimplemented security options reject explicitly; see the compatibility matrix. |
 | `os` | `cpus` (real brand/frequency/times), `loadavg`, `uptime`, `totalmem`, `freemem`, `networkInterfaces` (MAC addresses), `userInfo`, `hostname`, `platform`, `arch`, `type`, `release`, `version`, `machine`, `availableParallelism`, `tmpdir`, `homedir`, `endianness`. Reports cgroup limits inside containers |
 | `path` | Port of Node's implementation; `posix` and `win32`, with the platform's variant as the default |
 | `perf_hooks` | `performance.mark`, `performance.measure`, `performance.getEntries`, `PerformanceObserver` (fires callbacks on entries), `monitorEventLoopDelay` |
-| `process` | `argv`, `env` (mutations propagate to child processes), `cwd`, `chdir`, `nextTick`, `hrtime`, `hrtime.bigint`, `memoryUsage`, `cpuUsage`, `kill`, `exit`, `mainModule`, `stdin` (readable stream), `stdout`/`stderr` (writable streams with EPIPE handling), `uncaughtException`/`unhandledRejection`/`SIGTERM`/`SIGINT` events, `emitWarning`, `umask`. CJS modules have `module.id`, `module.filename`, `module.loaded`, and `require.cache` (delete forces reload) |
+| `process` | `argv`, `env` (mutations propagate to child processes), `cwd`, `chdir`, `nextTick`, `hrtime`, `hrtime.bigint`, `memoryUsage`, `cpuUsage`, `kill`, `exit`, `abort`, `mainModule`, `stdin` (readable stream), `stdout`/`stderr` (writable streams with EPIPE handling), `uncaughtException`/`unhandledRejection`/`SIGTERM`/`SIGINT` events, `emitWarning`, `umask`, `report`, `getBuiltinModule`, `allowedNodeEnvironmentFlags`, `features`, `config`, `release`. CJS modules have `module.id`, `module.filename`, `module.loaded`, and `require.cache` (delete forces reload) |
 | `punycode`, `querystring`, `readline`, `string_decoder`, `timers`, `tty`, `constants` | Available |
 | `sqlite` | `DatabaseSync`, `StatementSync` (Node 22 API) |
 | `stream`, `stream/promises`, `stream/consumers`, `stream/web` | Node's stream implementation (readable-stream 4): `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline`, `finished`, `compose`, backpressure, `toWeb`/`fromWeb`; consumers; WHATWG streams |
-| `test` | `test`, `describe`, `it`, `before`/`after`/`beforeEach`/`afterEach`, TAP output |
+| `test` | `test`, `describe`, `it`, `before`/`after`/`beforeEach`/`afterEach`, `mock.fn`/`mock.method`/`mock.reset`, TAP output |
 | `url` | `URL`, `URLSearchParams`, `fileURLToPath`, `pathToFileURL` |
-| `util`, `util/types` | `format`, `inspect`, `promisify`, `callbackify`, `inherits`, `deprecate`, `isDeepStrictEqual`, type predicates |
+| `util`, `util/types` | `format`, `inspect`, `promisify`, `callbackify`, `inherits`, `deprecate`, `isDeepStrictEqual`, `parseArgs`, `styleText`, `MIMEType`, `debuglog`, type predicates |
 | `v8` | `getHeapStatistics`, `serialize`, `deserialize`, `Serializer`, `Deserializer` |
 | `vm` | `runInThisContext`, `createContext`/`runInContext`/`runInNewContext` and `Script` in real V8 contexts (sandbox properties seed the context's global; globals the code defines are written back). Timeouts and cached data reject explicitly. Like Node, not a security boundary |
 | `wasi` | WASI Preview 1: args, env, clocks, random, stdio, exit |
@@ -581,7 +769,7 @@ src/cache.rs      on-disk cache helpers
 src/config.rs     project config loading
 src/ops.rs        ops: timers, fs, process, channels, workers, text, crypto, url, fetch, HTTP
 src/ops_extra.rs  net, TLS client, zlib, dns, os, hmac, udp, fs.watch, child stdio (included from ops.rs)
-src/pkg.rs        built-in npm-compatible package installer
+src/pkg.rs        built-in npm-compatible package manager (install, publish, audit, SBOM)
 src/crypto.rs     asymmetric keys, ECDH/X25519, signatures, RSA, AES-CBC/CTR
 src/serve.rs      hyper server for jse.serve and node:http
 src/inspector_server.rs  V8 inspector WebSocket server (--inspect / --inspect-brk)

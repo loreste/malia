@@ -22,6 +22,10 @@ Examples for common tasks. `malia` and `jse` are the same binary, and the
 15. [AI toolkit](#15-ai-toolkit)
 16. [Hot module replacement](#16-hot-module-replacement)
 17. [Package management](#17-package-management)
+18. [Concurrency](#18-concurrency)
+19. [Cron scheduler](#19-cron-scheduler)
+20. [Security](#20-security)
+21. [Developer tools](#21-developer-tools)
 
 ---
 
@@ -1223,3 +1227,180 @@ If you previously used Node.js and npm:
 2. Your existing `package.json` and `node_modules` work as-is
 3. `npm install`, `npm run`, `npm test` all work unchanged
 4. Optionally uninstall Node.js -- malia provides everything you need
+
+---
+
+## 18. Concurrency
+
+### Parallel map with concurrency control
+
+Node's `Promise.all(items.map(fn))` fires everything at once. Malia gives
+you bounded parallelism:
+
+```javascript
+// Process 1000 items, 20 at a time
+const results = await malia.parallel.map(items, async (item) => {
+  const res = await fetch(`/api/${item.id}`);
+  return res.json();
+}, { concurrency: 20 });
+```
+
+### Mutex and semaphore
+
+```javascript
+// Protect a shared resource
+const lock = malia.mutex();
+await lock.run(async () => {
+  await db.update(record);
+});
+
+// Allow max 5 concurrent database connections
+const dbSem = malia.semaphore(5);
+await dbSem.run(async () => {
+  return await db.query("SELECT ...");
+});
+```
+
+### Retry with backoff
+
+```javascript
+const data = await malia.retry(async () => {
+  const res = await fetch("https://flaky-api.example.com/data");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}, { attempts: 3, delay: 200, backoff: 2 });
+```
+
+### Reusable pool
+
+```javascript
+const imageProcessor = malia.parallel.pool(
+  async (url) => {
+    const img = await fetch(url).then(r => r.arrayBuffer());
+    return processImage(img);
+  },
+  { concurrency: 4 }
+);
+
+// Submit work throughout the application lifetime
+const result = await imageProcessor.submit("https://example.com/photo.jpg");
+```
+
+---
+
+## 19. Cron scheduler
+
+```javascript
+// Standard cron expressions
+malia.cron("0 */6 * * *", async () => {
+  await generateReport();
+  await sendEmail();
+});
+
+// Second-level precision (6 fields)
+malia.cron("*/10 * * * * *", () => {
+  healthCheck();
+});
+
+// Shorthand
+malia.cron.every("30s", checkQueue);
+malia.cron.daily(2, 0, cleanupLogs);     // 2:00 AM daily
+malia.cron.weekly(1, 9, sendWeeklyEmail); // Monday 9:00 AM
+
+// Control
+const job = malia.cron("*/5 * * * *", handler);
+job.stop();     // pause
+job.start();    // resume
+job.trigger();  // fire now
+```
+
+---
+
+## 20. Security
+
+### Security middleware
+
+```javascript
+// Replaces helmet + express-rate-limit + cors (3 packages)
+const handler = async (req) => {
+  return new Response(JSON.stringify({ ok: true }), {
+    headers: { "Content-Type": "application/json" },
+  });
+};
+
+jse.serve({ port: 3000 },
+  jse.secure(               // HSTS, noSniff, X-Frame-Options, CSP
+    jse.rateLimit(           // 100 req/min per IP
+      jse.cors(handler, {    // CORS with preflight
+        origin: "https://app.example.com",
+      }),
+      { max: 100, window: 60000 }
+    )
+  )
+);
+```
+
+### Security scanning
+
+```sh
+# Before deploying -- scan for vulnerabilities
+malia scan .
+
+# Before committing -- check for leaked secrets
+malia secrets .
+
+# Before running untrusted code -- see what it needs
+malia permissions untrusted-script.js
+
+# For compliance -- generate SBOM
+malia sbom
+
+# For license review
+malia deps --licenses
+```
+
+---
+
+## 21. Developer tools
+
+### Project health check
+
+```sh
+malia doctor
+```
+
+Checks: package.json validity, node_modules presence, lockfile, .gitignore
+rules, sensitive keys in .env, system info.
+
+### Static file server
+
+```sh
+malia serve .                    # serve current directory on port 3000
+malia serve ./public --port 8080 # custom port
+```
+
+Features: directory listing, auto `index.html`, MIME types, ETag caching,
+304 Not Modified, path traversal protection.
+
+### Environment inspection
+
+```sh
+malia env
+```
+
+Shows all resolved env vars from `.env` files (with source), config file
+env settings, and runtime variables. Sensitive values (passwords, tokens,
+secrets) are automatically masked.
+
+### Cleanup
+
+```sh
+malia clean       # remove node_modules, .cache, dist, build
+malia clean --all # also clear global download cache
+```
+
+### Self-update
+
+```sh
+malia upgrade     # check latest version, show install command
+```
