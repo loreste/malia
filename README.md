@@ -30,14 +30,12 @@ still runs on V8, same as Node.
 the same V8 engine. Malia doesn't make your JS faster, it makes the
 surrounding infrastructure (startup, HTTP, workers) faster.
 
-**N-API native addons (partial):** `.node` files are loaded via `dlopen`
-and the `napi_register_module_v1` symbol is verified. Addons that fail
-to load throw `ERR_DLOPEN_FAILED` so try/catch fallback patterns (e.g.
-Next.js SWC native to WASM) work. The N-API function table (the C
-functions addons call to create JS values) is not yet wired up, so
-addons that call `napi_create_string` etc. won't work yet. Packages
-like `bcrypt` and `sharp` need the full function table -- see
-[Limitations](#limitations).
+**Native addons:** We can load `.node` files and verify they have
+the right init symbol, so try/catch fallback patterns work (Next.js
+SWC falls back to WASM, for example). But the N-API function table
+isn't wired up yet, so addons that actually create JS values from C
+won't work. That means `bcrypt`, `sharp`, `better-sqlite3`, etc. are
+still blocked. See [Limitations](#limitations) for details.
 
 **Things you don't need to install separately:**
 
@@ -890,14 +888,13 @@ See the [Dockerfile](Dockerfile) in the repository root and
 
 ## Limitations
 
-- **N-API native addons:** `.node` files are `dlopen`'d and the init
-  symbol is verified, but the N-API function table (the ~40 C functions
-  addons call to create JS values, get properties, etc.) is not yet
-  connected. Addons that only check for loadability work (try/catch
-  fallback patterns). Addons that call `napi_create_string_utf8` etc.
-  need the function table, which requires bridging `extern "C"` to
-  deno_core's V8 scope management. Packages like `bcrypt`, `sharp`,
-  and `better-sqlite3` are blocked on this.
+- **Native addons:** We load `.node` files and check for the init
+  symbol, so frameworks that try native first and fall back to WASM
+  (like Next.js with SWC) work fine. But we haven't wired up the
+  N-API function table yet -- the part where C code calls back into
+  V8 to create strings, objects, etc. That's blocked on bridging
+  extern C to deno_core's scope management. Until then, packages
+  like `bcrypt`, `sharp`, and `better-sqlite3` won't load.
 - `Blob` contents are held in memory (same as Node).
 - Crypto: no encrypted (passphrase-protected) PEM import/export, RSA key
   generation only for 2048/3072/4096/8192 bits with exponent 65537, and
