@@ -72,6 +72,13 @@ try {
     if (-not (Test-Path "$BinDir\jse.exe") -and (Test-Path "$BinDir\malia.exe")) {
         Copy-Item "$BinDir\malia.exe" -Destination "$BinDir\jse.exe" -Force
     }
+
+    # Create npm/npx shims -- malia detects argv[0] and routes accordingly
+    foreach ($shim in @("npm", "npx")) {
+        if (-not (Get-Command $shim -ErrorAction SilentlyContinue) -or $env:MALIA_INSTALL_SHIMS -eq "1") {
+            Copy-Item "$BinDir\malia.exe" -Destination "$BinDir\$shim.exe" -Force
+        }
+    }
 } finally {
     if (Test-Path $TempZip) {
         Remove-Item $TempZip -Force -ErrorAction SilentlyContinue

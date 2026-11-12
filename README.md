@@ -38,7 +38,9 @@ tools required.
 curl -fsSL https://raw.githubusercontent.com/loreste/malia/main/scripts/install.sh | sh
 ```
 
-Installs `malia` and `jse` to `~/.malia/bin` and adds it to `PATH`.
+Installs `malia`, `jse`, `npm`, and `npx` to `~/.malia/bin` and adds it to `PATH`.
+The `npm` and `npx` commands are built into malia -- no separate Node.js
+installation required.
 
 **Debian / Ubuntu (.deb)**
 
@@ -124,7 +126,10 @@ malia run app.wasm
 | `malia dev` | Run the entry point and restart on file changes |
 | `malia start` | Run the entry point; forks cluster workers when `cluster` is configured |
 | `malia test` | Run tests (`node:test`, TAP output) |
-| `malia install` / `add` / `i` | Install npm dependencies (detects npm, pnpm, or yarn lockfiles) |
+| `malia install` / `add` / `i` | Install packages from the npm registry (built-in or delegates to npm/yarn/pnpm) |
+| `malia install -g <pkg>` | Install a package globally to `~/.malia/bin` |
+| `malia uninstall` / `rm` | Remove packages from `node_modules` and `package.json` |
+| `malia list` / `ls` | List installed packages |
 | `malia x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
 | `malia npm <args>` | Pass arguments through to npm |
 | `malia config [show\|get <key>]` | Print the resolved configuration |
@@ -132,6 +137,44 @@ malia run app.wasm
 | `malia build` | Embed the configured entry source in the host runtime |
 | `malia bench <file>` | Run a file and print its wall-clock time |
 | `malia <script>` | Run a script defined in the config file or `package.json` |
+
+### Package management
+
+Malia includes a built-in package manager. No separate npm or Node.js
+installation is needed. When you install malia, `npm` and `npx` commands
+are created automatically and route to the built-in installer.
+
+```sh
+# These all work out of the box, no Node.js required:
+npm install express            # install a package
+npm install -g http-server     # install globally
+npm uninstall lodash           # remove a package
+npm init -y                    # create package.json
+npm ls                         # list installed packages
+npm run dev                    # run a script
+npm test                       # run tests
+npx cowsay hello               # execute a package binary
+
+# Or use the malia equivalents:
+malia install express
+malia install -g http-server
+malia uninstall lodash
+malia list
+```
+
+The installer fetches packages from the npm registry, resolves dependencies,
+and extracts them to `node_modules`. If an external package manager (npm,
+yarn, pnpm) is available, malia delegates to it for full lockfile support.
+Otherwise the built-in installer handles everything.
+
+Set `NPM_REGISTRY` to use a private registry (e.g. Artifactory, Verdaccio):
+
+```sh
+NPM_REGISTRY=https://registry.internal.com malia install
+```
+
+Set `MALIA_INSTALL_SHIMS=1` during installation to create the `npm`/`npx`
+shims even if a system npm already exists.
 
 ### Node-compatible flags
 
@@ -538,6 +581,7 @@ src/cache.rs      on-disk cache helpers
 src/config.rs     project config loading
 src/ops.rs        ops: timers, fs, process, channels, workers, text, crypto, url, fetch, HTTP
 src/ops_extra.rs  net, TLS client, zlib, dns, os, hmac, udp, fs.watch, child stdio (included from ops.rs)
+src/pkg.rs        built-in npm-compatible package installer
 src/crypto.rs     asymmetric keys, ECDH/X25519, signatures, RSA, AES-CBC/CTR
 src/serve.rs      hyper server for jse.serve and node:http
 src/inspector_server.rs  V8 inspector WebSocket server (--inspect / --inspect-brk)

@@ -21,6 +21,7 @@ Examples for common tasks. `malia` and `jse` are the same binary, and the
 14. [UDP sockets](#14-udp-sockets)
 15. [AI toolkit](#15-ai-toolkit)
 16. [Hot module replacement](#16-hot-module-replacement)
+17. [Package management](#17-package-management)
 
 ---
 
@@ -60,8 +61,11 @@ files are searched in this order: `malia.json`, `malia.toml`,
 | `jse run <file>` | Run a `.js`, `.ts`, `.mjs`, `.cjs`, or `.wasm` file |
 | `jse dev` | Run the entry point and restart on file changes |
 | `jse test` | Run tests (`node:test`, TAP output) |
-| `jse install` | Install npm dependencies (detects npm, pnpm, or yarn lockfiles) |
-| `jse add <pkg>` | Add an npm package |
+| `jse install` | Install dependencies from package.json (built-in or delegates to npm/yarn/pnpm) |
+| `jse install <pkg>` / `jse add <pkg>` | Add a package, update package.json |
+| `jse install -g <pkg>` | Install a package globally to `~/.malia/bin` |
+| `jse uninstall <pkg>` / `jse rm` | Remove a package |
+| `jse list` / `jse ls` | List installed packages |
 | `jse x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
 | `jse compile <file>` | Embed entry source and permissions in the host runtime |
 | `jse config show` | Print the resolved configuration |
@@ -1139,3 +1143,83 @@ if (process.env.NODE_ENV !== "production") {
   await server.hot("./src/handler.mjs");
 }
 ```
+
+---
+
+## 17. Package management
+
+Malia includes a built-in npm-compatible package manager. No separate Node.js
+installation is needed.
+
+### npm and npx commands
+
+When you install malia, `npm` and `npx` commands are created in
+`~/.malia/bin`. They route to malia's built-in package manager:
+
+```sh
+npm install express              # install a package
+npm install -g http-server       # install globally to ~/.malia/bin
+npm uninstall lodash             # remove a package
+npm init -y                      # create package.json
+npm ls                           # list installed packages
+npm run dev                      # run a script from package.json
+npm test                         # run the test script
+npm start                        # run the start script
+npx cowsay hello                 # run a package binary
+```
+
+### malia install
+
+The `malia install` / `jse install` commands work identically:
+
+```sh
+# Install all dependencies from package.json
+jse install
+
+# Add a package (updates package.json)
+jse install express
+jse add lodash
+
+# Add as a dev dependency
+jse install -D jest
+
+# Install globally
+jse install -g typescript
+
+# Remove a package
+jse uninstall express
+jse rm lodash
+
+# List installed packages
+jse ls
+jse list -g            # global packages
+jse list --all         # include sub-dependencies
+```
+
+### How it works
+
+1. If an external package manager is available (npm, yarn, pnpm -- detected
+   from lockfiles), malia delegates to it for full lockfile support.
+2. If no package manager is found, malia's built-in installer handles it:
+   fetches package metadata from the npm registry, resolves semver ranges,
+   downloads and extracts tarballs, and installs sub-dependencies.
+3. Global installs go to `~/.malia/lib/node_modules/` with bin links in
+   `~/.malia/bin/`.
+
+### Private registries
+
+Set `NPM_REGISTRY` to point to a private registry:
+
+```sh
+NPM_REGISTRY=https://registry.internal.com jse install
+```
+
+### Migrating from Node.js
+
+If you previously used Node.js and npm:
+
+1. Install malia (the installer creates `npm`/`npx` shims if no system npm
+   exists, or set `MALIA_INSTALL_SHIMS=1` to always create them)
+2. Your existing `package.json` and `node_modules` work as-is
+3. `npm install`, `npm run`, `npm test` all work unchanged
+4. Optionally uninstall Node.js -- malia provides everything you need

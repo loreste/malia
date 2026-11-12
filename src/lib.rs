@@ -12,6 +12,7 @@ pub mod ops;
 pub mod optimizer;
 pub mod panic;
 pub mod permissions;
+pub mod pkg;
 pub mod platform;
 pub mod production;
 pub mod router;

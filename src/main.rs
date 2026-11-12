@@ -233,6 +233,29 @@ enum Command {
     /// Save as development dependency (-D / --save-dev).
     #[arg(short = 'D', long)]
     save_dev: bool,
+    /// Install globally (-g / --global).
+    #[arg(short = 'g', long)]
+    global: bool,
+  },
+  /// Remove packages from node_modules and package.json.
+  #[command(alias = "rm", alias = "remove", alias = "un")]
+  Uninstall {
+    /// Package names to remove.
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    packages: Vec<String>,
+    /// Remove a global package (-g / --global).
+    #[arg(short = 'g', long)]
+    global: bool,
+  },
+  /// List installed packages.
+  #[command(alias = "ls")]
+  List {
+    /// Show all levels of dependency tree.
+    #[arg(long)]
+    all: bool,
+    /// List globally installed packages.
+    #[arg(short = 'g', long)]
+    global: bool,
   },
   /// Execute a local package binary from node_modules/.bin or via npx (`jse x prettier`, `jse x prisma`).
   #[command(alias = "dlx", alias = "exec")]
@@ -566,14 +589,173 @@ fn tool_program(program: &str) -> String {
   }
 }
 
+/// Run a command, printing a clear error if the binary is missing or fails to start.
+fn exec_cmd(cmd: &mut std::process::Command) -> anyhow::Result<i32> {
+  match cmd.status() {
+    Ok(s) => Ok(s.code().unwrap_or(0)),
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+      let prog = format!("{:?}", cmd.get_program());
+      eprintln!("error: command not found: {}", prog.trim_matches('"'));
+      eprintln!("Make sure it is installed and available on your PATH.");
+      Ok(127)
+    }
+    Err(e) => {
+      let prog = format!("{:?}", cmd.get_program());
+      eprintln!("error: failed to run {}: {e}", prog.trim_matches('"'));
+      Ok(1)
+    }
+  }
+}
+
+/// Handle invocation as `npm` -- translate npm commands to built-in operations.
+fn run_as_npm(args: &[String]) -> anyhow::Result<()> {
+  let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+  let sub = args.first().map(String::as_str).unwrap_or("help");
+
+  // Collect flags
+  let global = args.iter().any(|a| a == "-g" || a == "--global");
+  let save_dev = args.iter().any(|a| a == "-D" || a == "--save-dev");
+  let packages: Vec<String> = args
+    .iter()
+    .skip(1) // skip the subcommand
+    .filter(|a| !a.starts_with('-'))
+    .cloned()
+    .collect();
+
+  match sub {
+    "install" | "i" | "add" | "ci" => {
+      if global {
+        if packages.is_empty() {
+          eprintln!("error: --global requires at least one package name");
+          std::process::exit(1);
+        }
+        if let Err(e) = js_engine::pkg::install_global(&packages) {
+          eprintln!("error: {e}");
+          std::process::exit(1);
+        }
+      } else if packages.is_empty() {
+        if let Err(e) = js_engine::pkg::install_all(&current_dir) {
+          eprintln!("error: {e}");
+          std::process::exit(1);
+        }
+      } else if let Err(e) = js_engine::pkg::install_packages(&current_dir, &packages, save_dev) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "uninstall" | "un" | "remove" | "rm" => {
+      if packages.is_empty() {
+        eprintln!("error: must provide a package name to remove");
+        std::process::exit(1);
+      }
+      let result = if global {
+        js_engine::pkg::uninstall_global(&packages)
+      } else {
+        js_engine::pkg::uninstall(&current_dir, &packages)
+      };
+      if let Err(e) = result {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "ls" | "list" => {
+      let all = args.iter().any(|a| a == "--all");
+      if let Err(e) = js_engine::pkg::list_packages(&current_dir, all, global) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "init" | "create" => {
+      let init_json = serde_json::json!({
+        "name": current_dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or("project".into()),
+        "version": "1.0.0",
+        "description": "",
+        "main": "index.js",
+        "scripts": {
+          "test": "echo \"Error: no test specified\" && exit 1",
+          "start": "malia run index.js"
+        },
+        "keywords": [],
+        "license": "ISC"
+      });
+      let pkg_path = current_dir.join("package.json");
+      if pkg_path.exists()
+        && !args
+          .iter()
+          .any(|a| a == "-y" || a == "--yes" || a == "-f" || a == "--force")
+      {
+        eprintln!("package.json already exists. Use -y to overwrite.");
+        std::process::exit(1);
+      }
+      let json = serde_json::to_string_pretty(&init_json).unwrap();
+      std::fs::write(&pkg_path, format!("{json}\n"))
+        .map_err(|e| format!("Cannot write package.json: {e}"))
+        .unwrap();
+      println!("Wrote {}", pkg_path.display());
+    }
+    "run" | "run-script" => {
+      if let Some(script) = packages.first() {
+        // Re-exec as malia run <script>
+        let code = exec_cmd(
+          std::process::Command::new(std::env::current_exe()?)
+            .arg("run")
+            .arg("--allow-all")
+            .arg(script)
+            .args(&packages[1..]),
+        )?;
+        std::process::exit(code);
+      } else {
+        eprintln!("Usage: npm run <script>");
+        std::process::exit(1);
+      }
+    }
+    "test" | "t" => {
+      let code = exec_cmd(
+        std::process::Command::new(std::env::current_exe()?)
+          .arg("test")
+          .arg("--allow-all")
+          .args(&packages),
+      )?;
+      std::process::exit(code);
+    }
+    "start" => {
+      let code = exec_cmd(
+        std::process::Command::new(std::env::current_exe()?)
+          .arg("start")
+          .arg("--allow-all")
+          .args(&packages),
+      )?;
+      std::process::exit(code);
+    }
+    "version" | "-v" | "--version" => {
+      println!("malia-npm/{}", env!("CARGO_PKG_VERSION"));
+    }
+    "help" | "--help" | "-h" => {
+      println!("malia built-in package manager (npm-compatible)");
+      println!();
+      println!("Usage: npm <command>");
+      println!();
+      println!("Commands:");
+      println!("  install, i       Install packages");
+      println!("  uninstall, rm    Remove packages");
+      println!("  list, ls         List installed packages");
+      println!("  init             Create a package.json");
+      println!("  run              Run a script from package.json");
+      println!("  test, t          Run the test script");
+      println!("  start            Run the start script");
+      println!("  version          Show version");
+    }
+    other => {
+      eprintln!("npm {other}: unknown command");
+      eprintln!("Run `npm help` for usage.");
+      std::process::exit(1);
+    }
+  }
+  Ok(())
+}
+
 fn run_tool(program: &str, args: &[String]) -> anyhow::Result<i32> {
-  Ok(
-    std::process::Command::new(tool_program(program))
-      .args(args)
-      .status()?
-      .code()
-      .unwrap_or(0),
-  )
+  exec_cmd(std::process::Command::new(tool_program(program)).args(args))
 }
 
 /// `jse x <bin>`: a node_modules/.bin binary, falling back to npx.
@@ -611,6 +793,25 @@ pub fn run() -> anyhow::Result<()> {
   }
 
   let mut raw_args: Vec<String> = std::env::args().collect();
+
+  // If invoked as `npm` or `npx` (via shim), translate to malia subcommands.
+  let invoked_as = raw_args
+    .first()
+    .and_then(|a| Path::new(a).file_stem())
+    .map(|s| s.to_string_lossy().to_string())
+    .unwrap_or_default();
+  if invoked_as == "npm" {
+    return run_as_npm(&raw_args[1..]);
+  }
+  if invoked_as == "npx" {
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if raw_args.len() > 1 {
+      std::process::exit(run_package_bin(&current_dir, &raw_args[1], &raw_args[2..])?);
+    } else {
+      eprintln!("Usage: npx <command> [args...]");
+      std::process::exit(1);
+    }
+  }
 
   // `npm` and `x`/`exec`/`dlx` pass everything after them to the tool;
   // clap would otherwise take global flags such as --version for itself.
@@ -977,18 +1178,15 @@ pub fn run() -> anyhow::Result<()> {
               full_args.push(p.to_string());
             }
             full_args.extend(args.clone());
-            let status = std::process::Command::new(std::env::current_exe()?)
-              .args(&full_args)
-              .status()?;
-            std::process::exit(status.code().unwrap_or(0));
+            let code = exec_cmd(std::process::Command::new(std::env::current_exe()?).args(&full_args))?;
+            std::process::exit(code);
           } else if !parts.is_empty() {
             let mut cmd = std::process::Command::new(parts[0]);
             if parts.len() > 1 {
               cmd.args(&parts[1..]);
             }
             cmd.args(&args);
-            let status = cmd.status()?;
-            std::process::exit(status.code().unwrap_or(0));
+            std::process::exit(exec_cmd(&mut cmd)?);
           }
         }
       }
@@ -1031,7 +1229,36 @@ pub fn run() -> anyhow::Result<()> {
       std::process::exit(1);
     }
 
-    Some(Command::Install { packages, save_dev }) => {
+    Some(Command::Install {
+      packages,
+      save_dev,
+      global,
+    }) => {
+      if global {
+        if packages.is_empty() {
+          eprintln!("error: --global requires at least one package name");
+          std::process::exit(1);
+        }
+        // Try npm first for global installs, fall back to built-in
+        let tried = std::process::Command::new(tool_program("npm"))
+          .arg("install")
+          .arg("-g")
+          .args(&packages)
+          .status();
+        match tried {
+          Ok(s) if s.success() => std::process::exit(0),
+          _ => {
+            // Built-in global installer
+            if let Err(e) = js_engine::pkg::install_global(&packages) {
+              eprintln!("error: {e}");
+              std::process::exit(1);
+            }
+            std::process::exit(0);
+          }
+        }
+      }
+
+      // Local install: try external package manager first
       let pm = detect_package_manager(&current_dir);
       let mut cmd = std::process::Command::new(tool_program(pm));
       if packages.is_empty() {
@@ -1054,20 +1281,99 @@ pub fn run() -> anyhow::Result<()> {
         cmd.args(&packages);
       }
 
-      let status = cmd.status().or_else(|_| {
-        let mut fallback = std::process::Command::new(tool_program("npm"));
-        if packages.is_empty() {
-          fallback.arg("install");
-        } else {
-          fallback.arg("install");
-          if save_dev {
-            fallback.arg("--save-dev");
+      let tried = cmd.status().or_else(|_| {
+        std::process::Command::new(tool_program("npm"))
+          .arg("install")
+          .args(if save_dev { vec!["--save-dev"] } else { vec![] })
+          .args(&packages)
+          .status()
+      });
+
+      match tried {
+        Ok(s) if s.success() => std::process::exit(0),
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(_) => {
+          // No external package manager -- use built-in installer
+          eprintln!("No package manager found, using built-in installer...");
+          let result = if packages.is_empty() {
+            js_engine::pkg::install_all(&current_dir)
+          } else {
+            js_engine::pkg::install_packages(&current_dir, &packages, save_dev)
+          };
+          if let Err(e) = result {
+            eprintln!("error: {e}");
+            std::process::exit(1);
           }
-          fallback.args(&packages);
+          std::process::exit(0);
         }
-        fallback.status()
-      })?;
-      std::process::exit(status.code().unwrap_or(0));
+      }
+    }
+
+    Some(Command::Uninstall { packages, global }) => {
+      if global {
+        // Try npm first, fall back to built-in
+        let tried = std::process::Command::new(tool_program("npm"))
+          .arg("uninstall")
+          .arg("-g")
+          .args(&packages)
+          .status();
+        match tried {
+          Ok(s) if s.success() => std::process::exit(0),
+          _ => {
+            if let Err(e) = js_engine::pkg::uninstall_global(&packages) {
+              eprintln!("error: {e}");
+              std::process::exit(1);
+            }
+            std::process::exit(0);
+          }
+        }
+      }
+      // Try external PM first
+      let pm = detect_package_manager(&current_dir);
+      let tried = match pm {
+        "yarn" | "pnpm" | "bun" => std::process::Command::new(tool_program(pm))
+          .arg("remove")
+          .args(&packages)
+          .status(),
+        _ => std::process::Command::new(tool_program("npm"))
+          .arg("uninstall")
+          .args(&packages)
+          .status(),
+      };
+      match tried {
+        Ok(s) if s.success() => std::process::exit(0),
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(_) => {
+          eprintln!("No package manager found, using built-in...");
+          if let Err(e) = js_engine::pkg::uninstall(&current_dir, &packages) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+          }
+          std::process::exit(0);
+        }
+      }
+    }
+
+    Some(Command::List { all, global }) => {
+      // Try npm first
+      let mut args = vec!["ls".to_string()];
+      if global {
+        args.push("-g".into());
+      }
+      if !all {
+        args.push("--depth=0".into());
+      }
+      let tried = std::process::Command::new(tool_program("npm")).args(&args).status();
+      match tried {
+        Ok(s) if s.success() => std::process::exit(0),
+        _ => {
+          if let Err(e) = js_engine::pkg::list_packages(&current_dir, all, global) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+          }
+          std::process::exit(0);
+        }
+      }
     }
 
     Some(Command::X { command, args }) => std::process::exit(run_package_bin(&current_dir, &command, &args)?),
@@ -1090,16 +1396,20 @@ pub fn run() -> anyhow::Result<()> {
           {
             println!("> {}", cmd_line);
             let parts: Vec<&str> = cmd_line.split_whitespace().collect();
-            if parts.len() > 1 && (parts[0] == "jse" || parts[0] == "malia") {
-              let mut full_args = Vec::new();
-              for p in &parts[1..] {
-                full_args.push(p.to_string());
+            if !parts.is_empty() {
+              if parts[0] == "jse" || parts[0] == "malia" {
+                let mut full_args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+                full_args.extend(args.clone());
+                let code = exec_cmd(std::process::Command::new(std::env::current_exe()?).args(&full_args))?;
+                std::process::exit(code);
+              } else {
+                let mut cmd = std::process::Command::new(parts[0]);
+                if parts.len() > 1 {
+                  cmd.args(&parts[1..]);
+                }
+                cmd.args(&args);
+                std::process::exit(exec_cmd(&mut cmd)?);
               }
-              full_args.extend(args.clone());
-              let status = std::process::Command::new(std::env::current_exe()?)
-                .args(&full_args)
-                .status()?;
-              std::process::exit(status.code().unwrap_or(0));
             }
           }
           let resolved = js_engine::runtime::resolve_target_path(&current_dir.join(&f))
@@ -1272,26 +1582,22 @@ pub fn run() -> anyhow::Result<()> {
               full_args.push(p.to_string());
             }
             full_args.extend(custom_args);
-            let status = std::process::Command::new(std::env::current_exe()?)
-              .args(&full_args)
-              .status()?;
-            std::process::exit(status.code().unwrap_or(0));
+            let code = exec_cmd(std::process::Command::new(std::env::current_exe()?).args(&full_args))?;
+            std::process::exit(code);
           } else if !parts.is_empty() {
             let mut cmd = std::process::Command::new(parts[0]);
             if parts.len() > 1 {
               cmd.args(&parts[1..]);
             }
             cmd.args(&custom_args);
-            let status = cmd.status()?;
-            std::process::exit(status.code().unwrap_or(0));
+            std::process::exit(exec_cmd(&mut cmd)?);
           }
         }
       }
 
       // 2. Check if target is a local node_modules/.bin executable (e.g. `jse prettier`, `jse tsc`, `jse prisma`)
       if let Some(local_bin) = find_local_bin(&current_dir, &target) {
-        let status = std::process::Command::new(&local_bin).args(&custom_args).status()?;
-        std::process::exit(status.code().unwrap_or(0));
+        std::process::exit(exec_cmd(std::process::Command::new(&local_bin).args(&custom_args))?);
       }
 
       // 3. Check if target is a file, script, or directory entry

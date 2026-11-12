@@ -146,6 +146,15 @@ for binary in malia jse; do
   mv -f "$BIN_DIR/.$binary-new" "$BIN_DIR/$binary"
 done
 
+# Create npm/npx symlinks to malia. When invoked as "npm" or "npx", malia
+# detects argv[0] and routes to its built-in package manager.
+# Only created if no system npm/npx exists, to avoid shadowing.
+for shim in npm npx; do
+  if ! command -v "$shim" >/dev/null 2>&1 || [ "${MALIA_INSTALL_SHIMS:-0}" = "1" ]; then
+    ln -sf "$BIN_DIR/malia" "$BIN_DIR/$shim"
+  fi
+done
+
 # -- PATH ----------------------------------------------------------------------
 
 SHELL_NAME="$(basename "${SHELL:-sh}")"
