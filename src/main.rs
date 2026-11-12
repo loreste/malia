@@ -257,6 +257,28 @@ enum Command {
     #[arg(short = 'g', long)]
     global: bool,
   },
+  /// Symlink a local package into node_modules or globally.
+  Link {
+    /// Path to the package directory to link (omit to link current package globally).
+    target: Option<String>,
+  },
+  /// Check installed packages for known vulnerabilities.
+  Audit,
+  /// Create a tarball from the current package.
+  Pack,
+  /// Publish the current package to the npm registry.
+  Publish {
+    /// Distribution tag (default: latest).
+    #[arg(long)]
+    tag: Option<String>,
+  },
+  /// Show packages with newer versions available.
+  Outdated,
+  /// Manage the package download cache.
+  Cache {
+    /// Subcommand: clean, ls.
+    action: Option<String>,
+  },
   /// Execute a local package binary from node_modules/.bin or via npx (`jse x prettier`, `jse x prisma`).
   #[command(alias = "dlx", alias = "exec")]
   X {
@@ -727,6 +749,70 @@ fn run_as_npm(args: &[String]) -> anyhow::Result<()> {
       )?;
       std::process::exit(code);
     }
+    "link" | "ln" => {
+      let target = packages.first().map(|s| s.as_str());
+      if let Err(e) = js_engine::pkg::link_local(&current_dir, target) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "audit" => {
+      if let Err(e) = js_engine::pkg::audit(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "pack" => {
+      if let Err(e) = js_engine::pkg::pack(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "publish" => {
+      let tag = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--tag=").map(String::from))
+        .or_else(|| {
+          args
+            .windows(2)
+            .find_map(|w| if w[0] == "--tag" { Some(w[1].clone()) } else { None })
+        });
+      if let Err(e) = js_engine::pkg::publish(&current_dir, tag.as_deref()) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "outdated" => {
+      if let Err(e) = js_engine::pkg::outdated(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "cache" => {
+      let action = packages.first().map(|s| s.as_str());
+      let result = match action {
+        Some("clean") | Some("clear") => js_engine::pkg::cache_clean(),
+        Some("ls") | Some("list") | None => js_engine::pkg::cache_list(),
+        Some(other) => Err(format!("Unknown cache action: {other}. Use: clean, ls")),
+      };
+      if let Err(e) = result {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "update" | "up" | "upgrade" => {
+      // Update = outdated check + reinstall
+      if packages.is_empty() {
+        // Update all
+        if let Err(e) = js_engine::pkg::install_all(&current_dir) {
+          eprintln!("error: {e}");
+          std::process::exit(1);
+        }
+      } else if let Err(e) = js_engine::pkg::install_packages(&current_dir, &packages, false) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
     "version" | "-v" | "--version" => {
       println!("malia-npm/{}", env!("CARGO_PKG_VERSION"));
     }
@@ -738,8 +824,15 @@ fn run_as_npm(args: &[String]) -> anyhow::Result<()> {
       println!("Commands:");
       println!("  install, i       Install packages");
       println!("  uninstall, rm    Remove packages");
+      println!("  update, up       Update packages");
       println!("  list, ls         List installed packages");
+      println!("  outdated         Show outdated packages");
+      println!("  audit            Check for vulnerabilities");
       println!("  init             Create a package.json");
+      println!("  link             Symlink a local package");
+      println!("  pack             Create a tarball");
+      println!("  publish          Publish to registry");
+      println!("  cache            Manage download cache");
       println!("  run              Run a script from package.json");
       println!("  test, t          Run the test script");
       println!("  start            Run the start script");
@@ -1374,6 +1467,59 @@ pub fn run() -> anyhow::Result<()> {
           std::process::exit(0);
         }
       }
+    }
+
+    Some(Command::Link { target }) => {
+      if let Err(e) = js_engine::pkg::link_local(&current_dir, target.as_deref()) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Audit) => {
+      if let Err(e) = js_engine::pkg::audit(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Pack) => {
+      if let Err(e) = js_engine::pkg::pack(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Publish { tag }) => {
+      if let Err(e) = js_engine::pkg::publish(&current_dir, tag.as_deref()) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Outdated) => {
+      if let Err(e) = js_engine::pkg::outdated(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Cache { action }) => {
+      let result = match action.as_deref() {
+        Some("clean") | Some("clear") => js_engine::pkg::cache_clean(),
+        Some("ls") | Some("list") | None => js_engine::pkg::cache_list(),
+        Some(other) => Err(format!("Unknown cache action: {other}. Use: clean, ls")),
+      };
+      if let Err(e) = result {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+      std::process::exit(0);
     }
 
     Some(Command::X { command, args }) => std::process::exit(run_package_bin(&current_dir, &command, &args)?),

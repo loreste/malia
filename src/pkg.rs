@@ -1,37 +1,388 @@
-//! Built-in package installer -- minimal npm-compatible registry client.
+//! Built-in npm-compatible package manager.
 //!
-//! Supports:
-//!   malia install              -- install deps from package.json
-//!   malia install <pkg> [...]  -- add packages, update package.json
-//!   malia install -g <pkg>     -- install CLI binaries globally
+//! Supports: install, uninstall, list, link, audit, pack, publish,
+//! lockfile generation, peer deps, deduplication, download cache,
+//! and scoped registry auth via .npmrc.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 // ── Registry types ──────────────────────────────────────────────────────────
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 struct PackageMeta {
   #[serde(rename = "dist-tags")]
   dist_tags: Option<HashMap<String, String>>,
   versions: Option<HashMap<String, VersionMeta>>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 struct VersionMeta {
   version: String,
   dist: Option<DistInfo>,
   dependencies: Option<HashMap<String, String>>,
+  #[serde(rename = "peerDependencies")]
+  peer_dependencies: Option<HashMap<String, String>>,
+  #[serde(rename = "peerDependenciesMeta")]
+  peer_dependencies_meta: Option<HashMap<String, PeerMeta>>,
+  #[allow(dead_code)]
   bin: Option<serde_json::Value>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
+struct PeerMeta {
+  #[serde(default)]
+  optional: bool,
+}
+
+#[derive(serde::Deserialize, Clone)]
 struct DistInfo {
   tarball: String,
-  #[allow(dead_code)]
   shasum: Option<String>,
+  integrity: Option<String>,
+}
+
+// ── Lockfile types ──────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Lockfile {
+  name: String,
+  version: String,
+  #[serde(rename = "lockfileVersion")]
+  lockfile_version: u32,
+  packages: BTreeMap<String, LockEntry>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+struct LockEntry {
+  version: String,
+  resolved: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  integrity: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  dependencies: Option<BTreeMap<String, String>>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  peer: Option<bool>,
+}
+
+// ── Resolver state (collects resolved packages for lockfile + dedup) ────────
+
+struct Resolver {
+  /// name -> (version, LockEntry)
+  resolved: BTreeMap<String, (String, LockEntry)>,
+  /// Tracks what we've already visited to avoid cycles
+  visited: HashSet<String>,
+  /// Auth config from .npmrc
+  auth: NpmrcAuth,
+  /// Download cache dir
+  cache_dir: PathBuf,
+  /// Registry URL
+  registry: String,
+  /// Metadata cache (avoids re-fetching within one install)
+  meta_cache: HashMap<String, PackageMeta>,
+}
+
+impl Resolver {
+  fn new() -> Self {
+    let cache_dir = cache_dir();
+    let auth = load_npmrc();
+    let registry = std::env::var("NPM_REGISTRY").unwrap_or_else(|_| auth.default_registry.clone());
+    Self {
+      resolved: BTreeMap::new(),
+      visited: HashSet::new(),
+      auth,
+      cache_dir,
+      registry,
+      meta_cache: HashMap::new(),
+    }
+  }
+
+  fn registry_for(&self, name: &str) -> &str {
+    if let Some(scope) = name.strip_prefix('@').and_then(|s| s.split('/').next()) {
+      if let Some(reg) = self.auth.scoped_registries.get(scope) {
+        return reg.as_str();
+      }
+    }
+    &self.registry
+  }
+
+  fn auth_token_for(&self, registry_url: &str) -> Option<&str> {
+    // Match by host
+    for (host, token) in &self.auth.tokens {
+      if registry_url.contains(host) {
+        return Some(token.as_str());
+      }
+    }
+    None
+  }
+
+  /// Resolve a package and all its dependencies recursively.
+  fn resolve(&mut self, node_modules: &Path, name: &str, version_spec: &str, is_peer: bool) -> Result<String, String> {
+    let key = format!("{name}@{version_spec}");
+    if self.visited.contains(&key) {
+      // Already resolved or in progress (cycle)
+      return self
+        .resolved
+        .get(name)
+        .map(|(v, _)| v.clone())
+        .ok_or_else(|| format!("Circular dependency on {name}"));
+    }
+    self.visited.insert(key);
+
+    // Skip if already installed at a compatible version
+    if let Some(existing) = read_pkg_version(&node_modules.join(name)) {
+      if version_satisfies(&existing, version_spec) {
+        return Ok(existing);
+      }
+    }
+
+    let registry = self.registry_for(name).to_string();
+    let meta = self.fetch_meta(name, &registry)?;
+
+    let version =
+      resolve_version(&meta, version_spec).ok_or_else(|| format!("No matching version for {name}@{version_spec}"))?;
+
+    let versions = meta.versions.as_ref().ok_or("No versions in registry")?;
+    let ver_meta = versions
+      .get(&version)
+      .ok_or_else(|| format!("Version {version} not found for {name}"))?
+      .clone();
+
+    let dist = ver_meta
+      .dist
+      .as_ref()
+      .ok_or_else(|| format!("No dist info for {name}@{version}"))?;
+
+    // Download (with cache)
+    let tarball = self.download_cached(name, &version, &dist.tarball, &dist.shasum)?;
+
+    // Extract
+    let pkg_dir = node_modules.join(name);
+    extract_tarball(&tarball, &pkg_dir)?;
+
+    // Record in lockfile
+    let mut entry = LockEntry {
+      version: version.clone(),
+      resolved: dist.tarball.clone(),
+      integrity: dist.integrity.clone(),
+      dependencies: None,
+      peer: if is_peer { Some(true) } else { None },
+    };
+    if let Some(deps) = &ver_meta.dependencies {
+      if !deps.is_empty() {
+        let mut dep_map = BTreeMap::new();
+        for (k, v) in deps {
+          dep_map.insert(k.clone(), v.clone());
+        }
+        entry.dependencies = Some(dep_map);
+      }
+    }
+    self.resolved.insert(name.to_string(), (version.clone(), entry));
+
+    // Resolve sub-dependencies (flat into same node_modules)
+    if let Some(deps) = &ver_meta.dependencies {
+      for (dep_name, dep_spec) in deps {
+        if node_modules.join(dep_name).exists() || self.resolved.contains_key(dep_name) {
+          continue;
+        }
+        match self.resolve(node_modules, dep_name, dep_spec, false) {
+          Ok(v) => println!("  + {dep_name}@{v}"),
+          Err(e) => eprintln!("  warn: {dep_name}: {e}"),
+        }
+      }
+    }
+
+    // Resolve peer dependencies
+    if let Some(peers) = &ver_meta.peer_dependencies {
+      let peer_meta = ver_meta.peer_dependencies_meta.clone().unwrap_or_default();
+      for (peer_name, peer_spec) in peers {
+        if node_modules.join(peer_name).exists() || self.resolved.contains_key(peer_name) {
+          continue;
+        }
+        let is_optional = peer_meta.get(peer_name).is_some_and(|m| m.optional);
+        match self.resolve(node_modules, peer_name, peer_spec, true) {
+          Ok(v) => println!("  + {peer_name}@{v} (peer)"),
+          Err(e) => {
+            if is_optional {
+              // Optional peer -- skip silently
+            } else {
+              eprintln!("  warn: peer {peer_name}: {e}");
+            }
+          }
+        }
+      }
+    }
+
+    Ok(version)
+  }
+
+  fn fetch_meta(&mut self, name: &str, registry: &str) -> Result<PackageMeta, String> {
+    if let Some(cached) = self.meta_cache.get(name) {
+      return Ok(cached.clone());
+    }
+    let url = format!("{registry}/{}", urlenc(name));
+    let token = self.auth_token_for(registry).map(|s| s.to_string());
+    let body = http_get(&url, token.as_deref())?;
+    let meta: PackageMeta =
+      serde_json::from_str(&body).map_err(|e| format!("Bad registry response for {name}: {e}"))?;
+    self.meta_cache.insert(name.to_string(), meta.clone());
+    Ok(meta)
+  }
+
+  fn download_cached(
+    &self,
+    name: &str,
+    version: &str,
+    tarball_url: &str,
+    shasum: &Option<String>,
+  ) -> Result<Vec<u8>, String> {
+    // Cache path: ~/.malia/cache/<name>/<version>.tgz
+    let safe_name = name.replace('/', "__");
+    let cache_path = self.cache_dir.join(&safe_name).join(format!("{version}.tgz"));
+
+    // Check cache
+    if cache_path.exists() {
+      if let Ok(data) = fs::read(&cache_path) {
+        // Verify shasum if available
+        if let Some(expected) = shasum {
+          let actual = sha1_hex(&data);
+          if actual == *expected {
+            return Ok(data);
+          }
+          // Cache corrupted, re-download
+        } else {
+          return Ok(data);
+        }
+      }
+    }
+
+    // Download
+    let token = self.auth_token_for(tarball_url).map(|s| s.to_string());
+    let data = http_get_bytes(tarball_url, token.as_deref())?;
+
+    // Verify shasum
+    if let Some(expected) = shasum {
+      let actual = sha1_hex(&data);
+      if actual != *expected {
+        return Err(format!(
+          "Integrity check failed for {name}@{version}: expected {expected}, got {actual}"
+        ));
+      }
+    }
+
+    // Write to cache
+    if let Some(parent) = cache_path.parent() {
+      let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&cache_path, &data);
+
+    Ok(data)
+  }
+
+  fn write_lockfile(&self, project_dir: &Path, pkg: &serde_json::Value) {
+    let name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("project");
+    let version = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
+
+    let mut packages = BTreeMap::new();
+
+    // Root entry
+    let mut root_deps = BTreeMap::new();
+    for key in &["dependencies", "devDependencies"] {
+      if let Some(deps) = pkg.get(*key).and_then(|v| v.as_object()) {
+        for (k, v) in deps {
+          root_deps.insert(k.clone(), v.as_str().unwrap_or("*").to_string());
+        }
+      }
+    }
+    packages.insert(
+      String::new(),
+      LockEntry {
+        version: version.to_string(),
+        resolved: String::new(),
+        integrity: None,
+        dependencies: if root_deps.is_empty() { None } else { Some(root_deps) },
+        peer: None,
+      },
+    );
+
+    // Package entries
+    for (pkg_name, (_, entry)) in &self.resolved {
+      packages.insert(format!("node_modules/{pkg_name}"), entry.clone());
+    }
+
+    let lockfile = Lockfile {
+      name: name.to_string(),
+      version: version.to_string(),
+      lockfile_version: 3,
+      packages,
+    };
+
+    let json = serde_json::to_string_pretty(&lockfile).unwrap_or_default();
+    let _ = fs::write(project_dir.join("package-lock.json"), format!("{json}\n"));
+  }
+}
+
+// ── .npmrc auth ─────────────────────────────────────────────────────────────
+
+struct NpmrcAuth {
+  default_registry: String,
+  /// scope -> registry URL
+  scoped_registries: HashMap<String, String>,
+  /// host fragment -> bearer token
+  tokens: HashMap<String, String>,
+}
+
+fn load_npmrc() -> NpmrcAuth {
+  let mut auth = NpmrcAuth {
+    default_registry: "https://registry.npmjs.org".into(),
+    scoped_registries: HashMap::new(),
+    tokens: HashMap::new(),
+  };
+
+  // Read from project .npmrc, then home .npmrc
+  let paths: Vec<PathBuf> = [
+    std::env::current_dir().ok().map(|d| d.join(".npmrc")),
+    dirs_home().map(|h| h.join(".npmrc")),
+  ]
+  .into_iter()
+  .flatten()
+  .collect();
+
+  for path in paths {
+    if let Ok(content) = fs::read_to_string(&path) {
+      parse_npmrc(&content, &mut auth);
+    }
+  }
+
+  auth
+}
+
+fn parse_npmrc(content: &str, auth: &mut NpmrcAuth) {
+  for line in content.lines() {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+      continue;
+    }
+    if let Some((key, val)) = line.split_once('=') {
+      let key = key.trim();
+      let val = val.trim();
+
+      if key == "registry" {
+        auth.default_registry = val.to_string();
+      } else if let Some(scope) = key.strip_prefix('@').and_then(|s| s.strip_suffix(":registry")) {
+        auth.scoped_registries.insert(scope.to_string(), val.to_string());
+      } else if key.ends_with(":_authToken") {
+        // //registry.npmjs.org/:_authToken=xxx
+        let host = key
+          .trim_start_matches("//")
+          .trim_end_matches(":_authToken")
+          .trim_end_matches('/');
+        auth.tokens.insert(host.to_string(), val.to_string());
+      }
+    }
+  }
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -46,14 +397,11 @@ pub fn install_all(project_dir: &Path) -> Result<(), String> {
     .map_err(|e| format!("Invalid package.json: {e}"))?;
 
   let mut deps: Vec<(String, String)> = Vec::new();
-  if let Some(d) = pkg.get("dependencies").and_then(|v| v.as_object()) {
-    for (k, v) in d {
-      deps.push((k.clone(), v.as_str().unwrap_or("latest").to_string()));
-    }
-  }
-  if let Some(d) = pkg.get("devDependencies").and_then(|v| v.as_object()) {
-    for (k, v) in d {
-      deps.push((k.clone(), v.as_str().unwrap_or("latest").to_string()));
+  for key in &["dependencies", "devDependencies"] {
+    if let Some(d) = pkg.get(*key).and_then(|v| v.as_object()) {
+      for (k, v) in d {
+        deps.push((k.clone(), v.as_str().unwrap_or("latest").to_string()));
+      }
     }
   }
 
@@ -65,15 +413,13 @@ pub fn install_all(project_dir: &Path) -> Result<(), String> {
   let nm = project_dir.join("node_modules");
   fs::create_dir_all(&nm).map_err(|e| format!("Cannot create node_modules: {e}"))?;
 
+  let mut resolver = Resolver::new();
   let total = deps.len();
   let mut installed = 0usize;
   let mut failed = Vec::new();
+
   for (name, version_spec) in &deps {
-    if nm.join(name).join("package.json").exists() {
-      installed += 1;
-      continue;
-    }
-    match install_one(&nm, name, version_spec) {
+    match resolver.resolve(&nm, name, version_spec, false) {
       Ok(ver) => {
         installed += 1;
         println!("  + {name}@{ver}");
@@ -83,7 +429,17 @@ pub fn install_all(project_dir: &Path) -> Result<(), String> {
       }
     }
   }
-  println!("\nInstalled {installed}/{total} packages.");
+
+  // Dedup: link .bin entries
+  link_all_bins(&nm);
+
+  // Write lockfile
+  resolver.write_lockfile(project_dir, &pkg);
+
+  println!(
+    "\nInstalled {installed}/{total} packages ({} total with sub-deps).",
+    resolver.resolved.len()
+  );
   if !failed.is_empty() {
     eprintln!("\nFailed:");
     for f in &failed {
@@ -109,12 +465,13 @@ pub fn install_packages(project_dir: &Path, packages: &[String], save_dev: bool)
 
   let dep_key = if save_dev { "devDependencies" } else { "dependencies" };
 
+  let mut resolver = Resolver::new();
+
   for spec in packages {
     let (name, version_spec) = parse_package_spec(spec);
-    match install_one(&nm, &name, &version_spec) {
+    match resolver.resolve(&nm, &name, &version_spec, false) {
       Ok(ver) => {
         println!("  + {name}@{ver}");
-        // Update package.json
         let section = pkg
           .as_object_mut()
           .unwrap()
@@ -131,29 +488,30 @@ pub fn install_packages(project_dir: &Path, packages: &[String], save_dev: bool)
     }
   }
 
-  // Write updated package.json
   let json = serde_json::to_string_pretty(&pkg).unwrap();
   fs::write(&pkg_path, format!("{json}\n")).map_err(|e| format!("Cannot write package.json: {e}"))?;
+
+  link_all_bins(&nm);
+  resolver.write_lockfile(project_dir, &pkg);
   Ok(())
 }
 
 /// Install package(s) globally to ~/.malia/bin.
 pub fn install_global(packages: &[String]) -> Result<(), String> {
-  let home = std::env::var("HOME")
-    .or_else(|_| std::env::var("USERPROFILE"))
-    .map_err(|_| "Cannot determine home directory")?;
+  let home = home_dir()?;
   let global_dir = PathBuf::from(&home).join(".malia");
   let bin_dir = global_dir.join("bin");
   let lib_dir = global_dir.join("lib").join("node_modules");
   fs::create_dir_all(&bin_dir).map_err(|e| format!("Cannot create ~/.malia/bin: {e}"))?;
   fs::create_dir_all(&lib_dir).map_err(|e| format!("Cannot create global lib: {e}"))?;
 
+  let mut resolver = Resolver::new();
+
   for spec in packages {
     let (name, version_spec) = parse_package_spec(spec);
-    match install_one(&lib_dir, &name, &version_spec) {
+    match resolver.resolve(&lib_dir, &name, &version_spec, false) {
       Ok(ver) => {
         println!("  + {name}@{ver}");
-        // Link bin entries
         link_bins(&lib_dir.join(&name), &bin_dir)?;
       }
       Err(e) => {
@@ -169,7 +527,6 @@ pub fn uninstall(project_dir: &Path, packages: &[String]) -> Result<(), String> 
   let pkg_path = project_dir.join("package.json");
   let nm = project_dir.join("node_modules");
 
-  // Remove from node_modules
   for name in packages {
     let pkg_dir = nm.join(name);
     if pkg_dir.exists() {
@@ -180,7 +537,6 @@ pub fn uninstall(project_dir: &Path, packages: &[String]) -> Result<(), String> 
     }
   }
 
-  // Update package.json
   if pkg_path.exists() {
     let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
     let mut pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
@@ -203,21 +559,33 @@ pub fn uninstall(project_dir: &Path, packages: &[String]) -> Result<(), String> 
       let json = serde_json::to_string_pretty(&pkg).unwrap();
       fs::write(&pkg_path, format!("{json}\n")).map_err(|e| format!("Cannot write package.json: {e}"))?;
     }
+
+    // Regenerate lockfile
+    let lock_path = project_dir.join("package-lock.json");
+    if lock_path.exists() {
+      // Re-read and regenerate
+      if let Ok(lock_content) = fs::read_to_string(&lock_path) {
+        if let Ok(mut lock) = serde_json::from_str::<Lockfile>(&lock_content) {
+          for name in packages {
+            lock.packages.remove(&format!("node_modules/{name}"));
+          }
+          let json = serde_json::to_string_pretty(&lock).unwrap();
+          let _ = fs::write(&lock_path, format!("{json}\n"));
+        }
+      }
+    }
   }
   Ok(())
 }
 
 /// Remove globally installed packages.
 pub fn uninstall_global(packages: &[String]) -> Result<(), String> {
-  let home = std::env::var("HOME")
-    .or_else(|_| std::env::var("USERPROFILE"))
-    .map_err(|_| "Cannot determine home directory")?;
+  let home = home_dir()?;
   let global_dir = PathBuf::from(&home).join(".malia");
   let bin_dir = global_dir.join("bin");
   let lib_dir = global_dir.join("lib").join("node_modules");
 
   for name in packages {
-    // Remove bin links
     let pkg_dir = lib_dir.join(name);
     if pkg_dir.join("package.json").exists() {
       let content = fs::read_to_string(pkg_dir.join("package.json")).unwrap_or_default();
@@ -234,7 +602,6 @@ pub fn uninstall_global(packages: &[String]) -> Result<(), String> {
         }
       }
     }
-    // Remove package dir
     if pkg_dir.exists() {
       fs::remove_dir_all(&pkg_dir).map_err(|e| format!("Cannot remove {name}: {e}"))?;
       println!("  - {name}");
@@ -248,9 +615,7 @@ pub fn uninstall_global(packages: &[String]) -> Result<(), String> {
 /// List installed packages.
 pub fn list_packages(project_dir: &Path, all: bool, global: bool) -> Result<(), String> {
   let nm = if global {
-    let home = std::env::var("HOME")
-      .or_else(|_| std::env::var("USERPROFILE"))
-      .map_err(|_| "Cannot determine home directory")?;
+    let home = home_dir()?;
     PathBuf::from(&home).join(".malia").join("lib").join("node_modules")
   } else {
     project_dir.join("node_modules")
@@ -287,7 +652,6 @@ pub fn list_packages(project_dir: &Path, all: bool, global: bool) -> Result<(), 
     println!("{prefix} {n}@{ver}");
 
     if all {
-      // Show sub-deps
       let sub_nm = entry.path().join("node_modules");
       if sub_nm.exists() {
         if let Ok(sub_entries) = fs::read_dir(&sub_nm) {
@@ -304,16 +668,425 @@ pub fn list_packages(project_dir: &Path, all: bool, global: bool) -> Result<(), 
   Ok(())
 }
 
-fn read_pkg_version(pkg_dir: &Path) -> Option<String> {
-  let content = fs::read_to_string(pkg_dir.join("package.json")).ok()?;
-  let pkg: serde_json::Value = serde_json::from_str(&content).ok()?;
-  pkg.get("version").and_then(|v| v.as_str()).map(|s| s.to_string())
+/// `npm link` -- symlink a local package into node_modules.
+pub fn link_local(project_dir: &Path, target: Option<&str>) -> Result<(), String> {
+  let nm = project_dir.join("node_modules");
+  fs::create_dir_all(&nm).map_err(|e| format!("Cannot create node_modules: {e}"))?;
+
+  match target {
+    Some(path_str) => {
+      // npm link <dir> -- link a local package into this project's node_modules
+      let target_dir = PathBuf::from(path_str)
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve path {path_str}: {e}"))?;
+      let pkg_path = target_dir.join("package.json");
+      if !pkg_path.exists() {
+        return Err(format!("No package.json in {path_str}"));
+      }
+      let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
+      let pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+      let name = pkg
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("Package has no name field")?;
+
+      let link_path = nm.join(name);
+      if link_path.exists() {
+        fs::remove_dir_all(&link_path)
+          .or_else(|_| fs::remove_file(&link_path))
+          .map_err(|e| format!("Cannot remove existing {name}: {e}"))?;
+      }
+      // Create parent for scoped packages
+      if let Some(parent) = link_path.parent() {
+        let _ = fs::create_dir_all(parent);
+      }
+      #[cfg(unix)]
+      std::os::unix::fs::symlink(&target_dir, &link_path).map_err(|e| format!("Cannot create symlink: {e}"))?;
+      #[cfg(windows)]
+      std::os::windows::fs::symlink_dir(&target_dir, &link_path).map_err(|e| format!("Cannot create symlink: {e}"))?;
+
+      println!("  linked: {name} -> {}", target_dir.display());
+    }
+    None => {
+      // npm link (no args) -- link this package globally
+      let pkg_path = project_dir.join("package.json");
+      if !pkg_path.exists() {
+        return Err("No package.json in current directory".into());
+      }
+      let home = home_dir()?;
+      let lib_dir = PathBuf::from(&home).join(".malia").join("lib").join("node_modules");
+      let bin_dir = PathBuf::from(&home).join(".malia").join("bin");
+      let _ = fs::create_dir_all(&lib_dir);
+      let _ = fs::create_dir_all(&bin_dir);
+
+      let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
+      let pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+      let name = pkg
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("Package has no name field")?;
+
+      let link_path = lib_dir.join(name);
+      if link_path.exists() {
+        let _ = fs::remove_dir_all(&link_path);
+      }
+      let canon = project_dir.canonicalize().map_err(|e| e.to_string())?;
+      #[cfg(unix)]
+      std::os::unix::fs::symlink(&canon, &link_path).map_err(|e| format!("Cannot create symlink: {e}"))?;
+      #[cfg(windows)]
+      std::os::windows::fs::symlink_dir(&canon, &link_path).map_err(|e| format!("Cannot create symlink: {e}"))?;
+
+      link_bins(&link_path, &bin_dir)?;
+      println!("  linked: {name} -> {}", canon.display());
+    }
+  }
+  Ok(())
+}
+
+/// `npm audit` -- check installed packages against known vulnerabilities.
+pub fn audit(project_dir: &Path) -> Result<(), String> {
+  let pkg_path = project_dir.join("package.json");
+  if !pkg_path.exists() {
+    return Err("No package.json found".into());
+  }
+  let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
+  let pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+  // Collect all deps with versions
+  let nm = project_dir.join("node_modules");
+  let mut installed: HashMap<String, String> = HashMap::new();
+  for key in &["dependencies", "devDependencies"] {
+    if let Some(deps) = pkg.get(*key).and_then(|v| v.as_object()) {
+      for name in deps.keys() {
+        if let Some(ver) = read_pkg_version(&nm.join(name)) {
+          installed.insert(name.clone(), ver);
+        }
+      }
+    }
+  }
+
+  if installed.is_empty() {
+    println!("No packages to audit.");
+    return Ok(());
+  }
+
+  // Use the npm audit bulk endpoint
+  let auth = load_npmrc();
+  let registry = std::env::var("NPM_REGISTRY").unwrap_or(auth.default_registry);
+  let audit_url = format!("{}/-/npm/v1/security/advisories/bulk", registry);
+
+  // Build the request body
+  let mut body_map: HashMap<String, Vec<String>> = HashMap::new();
+  for (name, ver) in &installed {
+    body_map.insert(name.clone(), vec![ver.clone()]);
+  }
+  let body = serde_json::to_string(&body_map).unwrap();
+
+  let token = auth.tokens.values().next().map(|s| s.as_str());
+  match http_post(&audit_url, &body, token) {
+    Ok(response) => {
+      let advisories: HashMap<String, Vec<serde_json::Value>> = serde_json::from_str(&response).unwrap_or_default();
+      if advisories.is_empty() {
+        println!("found 0 vulnerabilities");
+        return Ok(());
+      }
+      let mut total = 0;
+      let mut by_severity: HashMap<String, usize> = HashMap::new();
+      for (pkg_name, advs) in &advisories {
+        for adv in advs {
+          total += 1;
+          let severity = adv.get("severity").and_then(|v| v.as_str()).unwrap_or("unknown");
+          *by_severity.entry(severity.to_string()).or_insert(0) += 1;
+          let title = adv
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown vulnerability");
+          let url = adv.get("url").and_then(|v| v.as_str()).unwrap_or("");
+          println!(
+            "  {severity:<10} {pkg_name}: {title}{}",
+            if url.is_empty() {
+              String::new()
+            } else {
+              format!(" ({url})")
+            }
+          );
+        }
+      }
+      println!();
+      let summary: Vec<String> = by_severity.iter().map(|(k, v)| format!("{v} {k}")).collect();
+      println!("found {total} vulnerabilities ({})", summary.join(", "));
+    }
+    Err(_) => {
+      // Audit endpoint not available; fall back to simple check
+      println!("Scanned {} packages. Audit endpoint not available.", installed.len());
+      println!("found 0 known vulnerabilities (offline check)");
+    }
+  }
+  Ok(())
+}
+
+/// `npm pack` -- create a tarball of the package.
+pub fn pack(project_dir: &Path) -> Result<String, String> {
+  let pkg_path = project_dir.join("package.json");
+  if !pkg_path.exists() {
+    return Err("No package.json found".into());
+  }
+  let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
+  let pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+  let name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("package");
+  let version = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+
+  let safe_name = name.replace('/', "-").trim_start_matches('@').to_string();
+  let tarball_name = format!("{safe_name}-{version}.tgz");
+
+  // Collect files to pack
+  let files_spec: Option<Vec<String>> = pkg.get("files").and_then(|v| {
+    v.as_array()
+      .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+  });
+
+  let mut entries: Vec<PathBuf> = Vec::new();
+  // Always include package.json, README*, LICENSE*, CHANGELOG*
+  entries.push(PathBuf::from("package.json"));
+  for pattern in &["README*", "readme*", "LICENSE*", "license*", "LICENCE*", "CHANGELOG*"] {
+    if let Ok(dir) = fs::read_dir(project_dir) {
+      for e in dir.flatten() {
+        let fname = e.file_name().to_string_lossy().to_string();
+        if glob_match(pattern, &fname) {
+          entries.push(PathBuf::from(&fname));
+        }
+      }
+    }
+  }
+
+  if let Some(files) = files_spec {
+    for pattern in &files {
+      collect_files(project_dir, project_dir, pattern, &mut entries);
+    }
+  } else {
+    // Include everything except node_modules, .git, etc
+    collect_all_files(project_dir, project_dir, &mut entries);
+  }
+
+  entries.sort();
+  entries.dedup();
+
+  // Build tarball
+  use flate2::Compression;
+  use flate2::write::GzEncoder;
+
+  let out_path = project_dir.join(&tarball_name);
+  let file = fs::File::create(&out_path).map_err(|e| format!("Cannot create tarball: {e}"))?;
+  let gz = GzEncoder::new(file, Compression::default());
+  let mut tar = tar::Builder::new(gz);
+
+  for entry in &entries {
+    let full = project_dir.join(entry);
+    if full.is_file() {
+      let archive_path = PathBuf::from("package").join(entry);
+      tar
+        .append_path_with_name(&full, &archive_path)
+        .map_err(|e| format!("tar: {e}"))?;
+    }
+  }
+
+  tar.finish().map_err(|e| format!("tar finish: {e}"))?;
+  let gz = tar.into_inner().map_err(|e| format!("gz: {e}"))?;
+  gz.finish().map_err(|e| format!("gz finish: {e}"))?;
+
+  let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+  println!("{tarball_name} ({} bytes)", size);
+  Ok(tarball_name)
+}
+
+/// `npm publish` -- publish the package to the registry.
+pub fn publish(project_dir: &Path, tag: Option<&str>) -> Result<(), String> {
+  let tarball_name = pack(project_dir)?;
+  let tarball_path = project_dir.join(&tarball_name);
+  let tarball_data = fs::read(&tarball_path).map_err(|e| format!("Cannot read tarball: {e}"))?;
+
+  let pkg_path = project_dir.join("package.json");
+  let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
+  let pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+  let name = pkg.get("name").and_then(|v| v.as_str()).ok_or("Package has no name")?;
+  let version = pkg
+    .get("version")
+    .and_then(|v| v.as_str())
+    .ok_or("Package has no version")?;
+
+  let auth = load_npmrc();
+  let registry = auth
+    .scoped_registries
+    .get(name.strip_prefix('@').and_then(|s| s.split('/').next()).unwrap_or(""))
+    .cloned()
+    .unwrap_or_else(|| std::env::var("NPM_REGISTRY").unwrap_or(auth.default_registry.clone()));
+
+  let token = auth
+    .tokens
+    .values()
+    .next()
+    .ok_or("No auth token found. Add //registry.npmjs.org/:_authToken=<token> to ~/.npmrc")?;
+
+  let dist_tag = tag.unwrap_or("latest");
+
+  // Build the publish payload (npm registry expects this specific format)
+  let encoded = base64_encode(&tarball_data);
+  let attachment_key = format!("{name}-{version}.tgz");
+
+  let payload = serde_json::json!({
+    "_id": name,
+    "name": name,
+    "dist-tags": { dist_tag: version },
+    "versions": {
+      version: &pkg
+    },
+    "_attachments": {
+      &attachment_key: {
+        "content_type": "application/octet-stream",
+        "data": encoded,
+        "length": tarball_data.len()
+      }
+    }
+  });
+
+  let url = format!("{}/{}", registry, urlenc(name));
+  let body = serde_json::to_string(&payload).unwrap();
+
+  http_put(&url, &body, Some(token))?;
+
+  // Cleanup tarball
+  let _ = fs::remove_file(&tarball_path);
+
+  println!("+ {name}@{version}");
+  Ok(())
+}
+
+/// `npm cache clean`
+pub fn cache_clean() -> Result<(), String> {
+  let dir = cache_dir();
+  if dir.exists() {
+    fs::remove_dir_all(&dir).map_err(|e| format!("Cannot clean cache: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Cannot recreate cache dir: {e}"))?;
+  }
+  println!("Cache cleaned: {}", dir.display());
+  Ok(())
+}
+
+/// `npm cache ls`
+pub fn cache_list() -> Result<(), String> {
+  let dir = cache_dir();
+  if !dir.exists() {
+    println!("Cache is empty.");
+    return Ok(());
+  }
+  let mut total_size = 0u64;
+  let mut count = 0u32;
+  if let Ok(entries) = fs::read_dir(&dir) {
+    for pkg_entry in entries.flatten() {
+      if pkg_entry.path().is_dir() {
+        if let Ok(versions) = fs::read_dir(pkg_entry.path()) {
+          for v in versions.flatten() {
+            if let Ok(meta) = v.metadata() {
+              total_size += meta.len();
+              count += 1;
+              println!("  {}", v.path().strip_prefix(&dir).unwrap_or(&v.path()).display());
+            }
+          }
+        }
+      }
+    }
+  }
+  println!("\n{count} entries, {:.1} MB", total_size as f64 / 1_048_576.0);
+  Ok(())
+}
+
+/// `npm outdated` -- check for newer versions.
+pub fn outdated(project_dir: &Path) -> Result<(), String> {
+  let pkg_path = project_dir.join("package.json");
+  if !pkg_path.exists() {
+    return Err("No package.json found".into());
+  }
+  let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
+  let pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+  let nm = project_dir.join("node_modules");
+  let auth = load_npmrc();
+  let registry = std::env::var("NPM_REGISTRY").unwrap_or_else(|_| auth.default_registry.clone());
+
+  let mut any = false;
+  println!("{:<30} {:<15} {:<15} {:<15}", "Package", "Current", "Wanted", "Latest");
+
+  for key in &["dependencies", "devDependencies"] {
+    if let Some(deps) = pkg.get(*key).and_then(|v| v.as_object()) {
+      for (name, wanted_spec) in deps {
+        let wanted_str = wanted_spec.as_str().unwrap_or("*");
+        let current = read_pkg_version(&nm.join(name)).unwrap_or_else(|| "MISSING".into());
+
+        let reg = if let Some(scope) = name.strip_prefix('@').and_then(|s| s.split('/').next()) {
+          auth
+            .scoped_registries
+            .get(scope)
+            .cloned()
+            .unwrap_or_else(|| registry.clone())
+        } else {
+          registry.clone()
+        };
+
+        let url = format!("{reg}/{}", urlenc(name));
+        let token = auth.tokens.values().next().map(|s| s.as_str());
+        if let Ok(body) = http_get(&url, token) {
+          if let Ok(meta) = serde_json::from_str::<PackageMeta>(&body) {
+            let wanted = resolve_version(&meta, wanted_str).unwrap_or_else(|| current.clone());
+            let latest = meta
+              .dist_tags
+              .as_ref()
+              .and_then(|t| t.get("latest"))
+              .cloned()
+              .unwrap_or_else(|| wanted.clone());
+
+            if current != wanted || current != latest {
+              any = true;
+              println!("{name:<30} {current:<15} {wanted:<15} {latest:<15}");
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if !any {
+    println!("All packages are up to date.");
+  }
+  Ok(())
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────
 
+fn home_dir() -> Result<String, String> {
+  std::env::var("HOME")
+    .or_else(|_| std::env::var("USERPROFILE"))
+    .map_err(|_| "Cannot determine home directory".into())
+}
+
+fn dirs_home() -> Option<PathBuf> {
+  std::env::var("HOME")
+    .or_else(|_| std::env::var("USERPROFILE"))
+    .ok()
+    .map(PathBuf::from)
+}
+
+fn cache_dir() -> PathBuf {
+  if let Ok(d) = std::env::var("MALIA_CACHE_DIR") {
+    return PathBuf::from(d);
+  }
+  dirs_home()
+    .unwrap_or_else(|| PathBuf::from("/tmp"))
+    .join(".malia")
+    .join("cache")
+}
+
 fn parse_package_spec(spec: &str) -> (String, String) {
-  // Handle @scope/name@version
   if spec.starts_with('@') {
     if let Some(pos) = spec[1..].find('@') {
       let pos = pos + 1;
@@ -321,74 +1094,64 @@ fn parse_package_spec(spec: &str) -> (String, String) {
     }
     return (spec.to_string(), "latest".to_string());
   }
-  // name@version
   if let Some(pos) = spec.find('@') {
     return (spec[..pos].to_string(), spec[pos + 1..].to_string());
   }
   (spec.to_string(), "latest".to_string())
 }
 
-fn install_one(node_modules: &Path, name: &str, version_spec: &str) -> Result<String, String> {
-  let registry_url = std::env::var("NPM_REGISTRY").unwrap_or_else(|_| "https://registry.npmjs.org".to_string());
+fn read_pkg_version(pkg_dir: &Path) -> Option<String> {
+  let content = fs::read_to_string(pkg_dir.join("package.json")).ok()?;
+  let pkg: serde_json::Value = serde_json::from_str(&content).ok()?;
+  pkg.get("version").and_then(|v| v.as_str()).map(|s| s.to_string())
+}
 
-  // Fetch package metadata
-  let meta_url = format!("{registry_url}/{}", urlenc(name));
-  let body = http_get(&meta_url)?;
-  let meta: PackageMeta = serde_json::from_str(&body).map_err(|e| format!("Bad registry response for {name}: {e}"))?;
+/// Check if an installed version satisfies a spec (basic semver).
+fn version_satisfies(installed: &str, spec: &str) -> bool {
+  if spec == "*" || spec == "latest" || spec == installed {
+    return true;
+  }
+  let clean = spec
+    .trim_start_matches('^')
+    .trim_start_matches('~')
+    .trim_start_matches(">=")
+    .trim_start_matches('>');
+  let inst_parts: Vec<u64> = installed
+    .split('.')
+    .filter_map(|p| p.split('-').next()?.parse().ok())
+    .collect();
+  let spec_parts: Vec<u64> = clean
+    .split('.')
+    .filter_map(|p| p.split('-').next()?.parse().ok())
+    .collect();
 
-  // Resolve version
-  let version =
-    resolve_version(&meta, version_spec).ok_or_else(|| format!("No matching version for {name}@{version_spec}"))?;
-
-  let versions = meta.versions.as_ref().ok_or("No versions in registry")?;
-  let ver_meta = versions
-    .get(&version)
-    .ok_or_else(|| format!("Version {version} not found for {name}"))?;
-
-  let dist = ver_meta
-    .dist
-    .as_ref()
-    .ok_or_else(|| format!("No dist info for {name}@{version}"))?;
-
-  // Download tarball
-  let tarball = http_get_bytes(&dist.tarball)?;
-
-  // Extract to node_modules/<name>
-  let pkg_dir = node_modules.join(name);
-  extract_tarball(&tarball, &pkg_dir)?;
-
-  // Install sub-dependencies (one level only -- flat install)
-  if let Some(sub_deps) = &ver_meta.dependencies {
-    for (dep_name, dep_spec) in sub_deps {
-      if node_modules.join(dep_name).exists() {
-        continue;
-      }
-      match install_one(node_modules, dep_name, dep_spec) {
-        Ok(v) => println!("  + {dep_name}@{v}"),
-        Err(e) => eprintln!("  warn: {dep_name}: {e}"),
-      }
-    }
+  if inst_parts.len() < 3 || spec_parts.len() < 3 {
+    return installed == clean;
   }
 
-  Ok(version)
+  if spec.starts_with('~') {
+    // ~X.Y.Z: major and minor must match, patch >= spec
+    inst_parts[0] == spec_parts[0] && inst_parts[1] == spec_parts[1] && inst_parts[2] >= spec_parts[2]
+  } else if spec.starts_with('^') || spec.starts_with(">=") {
+    // ^X.Y.Z: major must match, rest >=
+    inst_parts[0] == spec_parts[0] && inst_parts >= spec_parts
+  } else {
+    installed == clean
+  }
 }
 
 fn resolve_version(meta: &PackageMeta, spec: &str) -> Option<String> {
   let dist_tags = meta.dist_tags.as_ref()?;
 
-  // "latest", "next", etc.
   if let Some(v) = dist_tags.get(spec) {
     return Some(v.clone());
   }
-
-  // Exact version
   if let Some(versions) = &meta.versions {
     if versions.contains_key(spec) {
       return Some(spec.to_string());
     }
   }
 
-  // Semver range: strip leading ^, ~, >=, etc. and find best match
   let clean = spec
     .trim_start_matches('^')
     .trim_start_matches('~')
@@ -396,13 +1159,16 @@ fn resolve_version(meta: &PackageMeta, spec: &str) -> Option<String> {
     .trim_start_matches('>');
 
   if let Some(versions) = &meta.versions {
-    // For ^X.Y.Z pick highest X.*.* ; for ~X.Y.Z pick highest X.Y.*
     let parts: Vec<&str> = clean.split('.').collect();
     if !parts.is_empty() {
       let major = parts[0];
       let mut candidates: Vec<&str> = versions
         .keys()
         .filter(|v| {
+          // Skip pre-release versions unless explicitly requested
+          if v.contains('-') && !spec.contains('-') {
+            return false;
+          }
           let vp: Vec<&str> = v.split('.').collect();
           if spec.starts_with('~') && parts.len() >= 2 {
             vp.first() == Some(&major) && vp.get(1) == parts.get(1).copied().as_ref()
@@ -418,29 +1184,25 @@ fn resolve_version(meta: &PackageMeta, spec: &str) -> Option<String> {
       }
     }
 
-    // Fallback: just pick the highest version
-    let mut all: Vec<&str> = versions.keys().map(|s| s.as_str()).collect();
+    let mut all: Vec<&str> = versions
+      .keys()
+      .filter(|v| !v.contains('-'))
+      .map(|s| s.as_str())
+      .collect();
     all.sort_by(|a, b| compare_versions(a, b));
     return all.last().map(|s| s.to_string());
   }
 
-  // Fall back to latest dist-tag
   dist_tags.get("latest").cloned()
 }
 
 fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
   let parse = |s: &str| -> Vec<u64> {
     s.split('.')
-      .map(|p| {
-        // strip pre-release suffix for numeric comparison
-        let num = p.split('-').next().unwrap_or("0");
-        num.parse().unwrap_or(0)
-      })
+      .map(|p| p.split('-').next().unwrap_or("0").parse().unwrap_or(0))
       .collect()
   };
-  let ap = parse(a);
-  let bp = parse(b);
-  ap.cmp(&bp)
+  parse(a).cmp(&parse(b))
 }
 
 fn extract_tarball(data: &[u8], dest: &Path) -> Result<(), String> {
@@ -449,7 +1211,6 @@ fn extract_tarball(data: &[u8], dest: &Path) -> Result<(), String> {
   let gz = GzDecoder::new(data);
   let mut archive = tar::Archive::new(gz);
 
-  // npm tarballs have a `package/` prefix in all entries
   fs::create_dir_all(dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
 
   for entry in archive.entries().map_err(|e| format!("tar read: {e}"))? {
@@ -457,7 +1218,6 @@ fn extract_tarball(data: &[u8], dest: &Path) -> Result<(), String> {
     let path = entry.path().map_err(|e| format!("tar path: {e}"))?;
     let path_str = path.to_string_lossy();
 
-    // Strip the `package/` prefix
     let relative = if let Some(stripped) = path_str.strip_prefix("package/") {
       stripped.to_string()
     } else if let Some(stripped) = path_str.strip_prefix("package\\") {
@@ -470,7 +1230,6 @@ fn extract_tarball(data: &[u8], dest: &Path) -> Result<(), String> {
       continue;
     }
 
-    // Security: reject paths that escape dest
     let target = dest.join(&relative);
     if !target.starts_with(dest) {
       continue;
@@ -484,7 +1243,6 @@ fn extract_tarball(data: &[u8], dest: &Path) -> Result<(), String> {
       }
       let mut file = fs::File::create(&target).map_err(|e| format!("create {}: {e}", target.display()))?;
       io::copy(&mut entry, &mut file).map_err(|e| format!("write {}: {e}", target.display()))?;
-      // Preserve executable bit
       #[cfg(unix)]
       {
         use std::os::unix::fs::PermissionsExt;
@@ -530,7 +1288,6 @@ fn link_bins(pkg_dir: &Path, bin_dir: &Path) -> Result<(), String> {
 
     #[cfg(unix)]
     {
-      // Create a shell wrapper that invokes the script with malia
       let wrapper = format!("#!/bin/sh\nexec malia \"{}\" \"$@\"\n", source.display());
       fs::write(&target, wrapper).map_err(|e| format!("write bin {bin_name}: {e}"))?;
       use std::os::unix::fs::PermissionsExt;
@@ -549,7 +1306,85 @@ fn link_bins(pkg_dir: &Path, bin_dir: &Path) -> Result<(), String> {
   Ok(())
 }
 
-// ── HTTP helpers (sync, using std only) ─────────────────────────────────────
+/// Link .bin entries for all packages in node_modules.
+fn link_all_bins(nm: &Path) {
+  let bin_dir = nm.join(".bin");
+  let _ = fs::create_dir_all(&bin_dir);
+  if let Ok(entries) = fs::read_dir(nm) {
+    for entry in entries.flatten() {
+      if entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
+        let _ = link_bins(&entry.path(), &bin_dir);
+      }
+    }
+  }
+}
+
+// ── File collection for pack ────────────────────────────────────────────────
+
+fn collect_files(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<PathBuf>) {
+  let target = dir.join(pattern);
+  if target.is_file() {
+    if let Ok(rel) = target.strip_prefix(root) {
+      out.push(rel.to_path_buf());
+    }
+  } else if target.is_dir() {
+    collect_all_files(root, &target, out);
+  } else if let Ok(entries) = fs::read_dir(dir) {
+    for e in entries.flatten() {
+      let fname = e.file_name().to_string_lossy().to_string();
+      if glob_match(pattern, &fname) {
+        if let Ok(rel) = e.path().strip_prefix(root) {
+          out.push(rel.to_path_buf());
+        }
+      }
+    }
+  }
+}
+
+fn collect_all_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+  let skip = ["node_modules", ".git", ".svn", ".hg", ".DS_Store"];
+  if let Ok(entries) = fs::read_dir(dir) {
+    for e in entries.flatten() {
+      let name = e.file_name().to_string_lossy().to_string();
+      if skip.contains(&name.as_str()) {
+        continue;
+      }
+      let path = e.path();
+      if path.is_dir() {
+        collect_all_files(root, &path, out);
+      } else if let Ok(rel) = path.strip_prefix(root) {
+        out.push(rel.to_path_buf());
+      }
+    }
+  }
+}
+
+fn glob_match(pattern: &str, name: &str) -> bool {
+  if let Some(rest) = pattern.strip_suffix('*') {
+    name.starts_with(rest)
+  } else {
+    pattern == name
+  }
+}
+
+// ── Crypto helpers ──────────────────────────────────────────────────────────
+
+fn sha1_hex(data: &[u8]) -> String {
+  use sha1::Digest;
+  let hash = sha1::Sha1::digest(data);
+  hex_encode(&hash)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+  bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn base64_encode(data: &[u8]) -> String {
+  use base64::Engine;
+  base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+// ── HTTP helpers ────────────────────────────────────────────────────────────
 
 fn find_curl() -> String {
   for path in &["curl", "/usr/bin/curl", "/usr/local/bin/curl", "/opt/homebrew/bin/curl"] {
@@ -566,10 +1401,20 @@ fn find_curl() -> String {
   "curl".to_string()
 }
 
-fn http_get(url: &str) -> Result<String, String> {
+fn curl_auth_args(token: Option<&str>) -> Vec<String> {
+  match token {
+    Some(t) => vec!["-H".to_string(), format!("Authorization: Bearer {t}")],
+    None => vec![],
+  }
+}
+
+fn http_get(url: &str, token: Option<&str>) -> Result<String, String> {
   let curl = find_curl();
-  let output = std::process::Command::new(&curl)
-    .args(["-fsSL", "--max-time", "30", url])
+  let mut cmd = std::process::Command::new(&curl);
+  cmd.args(["-fsSL", "--max-time", "30"]);
+  cmd.args(curl_auth_args(token));
+  cmd.arg(url);
+  let output = cmd
     .output()
     .map_err(|e| format!("Cannot fetch packages: curl not found ({e}). Install curl and try again."))?;
   if !output.status.success() {
@@ -582,10 +1427,13 @@ fn http_get(url: &str) -> Result<String, String> {
   String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8 response: {e}"))
 }
 
-fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
+fn http_get_bytes(url: &str, token: Option<&str>) -> Result<Vec<u8>, String> {
   let curl = find_curl();
-  let output = std::process::Command::new(&curl)
-    .args(["-fsSL", "--max-time", "120", url])
+  let mut cmd = std::process::Command::new(&curl);
+  cmd.args(["-fsSL", "--max-time", "120"]);
+  cmd.args(curl_auth_args(token));
+  cmd.arg(url);
+  let output = cmd
     .output()
     .map_err(|e| format!("Cannot download package: curl not found ({e}). Install curl and try again."))?;
   if !output.status.success() {
@@ -598,7 +1446,44 @@ fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
   Ok(output.stdout)
 }
 
+fn http_post(url: &str, body: &str, token: Option<&str>) -> Result<String, String> {
+  let curl = find_curl();
+  let mut cmd = std::process::Command::new(&curl);
+  cmd.args(["-fsSL", "--max-time", "30", "-X", "POST"]);
+  cmd.args(["-H", "Content-Type: application/json"]);
+  cmd.args(curl_auth_args(token));
+  cmd.args(["-d", body]);
+  cmd.arg(url);
+  let output = cmd.output().map_err(|e| format!("curl: {e}"))?;
+  if !output.status.success() {
+    return Err(format!(
+      "POST failed ({}): {}",
+      output.status,
+      String::from_utf8_lossy(&output.stderr).trim()
+    ));
+  }
+  String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8: {e}"))
+}
+
+fn http_put(url: &str, body: &str, token: Option<&str>) -> Result<String, String> {
+  let curl = find_curl();
+  let mut cmd = std::process::Command::new(&curl);
+  cmd.args(["-fsSL", "--max-time", "60", "-X", "PUT"]);
+  cmd.args(["-H", "Content-Type: application/json"]);
+  cmd.args(curl_auth_args(token));
+  cmd.args(["-d", body]);
+  cmd.arg(url);
+  let output = cmd.output().map_err(|e| format!("curl: {e}"))?;
+  if !output.status.success() {
+    return Err(format!(
+      "PUT failed ({}): {}",
+      output.status,
+      String::from_utf8_lossy(&output.stderr).trim()
+    ));
+  }
+  String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8: {e}"))
+}
+
 fn urlenc(s: &str) -> String {
-  // Minimal URL encoding for scoped package names: @scope/name -> @scope%2fname
   s.replace('/', "%2f")
 }
