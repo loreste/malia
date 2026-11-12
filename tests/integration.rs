@@ -1220,7 +1220,6 @@ fn malia_dual_binary_and_global_namespace() {
     "malia eval failed: {}",
     String::from_utf8_lossy(&malia_eval.stderr)
   );
-
 }
 
 fn run_framework_test(script_name: &str) {

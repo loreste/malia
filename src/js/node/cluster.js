@@ -121,7 +121,7 @@ class Cluster extends EventEmitter {
 
     child.on("message", (msg) => {
       if (msg && typeof msg === "object" && msg.cmd === "NODE_CLUSTER") {
-        if (msg.act === "online") {
+        if (msg.act === "online" && worker.state !== "online") {
           worker.state = "online";
           worker.emit("online");
           this.emit("online", worker);

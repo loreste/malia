@@ -636,6 +636,7 @@ pub async fn op_lstat(#[string] path: String) -> Result<StatInfo, JsErrorBox> {
 enum NetReader {
   Tcp(tokio::net::tcp::OwnedReadHalf),
   Tls(tokio::io::ReadHalf<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>),
+  TlsServer(tokio::io::ReadHalf<tokio_rustls::server::TlsStream<tokio::net::TcpStream>>),
   #[cfg(unix)]
   Unix(tokio::net::unix::OwnedReadHalf),
   #[cfg(windows)]
@@ -645,6 +646,7 @@ enum NetReader {
 enum NetWriter {
   Tcp(tokio::net::tcp::OwnedWriteHalf),
   Tls(tokio::io::WriteHalf<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>),
+  TlsServer(tokio::io::WriteHalf<tokio_rustls::server::TlsStream<tokio::net::TcpStream>>),
   #[cfg(unix)]
   Unix(tokio::net::unix::OwnedWriteHalf),
   #[cfg(windows)]
@@ -1206,12 +1208,119 @@ pub async fn op_tls_connect(
     protocol, cipher, alpn, peer_certificate, authorized: !insecure })
 }
 
+/// TLS server: bind, accept, and TLS-handshake each connection.
+/// Uses the same ServerSlot / op_net_accept / op_net_read / op_net_write
+/// infrastructure as plain TCP, so accepted sockets are transparently usable.
+#[op2]
+#[serde]
+pub async fn op_tls_listen(
+  state: Rc<RefCell<OpState>>,
+  #[string] host: String,
+  port: u32,
+  #[string] cert_pem: String,
+  #[string] key_pem: String,
+) -> Result<ListenInfo, JsErrorBox> {
+  if port > u16::MAX as u32 {
+    return Err(JsErrorBox::range_error("invalid port"));
+  }
+  crate::permissions::check_net(&host)?;
+
+  let tls_config = crate::serve::tls_config(&cert_pem, &key_pem)
+    .map_err(JsErrorBox::generic)?;
+  let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
+
+  let addr = format!("{host}:{port}");
+  let std_listener = {
+    let sock = socket2::Socket::new(
+      if host.contains(':') { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 },
+      socket2::Type::STREAM,
+      Some(socket2::Protocol::TCP),
+    )
+    .map_err(|e| JsErrorBox::generic(format!("socket: {e}")))?;
+    sock.set_reuse_address(true).ok();
+    #[cfg(unix)]
+    sock.set_reuse_port(true).ok();
+    sock.set_nonblocking(true).ok();
+    let addr: std::net::SocketAddr = addr
+      .parse()
+      .map_err(|e| JsErrorBox::generic(format!("invalid address {addr}: {e}")))?;
+    sock
+      .bind(&addr.into())
+      .map_err(|e| JsErrorBox::generic(format!("bind {addr}: {e}")))?;
+    sock
+      .listen(128)
+      .map_err(|e| JsErrorBox::generic(format!("listen {addr}: {e}")))?;
+    std::net::TcpListener::from(sock)
+  };
+  let listener = tokio::net::TcpListener::from_std(std_listener)
+    .map_err(|e| JsErrorBox::generic(format!("tokio listener: {e}")))?;
+  let bound = listener
+    .local_addr()
+    .map_err(|e| JsErrorBox::generic(format!("local_addr: {e}")))?;
+
+  let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+  let (acc_tx, acc_rx) = mpsc::unbounded_channel();
+  let inner = {
+    let mut st = state.borrow_mut();
+    net_inner(&mut st)
+  };
+  let id = {
+    let mut guard = inner.lock().unwrap();
+    let id = guard.next_id;
+    guard.next_id += 1;
+    guard.servers.insert(
+      id,
+      ServerSlot {
+        shutdown: Some(shutdown_tx),
+        incoming: Arc::new(TokioMutex::new(acc_rx)),
+      },
+    );
+    id
+  };
+
+  let task_inner = inner.clone();
+  tokio::spawn(async move {
+    let mut shutdown_rx = shutdown_rx;
+    loop {
+      let accepted = tokio::select! {
+        biased;
+        _ = &mut shutdown_rx => break,
+        result = listener.accept() => result,
+      };
+      let Ok((tcp_stream, peer_addr)) = accepted else {
+        break;
+      };
+      let acceptor = acceptor.clone();
+      let task_inner = task_inner.clone();
+      let acc_tx = acc_tx.clone();
+      // TLS handshake in a separate task so slow clients don't block accept
+      tokio::spawn(async move {
+        let tls_stream = match acceptor.accept(tcp_stream).await {
+          Ok(s) => s,
+          Err(_) => return, // handshake failed, drop connection
+        };
+        let local = tls_stream.get_ref().0.local_addr().ok();
+        let (reader, writer) = tokio::io::split(tls_stream);
+        let conn = insert_conn(&task_inner, NetReader::TlsServer(reader), NetWriter::TlsServer(writer), peer_addr, local);
+        let _ = acc_tx.send(conn);
+      });
+    }
+  });
+
+  Ok(ListenInfo {
+    id,
+    host: bound.ip().to_string(),
+    port: bound.port(),
+  })
+}
+
 async fn read_some(reader: &mut NetReader) -> std::io::Result<Vec<u8>> {
   use tokio::io::AsyncReadExt;
   let mut buf = vec![0u8; 16 * 1024];
   let n = match reader {
     NetReader::Tcp(r) => r.read(&mut buf).await?,
     NetReader::Tls(r) => r.read(&mut buf).await?,
+    NetReader::TlsServer(r) => r.read(&mut buf).await?,
     #[cfg(unix)]
     NetReader::Unix(r) => r.read(&mut buf).await?,
     #[cfg(windows)]
@@ -1363,6 +1472,7 @@ pub async fn op_net_write(
   let result = match &mut writer {
     NetWriter::Tcp(w) => w.write_all(&data).await,
     NetWriter::Tls(w) => w.write_all(&data).await,
+    NetWriter::TlsServer(w) => w.write_all(&data).await,
     #[cfg(unix)]
     NetWriter::Unix(w) => w.write_all(&data).await,
     #[cfg(windows)]
@@ -1411,6 +1521,7 @@ pub async fn op_net_shutdown(state: Rc<RefCell<OpState>>, id: u32) -> Result<(),
     let _ = match &mut writer {
       NetWriter::Tcp(w) => w.shutdown().await,
       NetWriter::Tls(w) => w.shutdown().await,
+      NetWriter::TlsServer(w) => w.shutdown().await,
       #[cfg(unix)]
       NetWriter::Unix(w) => w.shutdown().await,
       #[cfg(windows)]

@@ -77,7 +77,47 @@ export function connect(...args) {
   return socket;
 }
 export class Server extends net.Server {
-  constructor() { unsupported('TLS server accept'); }
+  constructor(options, connectionListener) {
+    if (typeof options === 'function') { connectionListener = options; options = {}; }
+    const { cert, key } = options || {};
+    if (!cert || !key) throw new Error('tls.createServer requires cert and key options');
+    super(options, connectionListener);
+    this._tlsCert = typeof cert === 'string' ? cert : cert.toString();
+    this._tlsKey = typeof key === 'string' ? key : key.toString();
+  }
+  listen(...args) {
+    // Parse (port, host?, cb?) same as net.Server
+    let port, host = '0.0.0.0', cb;
+    if (typeof args[0] === 'number') { port = args[0]; }
+    else if (typeof args[0] === 'object') { port = args[0].port; host = args[0].host || host; }
+    if (typeof args[1] === 'string') host = args[1];
+    cb = args.find(a => typeof a === 'function');
+
+    ops.op_tls_listen(String(host), port, this._tlsCert, this._tlsKey).then(info => {
+      this._serverId = info.id;
+      this._address = { address: info.host, port: info.port, family: info.host.includes(':') ? 'IPv6' : 'IPv4' };
+      this.listening = true;
+      this.emit('listening');
+      if (cb) cb();
+      this._acceptLoop();
+    }, err => this.emit('error', err));
+    return this;
+  }
+  async _acceptLoop() {
+    while (this.listening) {
+      const conn = await ops.op_net_accept(this._serverId);
+      if (!conn) break;
+      const socket = new TLSSocket(null, {});
+      socket.encrypted = true;
+      socket.authorized = true;
+      socket._onConnect(conn);
+      socket.emit('secureConnect');
+      this.emit('connection', socket);
+      this.emit('secureConnection', socket);
+    }
+  }
 }
-export function createServer() { unsupported('TLS server accept'); }
+export function createServer(options, connectionListener) {
+  return new Server(options, connectionListener);
+}
 export default { TLSSocket, Server, connect, createServer, createSecureContext, DEFAULT_ECDH_CURVE, rootCertificates };

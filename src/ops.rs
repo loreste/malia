@@ -2488,6 +2488,7 @@ deno_core::extension!(
     op_net_accept,
     op_net_connect,
     op_tls_connect,
+    op_tls_listen,
     op_net_read,
     op_net_write,
     op_net_shutdown,

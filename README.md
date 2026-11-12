@@ -14,9 +14,9 @@ Worker dispatch ~120x faster  (isolate reuse vs fork)
 Memory          ~35% less RSS (HTTP server workload)
 ```
 
-Not everything works yet. TLS servers, N-API native addons, and some
-`node:cluster` edge cases are documented in [Limitations](#limitations).
-If your app uses those, test before switching.
+Not everything works yet. N-API native addons are not supported and some
+edge cases are documented in [Limitations](#limitations). If your app
+depends on native addons (e.g. `bcrypt`, `sharp`), those won't work.
 
 **Things you don't need to install separately:**
 
