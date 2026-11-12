@@ -15,6 +15,11 @@ All notable changes to Malia are documented here.
 - **Security CLI**: `malia scan`, `malia secrets`, `malia permissions`, `malia sbom`, `malia deps --licenses`
 - **Developer tools**: `malia doctor`, `malia serve .`, `malia clean`, `malia upgrade`, `malia env`
 - **Auto `.env` loading** at startup (replaces dotenv)
+- **Deployment**: `malia deploy` generates Dockerfile, docker-compose.yml, systemd service
+- **Profiling**: `malia profile <file>` V8 CPU profiling with top-functions report
+- **Database migrations**: `malia migrate create/up/down/status` with SQLite-tracked state
+- **Env encryption**: `malia env-encrypt encrypt/decrypt` AES-256-GCM for `.env` files
+- **Pub/Sub**: `malia.pubsub()` in-process pub/sub with pattern matching, history, async iterators
 - **Node.js APIs**: `EventEmitter.captureRejections`/`errorMonitor`/`setMaxListeners`/`addAbortListener`, `crypto.hkdf`/`hkdfSync`/`X509Certificate`, `util.parseArgs`/`styleText`/`MIMEType`, `Module._resolveFilename`/`_load`, `process.report`/`getBuiltinModule`/`abort`/`allowedNodeEnvironmentFlags`, `ChildProcess.ref`/`unref`, `test.mock`, `Buffer.allocUnsafeSlow`/`swap64`, `fs.chown`/`chownSync`
 
 ### Security

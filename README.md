@@ -27,6 +27,11 @@ Memory          35% less RSS, 62% less heap
 - **Bounded channels** — `chan(10)` with backpressure, `for await` consumption
 - **HTTP on a separate thread pool** — network I/O never blocks your JS
 - **Permissions** — deny-by-default filesystem, network, env, subprocess access
+- **`malia.pubsub`** — in-process pub/sub with pattern matching and message history
+- **`malia deploy`** — generate Dockerfile, docker-compose.yml, systemd service
+- **`malia profile`** — V8 CPU profiling with top-functions report
+- **`malia migrate`** — database migration runner (create, up, down, status)
+- **`malia env-encrypt`** — AES-256-GCM encrypted `.env` files, safe for git
 - **Built-in SQLite, KV store, task queue, router, tracing, metrics**
 - **TypeScript runs directly** — no build step, no config
 
@@ -157,6 +162,10 @@ malia run app.wasm
 | `malia permissions <file>` | Show what permissions a script needs before running it |
 | `malia sbom` | Generate a CycloneDX SBOM for compliance audits |
 | `malia deps [--tree] [--licenses]` | Dependency tree with sizes and license breakdown |
+| `malia deploy [docker\|compose\|systemd\|all]` | Generate production deployment files |
+| `malia profile <file>` | CPU profiling with V8 inspector, top-functions report |
+| `malia migrate [create\|up\|down\|status]` | Database migration runner with SQLite-tracked state |
+| `malia env-encrypt [encrypt\|decrypt]` | AES-256-GCM encryption for `.env` files |
 | `malia <script>` | Run a script defined in the config file or `package.json` |
 
 ### Package management
@@ -402,6 +411,7 @@ start = "jse start"
 | `jse.secure` | Security headers middleware: HSTS, noSniff, frameOptions, CSP, COOP, CORP, referrer policy |
 | `jse.rateLimit` | Per-IP rate limiting with `Retry-After` and `X-RateLimit` headers |
 | `jse.cors` | CORS middleware with preflight support, configurable origin/methods/credentials |
+| `malia.pubsub` | In-process pub/sub: `subscribe(pattern, fn)`, `publish(topic, msg)`, pattern matching (`events:*`), message history for late joiners, `once()` promises, async iterators |
 
 Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 `btoa`, `atob`, `crypto.getRandomValues`, `crypto.randomUUID`,
@@ -610,6 +620,88 @@ malia env                 # Show resolved env vars (secrets auto-masked)
 `.env.<NODE_ENV>.local` at startup. No `dotenv` package needed. Existing
 environment variables take precedence.
 
+## Deployment
+
+Generate production-ready deployment files from your project config:
+
+```sh
+malia deploy              # generates Dockerfile, docker-compose.yml, systemd service
+malia deploy docker       # just the Dockerfile
+malia deploy systemd      # just the .service file
+```
+
+The generated Dockerfile uses a minimal Ubuntu base, installs malia, copies
+your code, and runs it with `--allow-all`. The docker-compose.yml includes
+health checks and restart policy. The systemd service file is ready for
+`systemctl enable --now`.
+
+## Profiling
+
+```sh
+malia profile app.js              # 10-second CPU profile (default)
+malia profile app.js --duration 30  # 30-second profile
+```
+
+Outputs the top functions by CPU time and saves a `.cpuprofile` file you can
+load in Chrome DevTools (Performance tab). Also reports RSS and heap memory.
+
+## Database Migrations
+
+```sh
+malia migrate create add_users    # creates timestamped up/down SQL files
+malia migrate up                  # apply pending migrations
+malia migrate down                # roll back the last migration
+malia migrate status              # show which migrations are applied
+```
+
+Migrations are tracked in a local SQLite database (`.malia-migrations.db`).
+Each migration is a pair of `.up.sql` and `.down.sql` files in the
+`migrations/` directory.
+
+## Env Encryption
+
+```sh
+malia env-encrypt encrypt           # .env -> .env.encrypted (AES-256-GCM)
+malia env-encrypt decrypt           # .env.encrypted -> .env
+malia env-encrypt encrypt --key=... # use a specific key
+```
+
+Commit `.env.encrypted` safely to git. Set `MALIA_ENV_KEY` in your CI/CD
+environment or pass `--key`. Without a key, one is generated and printed.
+
+## Pub/Sub (`malia.pubsub`)
+
+In-process publish/subscribe for real-time applications. No Redis, no
+socket.io, no npm packages.
+
+```javascript
+const bus = malia.pubsub({ history: 50 });  // keep last 50 messages
+
+// Subscribe with pattern matching
+bus.subscribe("events:*", (msg, topic) => {
+  console.log(topic, msg);
+});
+
+bus.publish("events:user.login", { userId: 123 });
+bus.publish("events:order.created", { orderId: 456 });
+
+// Late joiners get message history
+bus.subscribe("events:*", (msg) => { /* receives replayed messages */ });
+
+// Async: wait for a single message
+const { message } = await bus.once("shutdown");
+
+// Async iterator
+for await (const { message, topic } of bus.listen("events:*")) {
+  await processEvent(message);
+}
+
+// Cleanup
+const unsub = bus.subscribe("topic", fn);
+unsub();  // remove this subscription
+bus.clear();  // remove all subscriptions and history
+```
+
 ## npm Packages Replaced
 
 Malia includes built-in replacements for popular npm packages. Fewer
@@ -630,6 +722,10 @@ chain risks.
 | `express-rate-limit` | 3M | `jse.rateLimit(handler, {max})` |
 | `cors` | 14M | `jse.cors(handler, {origin})` |
 | `http-server` / `serve` | 5M | `malia serve .` |
+| `pm2` / `forever` | 5M | `malia deploy systemd` + cluster |
+| `snyk` / `npm audit` | - | `malia scan` + `malia secrets` + `malia audit` |
+| `dotenv-vault` | 1M | `malia env-encrypt` |
+| `knex migrate` | 2M | `malia migrate` |
 
 ## Node builtins
 

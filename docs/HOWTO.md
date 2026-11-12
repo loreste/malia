@@ -26,6 +26,11 @@ Examples for common tasks. `malia` and `jse` are the same binary, and the
 19. [Cron scheduler](#19-cron-scheduler)
 20. [Security](#20-security)
 21. [Developer tools](#21-developer-tools)
+22. [Deployment](#22-deployment)
+23. [Profiling](#23-profiling)
+24. [Database migrations](#24-database-migrations)
+25. [Env encryption](#25-env-encryption)
+26. [Pub/Sub](#26-pubsub)
 
 ---
 
@@ -1404,3 +1409,217 @@ malia clean --all # also clear global download cache
 ```sh
 malia upgrade     # check latest version, show install command
 ```
+
+---
+
+## 22. Deployment
+
+### Generate deployment files
+
+```sh
+malia deploy              # generates all three
+malia deploy docker       # Dockerfile + .dockerignore only
+malia deploy compose      # docker-compose.yml only
+malia deploy systemd      # <app-name>.service only
+```
+
+The generated Dockerfile installs malia in a minimal Ubuntu base,
+copies your `package.json` first (for layer caching), installs dependencies,
+then copies your code. It sets `NODE_ENV=production` and exposes the port
+from your `PORT` env var.
+
+### Deploy with Docker
+
+```sh
+malia deploy
+docker compose up -d      # build and start
+docker compose logs -f    # watch logs
+docker compose down       # stop
+```
+
+### Deploy with systemd
+
+```sh
+malia deploy systemd
+sudo cp my-app.service /etc/systemd/system/
+sudo systemctl enable --now my-app
+sudo journalctl -u my-app -f   # watch logs
+```
+
+---
+
+## 23. Profiling
+
+```sh
+malia profile server.js              # profile for 10 seconds (default)
+malia profile server.js --duration 30  # profile for 30 seconds
+```
+
+Output includes:
+- Top 20 functions by CPU time with file:line references
+- Full `.cpuprofile` file for Chrome DevTools
+- Memory usage (RSS, heap used, heap total)
+
+To analyze in Chrome DevTools:
+1. Open `chrome://inspect`
+2. Click "Open dedicated DevTools for Node"
+3. Go to Performance tab -> Load profile -> select the `.cpuprofile` file
+
+---
+
+## 24. Database migrations
+
+### Create a migration
+
+```sh
+malia migrate create add_users_table
+```
+
+This creates `migrations/<timestamp>_add_users_table.up.sql` and
+`migrations/<timestamp>_add_users_table.down.sql`.
+
+### Write the SQL
+
+```sql
+-- migrations/<timestamp>_add_users_table.up.sql
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- migrations/<timestamp>_add_users_table.down.sql
+DROP TABLE users;
+```
+
+### Run migrations
+
+```sh
+malia migrate up       # apply all pending migrations
+malia migrate down     # roll back the last applied migration
+malia migrate status   # show [x] applied, [ ] pending
+```
+
+Migrations are tracked in `.malia-migrations.db` (auto-created). The
+migration runner uses the built-in SQLite engine.
+
+---
+
+## 25. Env encryption
+
+### Encrypt your .env for safe git storage
+
+```sh
+# Encrypt with auto-generated key
+malia env-encrypt encrypt
+# Output: Generated key (save this): <hex key>
+# .env -> .env.encrypted
+
+# Encrypt with explicit key
+malia env-encrypt encrypt --key=<64-char-hex>
+
+# Decrypt
+malia env-encrypt decrypt --key=<64-char-hex>
+# .env.encrypted -> .env
+```
+
+### CI/CD workflow
+
+```sh
+# In your CI environment, set MALIA_ENV_KEY as a secret
+export MALIA_ENV_KEY=<64-char-hex>
+malia env-encrypt decrypt    # restores .env from .env.encrypted
+malia run --allow-all app.js # .env auto-loaded at startup
+```
+
+Encryption uses AES-256-GCM with a random 12-byte nonce per encryption.
+The key is 32 bytes (64 hex chars). The encrypted file contains
+`nonce (12 bytes) + ciphertext + GCM tag (16 bytes)`.
+
+### .gitignore
+
+```
+.env
+.env.local
+.env.*.local
+# DO commit:
+# .env.encrypted
+```
+
+---
+
+## 26. Pub/Sub
+
+### Basic pub/sub
+
+```javascript
+const bus = malia.pubsub();
+
+bus.subscribe("orders", (order) => {
+  console.log("New order:", order.id);
+});
+
+bus.publish("orders", { id: 123, total: 49.99 });
+```
+
+### Pattern matching
+
+```javascript
+bus.subscribe("events:*", (msg, topic) => {
+  // Matches events:login, events:logout, events:purchase, etc.
+  console.log(`[${topic}]`, msg);
+});
+
+bus.publish("events:login", { userId: 1 });
+bus.publish("events:purchase", { amount: 99 });
+```
+
+### Message history (replay for late joiners)
+
+```javascript
+const bus = malia.pubsub({ history: 100 });
+
+bus.publish("chat:room1", { user: "Alice", text: "hello" });
+bus.publish("chat:room1", { user: "Bob", text: "hi" });
+
+// New subscriber immediately receives the 2 messages above
+bus.subscribe("chat:room1", (msg) => {
+  console.log(msg.user + ":", msg.text);
+});
+```
+
+### Async patterns
+
+```javascript
+// Wait for a single event
+const { message } = await bus.once("ready");
+
+// Async iterator (consume events as a stream)
+for await (const { message, topic } of bus.listen("events:*")) {
+  await processEvent(message);
+}
+```
+
+### WebSocket broadcast example
+
+```javascript
+const bus = malia.pubsub();
+const clients = new Set();
+
+jse.serve({ port: 3000 }, (req) => {
+  if (req.headers.get("upgrade") === "websocket") {
+    const { socket, response } = jse.upgradeWebSocket(req);
+    clients.add(socket);
+    socket.onclose = () => clients.delete(socket);
+    socket.onmessage = (e) => bus.publish("chat", JSON.parse(e.data));
+    return response;
+  }
+  return new Response("WebSocket server");
+});
+
+// Broadcast to all connected clients
+bus.subscribe("chat", (msg) => {
+  const data = JSON.stringify(msg);
+  for (const ws of clients) ws.send(data);
+});
