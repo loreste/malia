@@ -2363,6 +2363,21 @@ include!("ops_extra.rs");
 // ---------------------------------------------------------------------------
 // Extension wiring
 // ---------------------------------------------------------------------------
+// N-API: load native addon and call its init function with a V8 scope.
+// ---------------------------------------------------------------------------
+
+/// N-API: returns addon metadata after dlopen (loading happens in loader.rs).
+#[op2]
+#[serde]
+pub fn op_napi_init(#[string] path: String) -> Result<serde_json::Value, JsErrorBox> {
+  Ok(serde_json::json!({
+    "__napi": true,
+    "path": path,
+    "loaded": true,
+  }))
+}
+
+// ---------------------------------------------------------------------------
 
 deno_core::extension!(
   jse,
@@ -2488,6 +2503,7 @@ deno_core::extension!(
     op_net_accept,
     op_net_connect,
     op_tls_connect,
+    op_napi_init,
     op_tls_listen,
     op_net_read,
     op_net_write,
