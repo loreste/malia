@@ -609,6 +609,17 @@
       return this;
     }
 
+    swap64() {
+      if (this.length % 8 !== 0) throw new RangeError("Buffer size must be a multiple of 64-bits");
+      for (let i = 0; i < this.length; i += 8) {
+        let a = this[i]; this[i] = this[i + 7]; this[i + 7] = a;
+        a = this[i + 1]; this[i + 1] = this[i + 6]; this[i + 6] = a;
+        a = this[i + 2]; this[i + 2] = this[i + 5]; this[i + 5] = a;
+        a = this[i + 3]; this[i + 3] = this[i + 4]; this[i + 4] = a;
+      }
+      return this;
+    }
+
     fill(value, offset = 0, end = this.length, encoding) {
       if (typeof offset === "string") {
         encoding = offset;
@@ -966,11 +977,17 @@ Buffer.from = function (value, offsetOrEncoding, length) {
 
 
   Buffer.allocUnsafe = function (size) {
-      if (typeof size !== "number") throw __jse.invalidArgType("size", "number", size);
-      if (!(size >= 0 && size <= 0x7FFFFFFF)) throw outOfRange("size", ">= 0 && <= 2147483647", size);
-      return pooled(size);
-    }
+    if (typeof size !== "number") throw __jse.invalidArgType("size", "number", size);
+    if (!(size >= 0 && size <= 0x7FFFFFFF)) throw outOfRange("size", ">= 0 && <= 2147483647", size);
+    return pooled(size);
+  };
 
+  // allocUnsafeSlow: same as allocUnsafe but never uses the pool (dedicated ArrayBuffer)
+  Buffer.allocUnsafeSlow = function (size) {
+    if (typeof size !== "number") throw __jse.invalidArgType("size", "number", size);
+    if (!(size >= 0 && size <= 0x7FFFFFFF)) throw outOfRange("size", ">= 0 && <= 2147483647", size);
+    return new Buffer(new Uint8Array(size));
+  };
 
   Buffer.concat = function (list, totalLength) {
       let length = totalLength;

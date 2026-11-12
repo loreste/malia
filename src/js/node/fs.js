@@ -339,6 +339,13 @@ export function chmodSync(path, mode) {
   ops.op_chmod_sync(String(path), mode >>> 0);
 }
 
+export function chownSync(path, uid, gid) {
+  // chown is a no-op on Windows (same as Node.js)
+  if (typeof ops.op_chown_sync === "function") {
+    ops.op_chown_sync(String(path), uid, gid);
+  }
+}
+
 export function truncateSync(path, len = 0) {
   ops.op_truncate_sync(String(path), len);
 }
@@ -447,6 +454,11 @@ export const access = callbackize(async (path, mode = 0) => {
 });
 export const chmod = callbackize(async (path, mode) => {
   await ops.op_chmod(String(path), mode >>> 0);
+});
+export const chown = callbackize(async (path, uid, gid) => {
+  if (typeof ops.op_chown_sync === "function") {
+    ops.op_chown_sync(String(path), uid, gid);
+  }
 });
 export const truncate = callbackize(async (path, len = 0) => {
   await ops.op_truncate(String(path), len);
@@ -819,6 +831,7 @@ export const promises = {
   realpath,
   access,
   chmod,
+  chown,
   truncate,
   symlink,
   readlink,
@@ -862,6 +875,8 @@ export default {
   access,
   chmodSync,
   chmod,
+  chownSync,
+  chown,
   truncateSync,
   truncate,
   symlinkSync,
