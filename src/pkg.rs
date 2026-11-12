@@ -1580,6 +1580,11 @@ pub fn run_lifecycle_script_pub(pkg_dir: &Path, script_name: &str) {
   run_lifecycle_script(pkg_dir, script_name);
 }
 
+/// Public wrapper for reading package version.
+pub fn read_pkg_version_pub(pkg_dir: &Path) -> Option<String> {
+  read_pkg_version(pkg_dir)
+}
+
 /// Public wrapper for cache dir display.
 pub fn cache_dir_str() -> String {
   cache_dir().to_string_lossy().to_string()

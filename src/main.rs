@@ -367,6 +367,34 @@ enum Command {
   Upgrade,
   /// Show resolved environment variables from .env files and config.
   Env,
+  /// Scan source code for security vulnerabilities (XSS, injection, secrets).
+  Scan {
+    /// Files or directories to scan (default: current directory).
+    #[arg(default_value = ".")]
+    path: String,
+  },
+  /// Show what permissions a script needs before running it.
+  Permissions {
+    /// File to analyze.
+    file: String,
+  },
+  /// Generate a Software Bill of Materials (SBOM) in CycloneDX JSON format.
+  Sbom,
+  /// Scan for leaked secrets, API keys, and credentials in source files.
+  Secrets {
+    /// Directory to scan (default: current directory).
+    #[arg(default_value = ".")]
+    path: String,
+  },
+  /// Show full dependency tree with license and maintainer info.
+  Deps {
+    /// Show full tree (not just top-level).
+    #[arg(long)]
+    tree: bool,
+    /// Show license info.
+    #[arg(long)]
+    licenses: bool,
+  },
   /// Run custom scripts defined in jse.json / package.json or execute files directly.
   #[command(external_subcommand)]
   Custom(Vec<String>),
@@ -630,6 +658,51 @@ async fn supervise_cluster(entry: PathBuf, workers: usize, args: Vec<String>) ->
 /// Load .env files automatically. Order (later overrides earlier):
 ///   .env, .env.local, .env.<NODE_ENV>, .env.<NODE_ENV>.local
 /// Only sets vars that aren't already in the environment (existing vars win).
+fn chrono_now() -> String {
+  // ISO 8601 timestamp without chrono crate
+  let secs = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_secs();
+  // Rough conversion -- good enough for SBOM timestamps
+  let days = secs / 86400;
+  let time_of_day = secs % 86400;
+  let hours = time_of_day / 3600;
+  let minutes = (time_of_day % 3600) / 60;
+  let seconds = time_of_day % 60;
+  // Days since epoch to date (simplified)
+  let mut y = 1970u64;
+  let mut remaining = days;
+  loop {
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let year_days = if leap { 366 } else { 365 };
+    if remaining < year_days {
+      break;
+    }
+    remaining -= year_days;
+    y += 1;
+  }
+  let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+  let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let mut m = 0;
+  for md in &month_days {
+    if remaining < *md {
+      break;
+    }
+    remaining -= md;
+    m += 1;
+  }
+  format!(
+    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+    y,
+    m + 1,
+    remaining + 1,
+    hours,
+    minutes,
+    seconds
+  )
+}
+
 fn dir_size(path: &Path) -> u64 {
   let mut total = 0;
   if let Ok(entries) = std::fs::read_dir(path) {
@@ -2154,6 +2227,686 @@ pub fn run() -> anyhow::Result<()> {
             val
           };
           println!("    {var}={display}");
+        }
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Scan { path }) => {
+      println!("Security Scan: {path}\n");
+      let scan_root = PathBuf::from(&path);
+      let mut findings = Vec::new();
+
+      // Patterns that indicate security issues
+      let vuln_patterns: Vec<(&str, &str, &str)> = vec![
+        (
+          "eval(",
+          "Code Injection",
+          "CRITICAL: eval() with dynamic input allows arbitrary code execution",
+        ),
+        (
+          "Function(",
+          "Code Injection",
+          "HIGH: Function() constructor can execute arbitrary code",
+        ),
+        (
+          "innerHTML",
+          "XSS",
+          "MEDIUM: innerHTML can introduce cross-site scripting if used with user input",
+        ),
+        ("document.write", "XSS", "MEDIUM: document.write can introduce XSS"),
+        (
+          "dangerouslySetInnerHTML",
+          "XSS",
+          "MEDIUM: React dangerouslySetInnerHTML can introduce XSS",
+        ),
+        (
+          ".exec(",
+          "Command Injection",
+          "HIGH: exec() may allow command injection if user input reaches it",
+        ),
+        (
+          "child_process",
+          "Command Execution",
+          "INFO: uses child_process -- ensure inputs are sanitized",
+        ),
+        (
+          "sql`",
+          "SQL",
+          "INFO: tagged template SQL -- verify all user input flows through parameters",
+        ),
+        (
+          "SELECT * FROM",
+          "SQL Injection",
+          "MEDIUM: raw SQL string -- use parameterized queries",
+        ),
+        (
+          "INSERT INTO",
+          "SQL Injection",
+          "MEDIUM: raw SQL string -- use parameterized queries",
+        ),
+        (
+          "req.query",
+          "Input Validation",
+          "INFO: direct use of query params -- validate/sanitize before use",
+        ),
+        (
+          "req.body",
+          "Input Validation",
+          "INFO: direct use of request body -- validate/sanitize before use",
+        ),
+        (
+          "req.params",
+          "Input Validation",
+          "INFO: direct use of route params -- validate/sanitize before use",
+        ),
+        ("password", "Hardcoded Secret", "HIGH: possible hardcoded password"),
+        ("api_key", "Hardcoded Secret", "HIGH: possible hardcoded API key"),
+        ("apiKey", "Hardcoded Secret", "HIGH: possible hardcoded API key"),
+        ("secret_key", "Hardcoded Secret", "HIGH: possible hardcoded secret key"),
+        (
+          "private_key",
+          "Hardcoded Secret",
+          "HIGH: possible hardcoded private key",
+        ),
+        (
+          "Authorization:",
+          "Hardcoded Auth",
+          "HIGH: possible hardcoded authorization header",
+        ),
+        (
+          "res.redirect(req.",
+          "Open Redirect",
+          "HIGH: redirect based on user input -- validate destination",
+        ),
+        (
+          "cors({ origin: true",
+          "CORS Misconfiguration",
+          "MEDIUM: CORS allows all origins",
+        ),
+        (
+          "cors({ origin: '*'",
+          "CORS Misconfiguration",
+          "MEDIUM: CORS allows all origins",
+        ),
+        (
+          "allowAllOrigins",
+          "CORS Misconfiguration",
+          "MEDIUM: CORS allows all origins",
+        ),
+        (
+          ".createReadStream(req",
+          "Path Traversal",
+          "HIGH: file read from user input -- sanitize path",
+        ),
+        (
+          "fs.readFile(req",
+          "Path Traversal",
+          "HIGH: file read from user input -- sanitize path",
+        ),
+        (
+          "__proto__",
+          "Prototype Pollution",
+          "HIGH: __proto__ access can lead to prototype pollution",
+        ),
+        (
+          "constructor.prototype",
+          "Prototype Pollution",
+          "HIGH: prototype access pattern",
+        ),
+        (
+          "Object.assign({}, req",
+          "Prototype Pollution",
+          "MEDIUM: shallow merge of user input may allow prototype pollution",
+        ),
+        (
+          "JSON.parse(",
+          "Unsafe Deserialization",
+          "INFO: JSON.parse -- ensure source is trusted",
+        ),
+        (
+          "deserialize(",
+          "Unsafe Deserialization",
+          "MEDIUM: deserialization of untrusted data",
+        ),
+        ("http://", "Insecure Transport", "LOW: HTTP URL -- prefer HTTPS"),
+        (
+          "TLS_REJECT_UNAUTHORIZED",
+          "TLS Bypass",
+          "CRITICAL: disabling TLS verification",
+        ),
+        (
+          "rejectUnauthorized: false",
+          "TLS Bypass",
+          "CRITICAL: disabling TLS verification",
+        ),
+        (
+          "NODE_TLS_REJECT_UNAUTHORIZED",
+          "TLS Bypass",
+          "CRITICAL: disabling TLS verification",
+        ),
+      ];
+
+      fn scan_file(
+        path: &Path,
+        patterns: &[(&str, &str, &str)],
+        findings: &mut Vec<(String, usize, String, String, String)>,
+      ) {
+        let content = match std::fs::read_to_string(path) {
+          Ok(c) => c,
+          Err(_) => return,
+        };
+        for (i, line) in content.lines().enumerate() {
+          let trimmed = line.trim();
+          // Skip comments
+          if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+            continue;
+          }
+          for (pattern, category, description) in patterns {
+            if line.contains(pattern) {
+              // Filter false positives: hardcoded secret patterns need = or :
+              if *category == "Hardcoded Secret" || *category == "Hardcoded Auth" {
+                let lower = line.to_lowercase();
+                if !(lower.contains("= \"")
+                  || lower.contains("= '")
+                  || lower.contains("=\"")
+                  || lower.contains("='")
+                  || lower.contains(": \"")
+                  || lower.contains(": '"))
+                {
+                  continue;
+                }
+                // Skip env var reads
+                if lower.contains("process.env") || lower.contains("env.") || lower.contains("getenv") {
+                  continue;
+                }
+              }
+              // Skip http:// in comments or docs
+              if *pattern == "http://"
+                && (trimmed.starts_with('#')
+                  || trimmed.starts_with("*")
+                  || line.contains("localhost")
+                  || line.contains("127.0.0.1")
+                  || line.contains("example.com"))
+              {
+                continue;
+              }
+              findings.push((
+                path.display().to_string(),
+                i + 1,
+                category.to_string(),
+                description.to_string(),
+                trimmed.chars().take(100).collect(),
+              ));
+            }
+          }
+        }
+      }
+
+      fn scan_directory(
+        dir: &Path,
+        patterns: &[(&str, &str, &str)],
+        findings: &mut Vec<(String, usize, String, String, String)>,
+      ) {
+        let skip = [
+          "node_modules",
+          ".git",
+          "dist",
+          "build",
+          ".next",
+          "vendor",
+          "coverage",
+          "target",
+        ];
+        let extensions = [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx"];
+        if let Ok(entries) = std::fs::read_dir(dir) {
+          for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+              if !skip.contains(&name.as_str()) {
+                scan_directory(&path, patterns, findings);
+              }
+            } else if extensions.iter().any(|ext| name.ends_with(ext)) {
+              scan_file(&path, patterns, findings);
+            }
+          }
+        }
+      }
+
+      if scan_root.is_dir() {
+        scan_directory(&scan_root, &vuln_patterns, &mut findings);
+      } else {
+        scan_file(&scan_root, &vuln_patterns, &mut findings);
+      }
+
+      if findings.is_empty() {
+        println!("  No security issues found.");
+      } else {
+        let mut by_severity = std::collections::HashMap::new();
+        for (file, line, category, description, code) in &findings {
+          let severity = if description.starts_with("CRITICAL") {
+            "CRITICAL"
+          } else if description.starts_with("HIGH") {
+            "HIGH"
+          } else if description.starts_with("MEDIUM") {
+            "MEDIUM"
+          } else if description.starts_with("LOW") {
+            "LOW"
+          } else {
+            "INFO"
+          };
+          by_severity
+            .entry(severity)
+            .or_insert_with(Vec::new)
+            .push((file, line, category, description, code));
+        }
+        for severity in &["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] {
+          if let Some(items) = by_severity.get(severity) {
+            println!("  [{severity}] ({} findings)", items.len());
+            for (file, line, category, description, code) in items {
+              println!("    {file}:{line} [{category}]");
+              println!("      {description}");
+              println!("      > {code}");
+              println!();
+            }
+          }
+        }
+        let total = findings.len();
+        let critical = by_severity.get("CRITICAL").map(|v| v.len()).unwrap_or(0);
+        let high = by_severity.get("HIGH").map(|v| v.len()).unwrap_or(0);
+        println!("  {total} findings: {critical} critical, {high} high");
+        if critical > 0 {
+          std::process::exit(2);
+        }
+        if high > 0 {
+          std::process::exit(1);
+        }
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Permissions { file }) => {
+      println!("Permission analysis: {file}\n");
+      let content = std::fs::read_to_string(&file).map_err(|e| anyhow::anyhow!("Cannot read {file}: {e}"))?;
+
+      let mut needs_read = false;
+      let mut needs_write = false;
+      let mut needs_net = false;
+      let mut needs_run = false;
+      let mut needs_env = false;
+      let mut details = Vec::new();
+
+      let checks: Vec<(&str, &str, &mut bool, &str)> = vec![];
+      // Filesystem read
+      for pattern in &[
+        "fs.readFile",
+        "fs.readdir",
+        "fs.stat",
+        "fs.access",
+        "fs.createReadStream",
+        "fs.read",
+        "require(",
+        "import ",
+      ] {
+        if content.contains(pattern) && !needs_read {
+          needs_read = true;
+          details.push(format!("  --allow-read    (uses {pattern})"));
+        }
+      }
+      for pattern in &[
+        "fs.writeFile",
+        "fs.mkdir",
+        "fs.rename",
+        "fs.unlink",
+        "fs.rm",
+        "fs.createWriteStream",
+        "fs.appendFile",
+        "fs.copyFile",
+      ] {
+        if content.contains(pattern) && !needs_write {
+          needs_write = true;
+          details.push(format!("  --allow-write   (uses {pattern})"));
+        }
+      }
+      for pattern in &[
+        "fetch(",
+        "http.request",
+        "http.get",
+        "https.request",
+        "net.connect",
+        "jse.serve",
+        "malia.serve",
+        "WebSocket",
+      ] {
+        if content.contains(pattern) && !needs_net {
+          needs_net = true;
+          details.push(format!("  --allow-net     (uses {pattern})"));
+        }
+      }
+      for pattern in &["child_process", "exec(", "execFile", "spawn(", "fork("] {
+        if content.contains(pattern) && !needs_run {
+          needs_run = true;
+          details.push(format!("  --allow-run     (uses {pattern})"));
+        }
+      }
+      for pattern in &["process.env", "Deno.env"] {
+        if content.contains(pattern) && !needs_env {
+          needs_env = true;
+          details.push(format!("  --allow-env     (uses {pattern})"));
+        }
+      }
+
+      if details.is_empty() {
+        println!("  No special permissions required.");
+        println!("  Safe to run with: malia run {file}");
+      } else {
+        println!("  Required permissions:");
+        for d in &details {
+          println!("{d}");
+        }
+        let mut flags = Vec::new();
+        if needs_read {
+          flags.push("--allow-read");
+        }
+        if needs_write {
+          flags.push("--allow-write");
+        }
+        if needs_net {
+          flags.push("--allow-net");
+        }
+        if needs_run {
+          flags.push("--allow-run");
+        }
+        if needs_env {
+          flags.push("--allow-env");
+        }
+        println!("\n  Run with: malia run {} {file}", flags.join(" "));
+        println!("  Or use:   malia run --allow-all {file}");
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Sbom) => {
+      let pkg_path = current_dir.join("package.json");
+      if !pkg_path.exists() {
+        eprintln!("error: No package.json found");
+        std::process::exit(1);
+      }
+      let content = std::fs::read_to_string(&pkg_path)?;
+      let pkg: serde_json::Value = serde_json::from_str(&content)?;
+      let nm = current_dir.join("node_modules");
+
+      let name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+      let version = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+
+      let mut components = Vec::new();
+      if nm.exists() {
+        if let Ok(entries) = std::fs::read_dir(&nm) {
+          for entry in entries.flatten() {
+            let pkg_json = entry.path().join("package.json");
+            if let Ok(c) = std::fs::read_to_string(&pkg_json) {
+              if let Ok(p) = serde_json::from_str::<serde_json::Value>(&c) {
+                let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let pver = p.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+                let license = p.get("license").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+                let desc = p.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                components.push(serde_json::json!({
+                  "type": "library",
+                  "name": pname,
+                  "version": pver,
+                  "purl": format!("pkg:npm/{pname}@{pver}"),
+                  "licenses": [{ "license": { "id": license } }],
+                  "description": desc,
+                }));
+              }
+            }
+          }
+        }
+      }
+
+      let sbom = serde_json::json!({
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "version": 1,
+        "metadata": {
+          "component": {
+            "type": "application",
+            "name": name,
+            "version": version,
+          },
+          "tools": [{
+            "vendor": "malia",
+            "name": "malia-sbom",
+            "version": env!("CARGO_PKG_VERSION"),
+          }],
+          "timestamp": chrono_now(),
+        },
+        "components": components,
+      });
+
+      let output = serde_json::to_string_pretty(&sbom).unwrap();
+      let sbom_path = current_dir.join("sbom.cdx.json");
+      std::fs::write(&sbom_path, format!("{output}\n"))?;
+      println!(
+        "Generated SBOM: {} ({} components)",
+        sbom_path.display(),
+        components.len()
+      );
+      std::process::exit(0);
+    }
+
+    Some(Command::Secrets { path }) => {
+      println!("Secret Scanner: {path}\n");
+      let scan_dir = PathBuf::from(&path);
+
+      // Patterns that match leaked secrets
+      let secret_patterns: Vec<(&str, &str)> = vec![
+        (r#"AKIA[0-9A-Z]{16}"#, "AWS Access Key ID"),
+        ("ghp_", "GitHub Personal Access Token"),
+        ("gho_", "GitHub OAuth Token"),
+        ("ghs_", "GitHub Server Token"),
+        ("github_pat_", "GitHub Fine-Grained PAT"),
+        ("sk-", "OpenAI / Stripe Secret Key"),
+        ("sk_live_", "Stripe Live Secret Key"),
+        ("sk_test_", "Stripe Test Secret Key"),
+        ("pk_live_", "Stripe Live Publishable Key"),
+        ("rk_live_", "Stripe Restricted Key"),
+        ("SG.", "SendGrid API Key"),
+        ("xoxb-", "Slack Bot Token"),
+        ("xoxp-", "Slack User Token"),
+        ("hooks.slack.com/services", "Slack Webhook URL"),
+        ("-----BEGIN RSA PRIVATE KEY-----", "RSA Private Key"),
+        ("-----BEGIN EC PRIVATE KEY-----", "EC Private Key"),
+        ("-----BEGIN PRIVATE KEY-----", "Private Key (PKCS#8)"),
+        ("-----BEGIN OPENSSH PRIVATE KEY-----", "OpenSSH Private Key"),
+        ("AIza", "Google API Key"),
+        ("ya29.", "Google OAuth Token"),
+        ("ANTHROPIC_API_KEY", "Anthropic API Key (env reference)"),
+        ("npm_", "npm Access Token"),
+        ("eyJ", "JWT Token (base64 header)"),
+      ];
+
+      let skip_dirs = [
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        "target",
+        "vendor",
+        "coverage",
+        ".next",
+      ];
+      let skip_exts = [
+        ".png", ".jpg", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".lock", ".map",
+      ];
+      let mut total_findings = 0u32;
+
+      fn scan_secrets(
+        dir: &Path,
+        patterns: &[(&str, &str)],
+        skip_dirs: &[&str],
+        skip_exts: &[&str],
+        findings: &mut u32,
+      ) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+          for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+              if !skip_dirs.contains(&name.as_str()) {
+                scan_secrets(&path, patterns, skip_dirs, skip_exts, findings);
+              }
+            } else {
+              if skip_exts.iter().any(|ext| name.ends_with(ext)) {
+                continue;
+              }
+              if let Ok(content) = std::fs::read_to_string(&path) {
+                for (i, line) in content.lines().enumerate() {
+                  let trimmed = line.trim();
+                  if trimmed.starts_with("//") || trimmed.starts_with('#') {
+                    continue;
+                  }
+                  for (pattern, label) in patterns {
+                    if line.contains(pattern) {
+                      // Skip env var references (process.env.X = ...)
+                      if line.contains("process.env") || line.contains("std::env") || line.contains("os.environ") {
+                        continue;
+                      }
+                      // Skip commented patterns
+                      if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
+                        continue;
+                      }
+                      *findings += 1;
+                      let masked = if line.len() > 60 {
+                        format!("{}...", &line.trim()[..std::cmp::min(60, line.trim().len())])
+                      } else {
+                        line.trim().to_string()
+                      };
+                      println!("  {}:{} [{}]", path.display(), i + 1, label);
+                      println!("    > {masked}");
+                      println!();
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if scan_dir.is_dir() {
+        scan_secrets(&scan_dir, &secret_patterns, &skip_dirs, &skip_exts, &mut total_findings);
+      } else if let Ok(content) = std::fs::read_to_string(&scan_dir) {
+        for (i, line) in content.lines().enumerate() {
+          for (pattern, label) in &secret_patterns {
+            if line.contains(pattern) {
+              total_findings += 1;
+              println!("  {}:{} [{}]", scan_dir.display(), i + 1, label);
+              println!("    > {}", line.trim());
+              println!();
+            }
+          }
+        }
+      }
+
+      if total_findings == 0 {
+        println!("  No leaked secrets found.");
+      } else {
+        println!("  {total_findings} potential secret(s) found.");
+        println!("  Review each finding. Add secrets to .env (gitignored) instead of source code.");
+      }
+      if total_findings > 0 {
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Deps { tree, licenses }) => {
+      let pkg_path = current_dir.join("package.json");
+      if !pkg_path.exists() {
+        eprintln!("error: No package.json found");
+        std::process::exit(1);
+      }
+      let content = std::fs::read_to_string(&pkg_path)?;
+      let pkg: serde_json::Value = serde_json::from_str(&content)?;
+      let nm = current_dir.join("node_modules");
+
+      let name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("project");
+      let version = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+      println!("{name}@{version}");
+
+      let mut total_packages = 0u32;
+      let mut total_size = 0u64;
+      let mut license_map: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+      for key in &["dependencies", "devDependencies"] {
+        if let Some(deps) = pkg.get(*key).and_then(|v| v.as_object()) {
+          for (dep_name, dep_spec) in deps {
+            let dep_dir = nm.join(dep_name);
+            let ver = js_engine::pkg::read_pkg_version_pub(&dep_dir)
+              .unwrap_or_else(|| dep_spec.as_str().unwrap_or("?").to_string());
+
+            let mut extra = String::new();
+            if licenses {
+              let license = dep_dir
+                .join("package.json")
+                .exists()
+                .then(|| {
+                  std::fs::read_to_string(dep_dir.join("package.json"))
+                    .ok()
+                    .and_then(|c| {
+                      serde_json::from_str::<serde_json::Value>(&c)
+                        .ok()?
+                        .get("license")?
+                        .as_str()
+                        .map(String::from)
+                    })
+                })
+                .flatten()
+                .unwrap_or_else(|| "UNKNOWN".into());
+              *license_map.entry(license.clone()).or_insert(0) += 1;
+              extra = format!(" ({license})");
+            }
+
+            let size = if dep_dir.exists() { dir_size(&dep_dir) } else { 0 };
+            total_size += size;
+            total_packages += 1;
+
+            let is_dev = *key == "devDependencies";
+            let tag = if is_dev { " [dev]" } else { "" };
+            println!("  +- {dep_name}@{ver}{extra}{tag}");
+
+            if tree {
+              // Show sub-deps
+              let sub_pkg = dep_dir.join("package.json");
+              if let Ok(sub_content) = std::fs::read_to_string(&sub_pkg) {
+                if let Ok(sub) = serde_json::from_str::<serde_json::Value>(&sub_content) {
+                  if let Some(sub_deps) = sub.get("dependencies").and_then(|v| v.as_object()) {
+                    for (sd_name, sd_spec) in sub_deps {
+                      let sd_dir = nm.join(sd_name);
+                      let sd_ver = js_engine::pkg::read_pkg_version_pub(&sd_dir)
+                        .unwrap_or_else(|| sd_spec.as_str().unwrap_or("?").to_string());
+                      println!("  |  +- {sd_name}@{sd_ver}");
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      println!(
+        "\n  {total_packages} packages, {:.1} MB on disk",
+        total_size as f64 / 1_048_576.0
+      );
+      if licenses && !license_map.is_empty() {
+        println!("\n  Licenses:");
+        let mut sorted: Vec<_> = license_map.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for (lic, count) in &sorted {
+          println!("    {lic}: {count}");
         }
       }
       std::process::exit(0);
