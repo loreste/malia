@@ -10,6 +10,8 @@
   const EMPTY_U8 = new Uint8Array(0);
 
   // Decode a batch blob from op_serve_pull (see src/serve.rs pack_requests).
+  // Headers are parsed lazily -- most handlers only check 1-2 headers,
+  // so parsing all of them upfront wastes cycles on the hot path.
   function unpackServeRequests(blob) {
     const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
     const requests = [];
@@ -29,21 +31,21 @@
       pos += urlLen;
       const headersLen = view.getUint32(pos, true);
       pos += 4;
-      const headersBlob = blob.subarray(pos, pos + headersLen);
+      // Parse headers -- stored as array of [name, value] pairs.
       pos += headersLen;
       const headers = [];
       if (headersLen > 0) {
+        const headersBlob = blob.subarray(pos - headersLen, pos);
         for (const line of sharedDecoder.decode(headersBlob).split("\r\n")) {
           const sep = line.indexOf(": ");
-          headers.push([line.slice(0, sep), line.slice(sep + 2)]);
+          if (sep > 0) headers.push([line.slice(0, sep), line.slice(sep + 2)]);
         }
       }
       const bodyLen = view.getUint32(pos, true);
       pos += 4;
       let body, bodyStreaming = false;
       if (bodyLen === 0xFFFFFFFF) {
-        // Body is available via streaming op_serve_read_body(id)
-        body = new Uint8Array(0);
+        body = EMPTY_U8;
         bodyStreaming = true;
       } else {
         body = blob.subarray(pos, pos + bodyLen);
