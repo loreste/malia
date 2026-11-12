@@ -674,7 +674,7 @@ fn chrono_now() -> String {
   let mut y = 1970u64;
   let mut remaining = days;
   loop {
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let leap = y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
     let year_days = if leap { 366 } else { 365 };
     if remaining < year_days {
       break;
@@ -682,7 +682,7 @@ fn chrono_now() -> String {
     remaining -= year_days;
     y += 1;
   }
-  let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+  let leap = y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
   let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   let mut m = 0;
   for md in &month_days {
@@ -1054,14 +1054,14 @@ fn run_as_npm(args: &[String]) -> anyhow::Result<()> {
     "rebuild" | "rb" => {
       // Rebuild = re-run install scripts for all installed packages
       let nm = current_dir.join("node_modules");
-      if nm.exists() {
-        if let Ok(entries) = std::fs::read_dir(&nm) {
-          for entry in entries.flatten() {
-            if entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
-              // re-run install/postinstall scripts
-              js_engine::pkg::run_lifecycle_script_pub(&entry.path(), "install");
-              js_engine::pkg::run_lifecycle_script_pub(&entry.path(), "postinstall");
-            }
+      if nm.exists()
+        && let Ok(entries) = std::fs::read_dir(&nm)
+      {
+        for entry in entries.flatten() {
+          if entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
+            // re-run install/postinstall scripts
+            js_engine::pkg::run_lifecycle_script_pub(&entry.path(), "install");
+            js_engine::pkg::run_lifecycle_script_pub(&entry.path(), "postinstall");
           }
         }
       }
@@ -1215,6 +1215,12 @@ pub fn run() -> anyhow::Result<()> {
   }
   // Invoked as `node` -- behave like node: run file, eval, or REPL
   if invoked_as == "node" {
+    // `node --version` should print the Node-compatible version
+    if raw_args.get(1).is_some_and(|a| a == "--version" || a == "-v") {
+      // Keep in sync with process.version in src/js/03_process.js.
+      println!("v26.12.0");
+      std::process::exit(0);
+    }
     // Rewrite argv[0] to malia so clap parses correctly
     if !raw_args.is_empty() {
       raw_args[0] = "malia".to_string();
@@ -1940,19 +1946,20 @@ pub fn run() -> anyhow::Result<()> {
       }
 
       // 7. Check for vulnerable patterns
-      if current_dir.join(".env").exists() {
-        if let Ok(env_content) = std::fs::read_to_string(current_dir.join(".env")) {
-          for line in env_content.lines() {
-            let line = line.trim();
-            if line.contains("password") || line.contains("secret") || line.contains("token") || line.contains("key") {
-              if line.contains("=") && !line.starts_with('#') {
-                let key = line.split('=').next().unwrap_or("");
-                let key_lower = key.to_lowercase();
-                if key_lower.contains("password") || key_lower.contains("secret") || key_lower.contains("private_key") {
-                  // Don't print the value, just warn
-                  println!("  INFO: .env contains sensitive key: {key}");
-                }
-              }
+      if current_dir.join(".env").exists()
+        && let Ok(env_content) = std::fs::read_to_string(current_dir.join(".env"))
+      {
+        for line in env_content.lines() {
+          let line = line.trim();
+          if (line.contains("password") || line.contains("secret") || line.contains("token") || line.contains("key"))
+            && line.contains("=")
+            && !line.starts_with('#')
+          {
+            let key = line.split('=').next().unwrap_or("");
+            let key_lower = key.to_lowercase();
+            if key_lower.contains("password") || key_lower.contains("secret") || key_lower.contains("private_key") {
+              // Don't print the value, just warn
+              println!("  INFO: .env contains sensitive key: {key}");
             }
           }
         }
@@ -2103,7 +2110,8 @@ pub fn run() -> anyhow::Result<()> {
       }
 
       // Remove package-lock.json (regenerated on install)
-      for lock in &["package-lock.json"] {
+      {
+        let lock = &"package-lock.json";
         let p = current_dir.join(lock);
         if p.exists() {
           std::fs::remove_file(&p).ok();
@@ -2111,10 +2119,8 @@ pub fn run() -> anyhow::Result<()> {
         }
       }
 
-      if all {
-        if let Err(e) = js_engine::pkg::cache_clean() {
-          eprintln!("  warn: {e}");
-        }
+      if all && let Err(e) = js_engine::pkg::cache_clean() {
+        eprintln!("  warn: {e}");
       }
 
       println!("\n  Freed {:.1} MB", freed as f64 / 1_048_576.0);
@@ -2207,14 +2213,14 @@ pub fn run() -> anyhow::Result<()> {
       }
 
       // Show config file env
-      if let Some((path, cfg)) = &discovered_config {
-        if let Some(env_map) = &cfg.env {
-          println!("  From {}:", path.display());
-          for (k, v) in env_map {
-            println!("    {k}={v}");
-          }
-          println!();
+      if let Some((path, cfg)) = &discovered_config
+        && let Some(env_map) = &cfg.env
+      {
+        println!("  From {}:", path.display());
+        for (k, v) in env_map {
+          println!("    {k}={v}");
         }
+        println!();
       }
 
       // Show key runtime vars
@@ -2537,7 +2543,7 @@ pub fn run() -> anyhow::Result<()> {
       let mut needs_env = false;
       let mut details = Vec::new();
 
-      let checks: Vec<(&str, &str, &mut bool, &str)> = vec![];
+      let _checks: Vec<(&str, &str, &mut bool, &str)> = vec![];
       // Filesystem read
       for pattern in &[
         "fs.readFile",
@@ -2641,26 +2647,26 @@ pub fn run() -> anyhow::Result<()> {
       let version = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
 
       let mut components = Vec::new();
-      if nm.exists() {
-        if let Ok(entries) = std::fs::read_dir(&nm) {
-          for entry in entries.flatten() {
-            let pkg_json = entry.path().join("package.json");
-            if let Ok(c) = std::fs::read_to_string(&pkg_json) {
-              if let Ok(p) = serde_json::from_str::<serde_json::Value>(&c) {
-                let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let pver = p.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
-                let license = p.get("license").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
-                let desc = p.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                components.push(serde_json::json!({
-                  "type": "library",
-                  "name": pname,
-                  "version": pver,
-                  "purl": format!("pkg:npm/{pname}@{pver}"),
-                  "licenses": [{ "license": { "id": license } }],
-                  "description": desc,
-                }));
-              }
-            }
+      if nm.exists()
+        && let Ok(entries) = std::fs::read_dir(&nm)
+      {
+        for entry in entries.flatten() {
+          let pkg_json = entry.path().join("package.json");
+          if let Ok(c) = std::fs::read_to_string(&pkg_json)
+            && let Ok(p) = serde_json::from_str::<serde_json::Value>(&c)
+          {
+            let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let pver = p.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+            let license = p.get("license").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+            let desc = p.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            components.push(serde_json::json!({
+              "type": "library",
+              "name": pname,
+              "version": pver,
+              "purl": format!("pkg:npm/{pname}@{pver}"),
+              "licenses": [{ "license": { "id": license } }],
+              "description": desc,
+            }));
           }
         }
       }
@@ -2880,16 +2886,15 @@ pub fn run() -> anyhow::Result<()> {
             if tree {
               // Show sub-deps
               let sub_pkg = dep_dir.join("package.json");
-              if let Ok(sub_content) = std::fs::read_to_string(&sub_pkg) {
-                if let Ok(sub) = serde_json::from_str::<serde_json::Value>(&sub_content) {
-                  if let Some(sub_deps) = sub.get("dependencies").and_then(|v| v.as_object()) {
-                    for (sd_name, sd_spec) in sub_deps {
-                      let sd_dir = nm.join(sd_name);
-                      let sd_ver = js_engine::pkg::read_pkg_version_pub(&sd_dir)
-                        .unwrap_or_else(|| sd_spec.as_str().unwrap_or("?").to_string());
-                      println!("  |  +- {sd_name}@{sd_ver}");
-                    }
-                  }
+              if let Ok(sub_content) = std::fs::read_to_string(&sub_pkg)
+                && let Ok(sub) = serde_json::from_str::<serde_json::Value>(&sub_content)
+                && let Some(sub_deps) = sub.get("dependencies").and_then(|v| v.as_object())
+              {
+                for (sd_name, sd_spec) in sub_deps {
+                  let sd_dir = nm.join(sd_name);
+                  let sd_ver = js_engine::pkg::read_pkg_version_pub(&sd_dir)
+                    .unwrap_or_else(|| sd_spec.as_str().unwrap_or("?").to_string());
+                  println!("  |  +- {sd_name}@{sd_ver}");
                 }
               }
             }
@@ -2904,7 +2909,7 @@ pub fn run() -> anyhow::Result<()> {
       if licenses && !license_map.is_empty() {
         println!("\n  Licenses:");
         let mut sorted: Vec<_> = license_map.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
         for (lic, count) in &sorted {
           println!("    {lic}: {count}");
         }

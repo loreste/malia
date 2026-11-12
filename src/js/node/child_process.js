@@ -174,7 +174,8 @@ class ChildProcess extends EventEmitter {
   ref() { return this; }
   unref() { return this; }
 
-  get connected() { return this.#id !== null && !this.killed && this.exitCode === null; }
+  // connected is a writable property (fork() sets it to true/false)
+  connected = false;
 
   _result() {
     return Promise.all([this.#exitPromise, readAll(this.stdout), readAll(this.stderr)]).then(

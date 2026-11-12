@@ -19,6 +19,7 @@ struct PackageMeta {
 }
 
 #[derive(serde::Deserialize, Clone)]
+#[allow(dead_code)]
 struct VersionMeta {
   version: String,
   dist: Option<DistInfo>,
@@ -32,7 +33,6 @@ struct VersionMeta {
   #[serde(rename = "bundledDependencies", alias = "bundleDependencies")]
   bundled_dependencies: Option<Vec<String>>,
   scripts: Option<HashMap<String, String>>,
-  #[allow(dead_code)]
   bin: Option<serde_json::Value>,
 }
 
@@ -105,10 +105,10 @@ impl Resolver {
   }
 
   fn registry_for(&self, name: &str) -> &str {
-    if let Some(scope) = name.strip_prefix('@').and_then(|s| s.split('/').next()) {
-      if let Some(reg) = self.auth.scoped_registries.get(scope) {
-        return reg.as_str();
-      }
+    if let Some(scope) = name.strip_prefix('@').and_then(|s| s.split('/').next())
+      && let Some(reg) = self.auth.scoped_registries.get(scope)
+    {
+      return reg.as_str();
     }
     &self.registry
   }
@@ -137,10 +137,10 @@ impl Resolver {
     self.visited.insert(key);
 
     // Skip if already installed at a compatible version
-    if let Some(existing) = read_pkg_version(&node_modules.join(name)) {
-      if version_satisfies(&existing, version_spec) {
-        return Ok(existing);
-      }
+    if let Some(existing) = read_pkg_version(&node_modules.join(name))
+      && version_satisfies(&existing, version_spec)
+    {
+      return Ok(existing);
     }
 
     let registry = self.registry_for(name).to_string();
@@ -175,14 +175,14 @@ impl Resolver {
       dependencies: None,
       peer: if is_peer { Some(true) } else { None },
     };
-    if let Some(deps) = &ver_meta.dependencies {
-      if !deps.is_empty() {
-        let mut dep_map = BTreeMap::new();
-        for (k, v) in deps {
-          dep_map.insert(k.clone(), v.clone());
-        }
-        entry.dependencies = Some(dep_map);
+    if let Some(deps) = &ver_meta.dependencies
+      && !deps.is_empty()
+    {
+      let mut dep_map = BTreeMap::new();
+      for (k, v) in deps {
+        dep_map.insert(k.clone(), v.clone());
       }
+      entry.dependencies = Some(dep_map);
     }
     self.resolved.insert(name.to_string(), (version.clone(), entry));
 
@@ -218,9 +218,8 @@ impl Resolver {
         if node_modules.join(dep_name).exists() || self.resolved.contains_key(dep_name) {
           continue;
         }
-        match self.resolve(node_modules, dep_name, dep_spec, false) {
-          Ok(v) => println!("  + {dep_name}@{v} (optional)"),
-          Err(_) => {} // optional -- silently skip
+        if let Ok(v) = self.resolve(node_modules, dep_name, dep_spec, false) {
+          println!("  + {dep_name}@{v} (optional)");
         }
       }
     }
@@ -276,18 +275,18 @@ impl Resolver {
     let cache_path = self.cache_dir.join(&safe_name).join(format!("{version}.tgz"));
 
     // Check cache
-    if cache_path.exists() {
-      if let Ok(data) = fs::read(&cache_path) {
-        // Verify shasum if available
-        if let Some(expected) = shasum {
-          let actual = sha1_hex(&data);
-          if actual == *expected {
-            return Ok(data);
-          }
-          // Cache corrupted, re-download
-        } else {
+    if cache_path.exists()
+      && let Ok(data) = fs::read(&cache_path)
+    {
+      // Verify shasum if available
+      if let Some(expected) = shasum {
+        let actual = sha1_hex(&data);
+        if actual == *expected {
           return Ok(data);
         }
+        // Cache corrupted, re-download
+      } else {
+        return Ok(data);
       }
     }
 
@@ -601,14 +600,14 @@ pub fn uninstall(project_dir: &Path, packages: &[String]) -> Result<(), String> 
     let lock_path = project_dir.join("package-lock.json");
     if lock_path.exists() {
       // Re-read and regenerate
-      if let Ok(lock_content) = fs::read_to_string(&lock_path) {
-        if let Ok(mut lock) = serde_json::from_str::<Lockfile>(&lock_content) {
-          for name in packages {
-            lock.packages.remove(&format!("node_modules/{name}"));
-          }
-          let json = serde_json::to_string_pretty(&lock).unwrap();
-          let _ = fs::write(&lock_path, format!("{json}\n"));
+      if let Ok(lock_content) = fs::read_to_string(&lock_path)
+        && let Ok(mut lock) = serde_json::from_str::<Lockfile>(&lock_content)
+      {
+        for name in packages {
+          lock.packages.remove(&format!("node_modules/{name}"));
         }
+        let json = serde_json::to_string_pretty(&lock).unwrap();
+        let _ = fs::write(&lock_path, format!("{json}\n"));
       }
     }
   }
@@ -690,14 +689,14 @@ pub fn list_packages(project_dir: &Path, all: bool, global: bool) -> Result<(), 
 
     if all {
       let sub_nm = entry.path().join("node_modules");
-      if sub_nm.exists() {
-        if let Ok(sub_entries) = fs::read_dir(&sub_nm) {
-          for sub in sub_entries.flatten() {
-            let sn = sub.file_name();
-            let sv = read_pkg_version(&sub.path()).unwrap_or_else(|| "?".into());
-            let sp = if i == entries.len() - 1 { "    " } else { "│   " };
-            println!("{sp}└── {}@{sv}", sn.to_string_lossy());
-          }
+      if sub_nm.exists()
+        && let Ok(sub_entries) = fs::read_dir(&sub_nm)
+      {
+        for sub in sub_entries.flatten() {
+          let sn = sub.file_name();
+          let sv = read_pkg_version(&sub.path()).unwrap_or_else(|| "?".into());
+          let sp = if i == entries.len() - 1 { "    " } else { "│   " };
+          println!("{sp}└── {}@{sv}", sn.to_string_lossy());
         }
       }
     }
@@ -1021,14 +1020,14 @@ pub fn cache_list() -> Result<(), String> {
   let mut count = 0u32;
   if let Ok(entries) = fs::read_dir(&dir) {
     for pkg_entry in entries.flatten() {
-      if pkg_entry.path().is_dir() {
-        if let Ok(versions) = fs::read_dir(pkg_entry.path()) {
-          for v in versions.flatten() {
-            if let Ok(meta) = v.metadata() {
-              total_size += meta.len();
-              count += 1;
-              println!("  {}", v.path().strip_prefix(&dir).unwrap_or(&v.path()).display());
-            }
+      if pkg_entry.path().is_dir()
+        && let Ok(versions) = fs::read_dir(pkg_entry.path())
+      {
+        for v in versions.flatten() {
+          if let Ok(meta) = v.metadata() {
+            total_size += meta.len();
+            count += 1;
+            println!("  {}", v.path().strip_prefix(&dir).unwrap_or(&v.path()).display());
           }
         }
       }
@@ -1072,20 +1071,20 @@ pub fn outdated(project_dir: &Path) -> Result<(), String> {
 
         let url = format!("{reg}/{}", urlenc(name));
         let token = auth.tokens.values().next().map(|s| s.as_str());
-        if let Ok(body) = http_get(&url, token) {
-          if let Ok(meta) = serde_json::from_str::<PackageMeta>(&body) {
-            let wanted = resolve_version(&meta, wanted_str).unwrap_or_else(|| current.clone());
-            let latest = meta
-              .dist_tags
-              .as_ref()
-              .and_then(|t| t.get("latest"))
-              .cloned()
-              .unwrap_or_else(|| wanted.clone());
+        if let Ok(body) = http_get(&url, token)
+          && let Ok(meta) = serde_json::from_str::<PackageMeta>(&body)
+        {
+          let wanted = resolve_version(&meta, wanted_str).unwrap_or_else(|| current.clone());
+          let latest = meta
+            .dist_tags
+            .as_ref()
+            .and_then(|t| t.get("latest"))
+            .cloned()
+            .unwrap_or_else(|| wanted.clone());
 
-            if current != wanted || current != latest {
-              any = true;
-              println!("{name:<30} {current:<15} {wanted:<15} {latest:<15}");
-            }
+          if current != wanted || current != latest {
+            any = true;
+            println!("{name:<30} {current:<15} {wanted:<15} {latest:<15}");
           }
         }
       }
@@ -1130,14 +1129,13 @@ pub fn info(name: &str) -> Result<(), String> {
     let recent: Vec<&str> = vers.iter().rev().take(10).copied().collect();
     println!("versions: {} total, recent: {}", vers.len(), recent.join(", "));
 
-    if let Some(ver_meta) = versions.get(&latest) {
-      if let Some(deps) = &ver_meta.dependencies {
-        if !deps.is_empty() {
-          println!("\ndependencies:");
-          for (k, v) in deps {
-            println!("  {k}: {v}");
-          }
-        }
+    if let Some(ver_meta) = versions.get(&latest)
+      && let Some(deps) = &ver_meta.dependencies
+      && !deps.is_empty()
+    {
+      println!("\ndependencies:");
+      for (k, v) in deps {
+        println!("  {k}: {v}");
       }
     }
   }
@@ -1279,20 +1277,19 @@ pub fn fund(project_dir: &Path) -> Result<(), String> {
   if let Ok(entries) = fs::read_dir(&nm) {
     for entry in entries.flatten() {
       let pkg_json = entry.path().join("package.json");
-      if let Ok(content) = fs::read_to_string(&pkg_json) {
-        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
-          if let Some(funding) = pkg.get("funding") {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let url = match funding {
-              serde_json::Value::String(s) => s.clone(),
-              serde_json::Value::Object(obj) => obj.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-              _ => String::new(),
-            };
-            if !url.is_empty() {
-              println!("  {name}: {url}");
-              count += 1;
-            }
-          }
+      if let Ok(content) = fs::read_to_string(&pkg_json)
+        && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(funding) = pkg.get("funding")
+      {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let url = match funding {
+          serde_json::Value::String(s) => s.clone(),
+          serde_json::Value::Object(obj) => obj.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+          _ => String::new(),
+        };
+        if !url.is_empty() {
+          println!("  {name}: {url}");
+          count += 1;
         }
       }
     }
@@ -1326,6 +1323,7 @@ fn cache_dir() -> PathBuf {
     .join("cache")
 }
 
+#[allow(clippy::manual_strip)]
 fn parse_package_spec(spec: &str) -> (String, String) {
   if spec.starts_with('@') {
     if let Some(pos) = spec[1..].find('@') {
@@ -1386,10 +1384,10 @@ fn resolve_version(meta: &PackageMeta, spec: &str) -> Option<String> {
   if let Some(v) = dist_tags.get(spec) {
     return Some(v.clone());
   }
-  if let Some(versions) = &meta.versions {
-    if versions.contains_key(spec) {
-      return Some(spec.to_string());
-    }
+  if let Some(versions) = &meta.versions
+    && versions.contains_key(spec)
+  {
+    return Some(spec.to_string());
   }
 
   let clean = spec
@@ -1502,10 +1500,10 @@ fn extract_tarball(data: &[u8], dest: &Path) -> Result<(), String> {
       #[cfg(unix)]
       {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(mode) = entry.header().mode() {
-          if mode & 0o111 != 0 {
-            let _ = fs::set_permissions(&target, fs::Permissions::from_mode(mode));
-          }
+        if let Ok(mode) = entry.header().mode()
+          && mode & 0o111 != 0
+        {
+          let _ = fs::set_permissions(&target, fs::Permissions::from_mode(mode));
         }
       }
     }
@@ -1651,14 +1649,14 @@ fn augmented_path() -> String {
 fn is_subdep_of_any(nm: &Path, name: &str, declared: &HashSet<String>) -> bool {
   for dep in declared {
     let dep_pkg = nm.join(dep).join("package.json");
-    if let Ok(content) = fs::read_to_string(&dep_pkg) {
-      if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
-        for key in &["dependencies", "optionalDependencies"] {
-          if let Some(deps) = pkg.get(*key).and_then(|v| v.as_object()) {
-            if deps.contains_key(name) {
-              return true;
-            }
-          }
+    if let Ok(content) = fs::read_to_string(&dep_pkg)
+      && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content)
+    {
+      for key in &["dependencies", "optionalDependencies"] {
+        if let Some(deps) = pkg.get(*key).and_then(|v| v.as_object())
+          && deps.contains_key(name)
+        {
+          return true;
         }
       }
     }
@@ -1679,10 +1677,10 @@ fn collect_files(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<PathBuf>)
   } else if let Ok(entries) = fs::read_dir(dir) {
     for e in entries.flatten() {
       let fname = e.file_name().to_string_lossy().to_string();
-      if glob_match(pattern, &fname) {
-        if let Ok(rel) = e.path().strip_prefix(root) {
-          out.push(rel.to_path_buf());
-        }
+      if glob_match(pattern, &fname)
+        && let Ok(rel) = e.path().strip_prefix(root)
+      {
+        out.push(rel.to_path_buf());
       }
     }
   }
