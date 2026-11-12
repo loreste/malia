@@ -156,6 +156,22 @@
         const fs = await import("node:fs");
         const resolved = path.resolve(String(modulePath));
 
+        // Security: only allow hot-reload from the project directory
+        const cwd = process.cwd();
+        if (!resolved.startsWith(cwd)) {
+          throw new Error(`server.hot() only allows files under the project directory: ${cwd}`);
+        }
+        // Reject symlinks pointing outside the project
+        try {
+          const real = fs.realpathSync(resolved);
+          if (!real.startsWith(cwd)) {
+            throw new Error(`server.hot() target resolves outside the project directory`);
+          }
+        } catch (e) {
+          if (e.code !== "ENOENT") throw e;
+          // File doesn't exist yet, will be checked on load
+        }
+
         async function load() {
           _hotVersion++;
           try {
@@ -289,8 +305,145 @@
     return server;
   }
 
+  // Built-in security headers middleware (replaces helmet npm package).
+  // Usage: jse.serve({ port: 3000 }, jse.secure(handler));
+  // Or selective: jse.serve({ port: 3000 }, jse.secure(handler, { hsts: false }));
+  function secure(handler, options = {}) {
+    const {
+      hsts = true,
+      noSniff = true,
+      xssFilter = true,
+      frameOptions = "DENY",
+      contentSecurityPolicy = null,
+      referrerPolicy = "strict-origin-when-cross-origin",
+      permissionsPolicy = null,
+      crossOriginOpenerPolicy = "same-origin",
+      crossOriginResourcePolicy = "same-origin",
+    } = options;
+
+    return async (req) => {
+      const res = await handler(req);
+      const headers = new Headers(res.headers);
+
+      if (hsts) headers.set("Strict-Transport-Security", typeof hsts === "string" ? hsts : "max-age=31536000; includeSubDomains");
+      if (noSniff) headers.set("X-Content-Type-Options", "nosniff");
+      if (xssFilter) headers.set("X-XSS-Protection", "0");
+      if (frameOptions) headers.set("X-Frame-Options", typeof frameOptions === "string" ? frameOptions : "DENY");
+      if (contentSecurityPolicy) headers.set("Content-Security-Policy", typeof contentSecurityPolicy === "string" ? contentSecurityPolicy : "default-src 'self'");
+      if (referrerPolicy) headers.set("Referrer-Policy", referrerPolicy);
+      if (permissionsPolicy) headers.set("Permissions-Policy", permissionsPolicy);
+      if (crossOriginOpenerPolicy) headers.set("Cross-Origin-Opener-Policy", crossOriginOpenerPolicy);
+      if (crossOriginResourcePolicy) headers.set("Cross-Origin-Resource-Policy", crossOriginResourcePolicy);
+
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers,
+      });
+    };
+  }
+
+  // Built-in rate limiter for HTTP handlers (replaces express-rate-limit).
+  // Usage: jse.serve({ port: 3000 }, jse.rateLimit(handler, { window: 60000, max: 100 }));
+  function rateLimit(handler, options = {}) {
+    const windowMs = options.window || options.windowMs || 60000;
+    const max = options.max || 100;
+    const message = options.message || "Too Many Requests";
+    const keyFn = options.keyFn || ((req) => req.headers.get("x-forwarded-for") || req.headers.get("cf-connecting-ip") || "global");
+
+    const hits = new Map();
+    // Cleanup old entries periodically
+    setInterval(() => {
+      const now = Date.now();
+      for (const [key, entry] of hits) {
+        if (now - entry.start > windowMs) hits.delete(key);
+      }
+    }, windowMs);
+
+    return async (req) => {
+      const key = keyFn(req);
+      const now = Date.now();
+      let entry = hits.get(key);
+      if (!entry || now - entry.start > windowMs) {
+        entry = { start: now, count: 0 };
+        hits.set(key, entry);
+      }
+      entry.count++;
+
+      if (entry.count > max) {
+        const retryAfter = Math.ceil((entry.start + windowMs - now) / 1000);
+        return new Response(JSON.stringify({ error: message }), {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": String(retryAfter),
+            "X-RateLimit-Limit": String(max),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": String(Math.ceil((entry.start + windowMs) / 1000)),
+          },
+        });
+      }
+
+      const res = await handler(req);
+      const headers = new Headers(res.headers);
+      headers.set("X-RateLimit-Limit", String(max));
+      headers.set("X-RateLimit-Remaining", String(Math.max(0, max - entry.count)));
+      headers.set("X-RateLimit-Reset", String(Math.ceil((entry.start + windowMs) / 1000)));
+
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers,
+      });
+    };
+  }
+
+  // CORS middleware
+  function cors(handler, options = {}) {
+    const {
+      origin = "*",
+      methods = "GET,HEAD,PUT,PATCH,POST,DELETE",
+      allowedHeaders = "*",
+      credentials = false,
+      maxAge = 86400,
+    } = options;
+
+    return async (req) => {
+      const reqOrigin = req.headers.get("origin") || "*";
+      const allowOrigin = typeof origin === "function" ? origin(reqOrigin) : origin;
+
+      // Preflight
+      if (req.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "Access-Control-Allow-Origin": allowOrigin,
+            "Access-Control-Allow-Methods": methods,
+            "Access-Control-Allow-Headers": allowedHeaders,
+            "Access-Control-Max-Age": String(maxAge),
+            ...(credentials ? { "Access-Control-Allow-Credentials": "true" } : {}),
+          },
+        });
+      }
+
+      const res = await handler(req);
+      const headers = new Headers(res.headers);
+      headers.set("Access-Control-Allow-Origin", allowOrigin);
+      if (credentials) headers.set("Access-Control-Allow-Credentials", "true");
+
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers,
+      });
+    };
+  }
+
   if (!globalThis.jse) {
     globalThis.jse = {};
   }
   globalThis.jse.serve = serve;
+  globalThis.jse.secure = secure;
+  globalThis.jse.rateLimit = rateLimit;
+  globalThis.jse.cors = cors;
 })(globalThis);

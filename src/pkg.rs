@@ -1452,9 +1452,20 @@ fn extract_tarball(data: &[u8], dest: &Path) -> Result<(), String> {
   let mut archive = tar::Archive::new(gz);
 
   fs::create_dir_all(dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
+  // Canonicalize dest for safe path comparison (prevents traversal via symlinks)
+  let dest_canon = dest
+    .canonicalize()
+    .map_err(|e| format!("canonicalize {}: {e}", dest.display()))?;
 
   for entry in archive.entries().map_err(|e| format!("tar read: {e}"))? {
     let mut entry = entry.map_err(|e| format!("tar entry: {e}"))?;
+
+    // Reject symlinks in tarball (zip-slip attack vector)
+    let entry_type = entry.header().entry_type();
+    if entry_type.is_symlink() || entry_type.is_hard_link() {
+      continue;
+    }
+
     let path = entry.path().map_err(|e| format!("tar path: {e}"))?;
     let path_str = path.to_string_lossy();
 
@@ -1470,12 +1481,17 @@ fn extract_tarball(data: &[u8], dest: &Path) -> Result<(), String> {
       continue;
     }
 
-    let target = dest.join(&relative);
-    if !target.starts_with(dest) {
+    // Reject any path component that is ".."
+    if relative.split('/').any(|c| c == "..") || relative.split('\\').any(|c| c == "..") {
       continue;
     }
 
-    if entry.header().entry_type().is_dir() {
+    let target = dest_canon.join(&relative);
+    if !target.starts_with(&dest_canon) {
+      continue;
+    }
+
+    if entry_type.is_dir() {
       fs::create_dir_all(&target).map_err(|e| format!("mkdir: {e}"))?;
     } else {
       if let Some(parent) = target.parent() {
@@ -1570,7 +1586,16 @@ pub fn cache_dir_str() -> String {
 }
 
 /// Run a lifecycle script from a package's package.json.
+/// Disabled by default for security (malicious npm packages use postinstall
+/// for supply-chain attacks). Set MALIA_SCRIPTS=1 or --scripts to enable.
 fn run_lifecycle_script(pkg_dir: &Path, script_name: &str) {
+  // Security: lifecycle scripts are opt-in to prevent supply-chain attacks.
+  // npm runs postinstall blindly; malia requires explicit opt-in.
+  let scripts_enabled = std::env::var("MALIA_SCRIPTS").unwrap_or_default() == "1"
+    || std::env::args().any(|a| a == "--scripts" || a == "--ignore-scripts=false");
+  if !scripts_enabled {
+    return;
+  }
   let pkg_json = pkg_dir.join("package.json");
   if !pkg_json.exists() {
     return;

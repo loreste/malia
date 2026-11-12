@@ -728,11 +728,19 @@ function readResponse(sock, method, onResponse, onError) {
         res = new ClientResponse(parsed.statusCode, parsed.statusMessage, parsed.headers);
         const noBody = method === "HEAD" || parsed.statusCode === 204 || parsed.statusCode === 304;
         if (noBody) mode = "none";
-        else if ((parsed.headers["transfer-encoding"] || "").toLowerCase().includes("chunked")) mode = "chunked";
-        else if (parsed.headers["content-length"] !== undefined) {
-          mode = "length";
-          expected = Number(parsed.headers["content-length"]) || 0;
-        } else mode = "eof";
+        else {
+          const hasTE = (parsed.headers["transfer-encoding"] || "").toLowerCase().includes("chunked");
+          const hasCL = parsed.headers["content-length"] !== undefined;
+          // RFC 7230 3.3.3: if both Transfer-Encoding and Content-Length are
+          // present, Content-Length must be ignored (prevents request smuggling).
+          if (hasTE) {
+            mode = "chunked";
+            if (hasCL) delete parsed.headers["content-length"];
+          } else if (hasCL) {
+            mode = "length";
+            expected = Number(parsed.headers["content-length"]) || 0;
+          } else mode = "eof";
+        }
         onResponse(res);
         if (rest.length) pushBody(rest);
         else if (mode === "none" || (mode === "length" && expected === 0)) finish();

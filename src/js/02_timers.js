@@ -312,11 +312,20 @@
   }
 
   globalThis.setTimeout = (fn, ms, ...args) => {
-    const callback = typeof fn === "function" ? fn : () => (0, eval)(String(fn));
-    return new Timeout(callback, delayOf(ms), args, false);
+    // Security: reject string callbacks (eval-based code execution).
+    // Node.js allows this for legacy browser compat; malia blocks it.
+    if (typeof fn !== "function") {
+      throw new TypeError("setTimeout() requires a function callback. String arguments are not supported for security reasons.");
+    }
+    return new Timeout(fn, delayOf(ms), args, false);
   };
 
-  globalThis.setInterval = (fn, ms, ...args) => new Timeout(fn, delayOf(ms), args, true);
+  globalThis.setInterval = (fn, ms, ...args) => {
+    if (typeof fn !== "function") {
+      throw new TypeError("setInterval() requires a function callback. String arguments are not supported for security reasons.");
+    }
+    return new Timeout(fn, delayOf(ms), args, true);
+  };
 
   function clear(timer) {
     const t = timer instanceof Timeout ? timer : timers.get(Number(timer));
