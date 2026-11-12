@@ -2620,6 +2620,7 @@ deno_core::extension!(
     "26_parallel.js",
     "27_cron.js",
     "28_pubsub.js",
+    "29_cache.js",
   ],
 
   options = {
