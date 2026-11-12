@@ -14,10 +14,6 @@ contents:
     dst: /usr/bin/malia
     file_info:
       mode: 0755
-  - src: ./jse
-    dst: /usr/bin/jse
-    file_info:
-      mode: 0755
 
 overrides:
   rpm:

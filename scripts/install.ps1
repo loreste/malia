@@ -69,10 +69,6 @@ try {
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
     Expand-Archive -Path $TempZip -DestinationPath $BinDir -Force
 
-    if (-not (Test-Path "$BinDir\jse.exe") -and (Test-Path "$BinDir\malia.exe")) {
-        Copy-Item "$BinDir\malia.exe" -Destination "$BinDir\jse.exe" -Force
-    }
-
     # Create npm/npx/node shims -- malia detects argv[0] and routes accordingly
     foreach ($shim in @("npm", "npx", "node")) {
         if (-not (Get-Command $shim -ErrorAction SilentlyContinue) -or $env:MALIA_INSTALL_SHIMS -eq "1") {
@@ -103,6 +99,5 @@ if ($UserPath -notlike "*$BinDir*") {
 Write-Host ""
 Write-Host "Installed malia $ver" -ForegroundColor Green
 Write-Host "  malia: $BinDir\malia.exe"
-Write-Host "  jse:   $BinDir\jse.exe"
 Write-Host ""
 Write-Host "Open a new terminal and run: malia --help"

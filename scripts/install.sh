@@ -125,26 +125,14 @@ tar -xzf "$TMP/malia.tar.gz" -C "$TMP/staged" malia || {
 if [ ! -f "$TMP/staged/malia" ] || [ -L "$TMP/staged/malia" ]; then
   echo "Error: archive malia must be a regular executable." >&2; exit 1
 fi
-if tar -tzf "$TMP/malia.tar.gz" | grep -qx 'jse'; then
-  tar -xzf "$TMP/malia.tar.gz" -C "$TMP/staged" jse
-  if [ ! -f "$TMP/staged/jse" ] || [ -L "$TMP/staged/jse" ]; then
-    echo "Error: archive jse must be a regular executable." >&2; exit 1
-  fi
-else
-  cp "$TMP/staged/malia" "$TMP/staged/jse"
+chmod 755 "$TMP/staged/malia"
+if ! "$TMP/staged/malia" --version >/dev/null 2>&1; then
+  echo "Error: downloaded malia cannot run on this system." >&2; exit 1
 fi
-chmod 755 "$TMP/staged/malia" "$TMP/staged/jse"
-for binary in malia jse; do
-  if ! "$TMP/staged/$binary" --version >/dev/null 2>&1; then
-    echo "Error: downloaded $binary cannot run on this system." >&2; exit 1
-  fi
-done
 mkdir -p "$BIN_DIR"
-for binary in malia jse; do
-  cp "$TMP/staged/$binary" "$BIN_DIR/.$binary-new"
-  chmod 755 "$BIN_DIR/.$binary-new"
-  mv -f "$BIN_DIR/.$binary-new" "$BIN_DIR/$binary"
-done
+cp "$TMP/staged/malia" "$BIN_DIR/.malia-new"
+chmod 755 "$BIN_DIR/.malia-new"
+mv -f "$BIN_DIR/.malia-new" "$BIN_DIR/malia"
 
 # Create npm/npx/node symlinks to malia. When invoked as "npm", "npx", or
 # "node", malia detects argv[0] and routes accordingly.
@@ -194,7 +182,6 @@ INSTALLED_VERSION=$("$BIN_DIR/malia" --version 2>/dev/null || echo "unknown")
 echo ""
 echo "Installed malia $INSTALLED_VERSION"
 echo "  malia: $BIN_DIR/malia"
-echo "  jse:   $BIN_DIR/jse"
 echo ""
 if [ "$NEED_PATH" -eq 1 ]; then
   echo "Run this to add it to your current shell:"

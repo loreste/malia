@@ -34,7 +34,7 @@ jobs:
       - name: Installer (latest release)
         run: |
           MALIA_NO_MODIFY_PATH=1 MALIA_INSTALL_DIR="$RUNNER_TEMP/malia" sh scripts/install.sh
-          "$RUNNER_TEMP/malia/bin/jse" eval "console.log(process.version, navigator.userAgent)"
+          "$RUNNER_TEMP/malia/bin/malia" eval "console.log(process.version, navigator.userAgent)"
 
   windows:
     name: Build and test (Windows)
@@ -63,8 +63,8 @@ jobs:
         run: |
           $env:MALIA_INSTALL_DIR = "$env:RUNNER_TEMP\malia"
           ./scripts/install.ps1
-          & "$env:RUNNER_TEMP\malia\bin\jse.exe" eval "console.log(process.version, navigator.userAgent)"
-          if ($LASTEXITCODE -ne 0) { throw "installed jse failed" }
+          & "$env:RUNNER_TEMP\malia\bin\malia.exe" eval "console.log(process.version, navigator.userAgent)"
+          if ($LASTEXITCODE -ne 0) { throw "installed malia failed" }
 
   databases:
     name: Database drivers (Linux)
@@ -122,7 +122,7 @@ jobs:
         with:
           node-version: 26
       - run: npm ci --no-audit --no-fund --prefix tests/db
-      - run: cargo build --locked --bin jse
+      - run: cargo build --locked --bin malia
       - name: Run drivers against live servers
         working-directory: tests/db
         env:
@@ -134,4 +134,4 @@ jobs:
           JSE_ES_URL: http://127.0.0.1:9200
           JSE_CASSANDRA: 127.0.0.1:9042
           JSE_DB_REQUIRE_ALL: "1"
-        run: ../../target/debug/jse run --allow-all drivers.mjs
+        run: ../../target/debug/malia run --allow-all drivers.mjs

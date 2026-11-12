@@ -120,9 +120,9 @@ jobs:
         shell: bash
         run: |
           BIN_DIR="target/${{ matrix.target }}/release"
-          strip "$BIN_DIR/malia" "$BIN_DIR/jse" 2>/dev/null || true
+          strip "$BIN_DIR/malia" 2>/dev/null || true
           mkdir -p "dist"
-          tar -czf "dist/${{ matrix.asset_name }}.tar.gz" -C "$BIN_DIR" malia jse
+          tar -czf "dist/${{ matrix.asset_name }}.tar.gz" -C "$BIN_DIR" malia
 
       - name: Build .deb and .rpm packages
         if: matrix.build_packages
@@ -138,9 +138,8 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           ARCH="${{ matrix.pkg_arch || 'amd64' }}"
 
-          # Copy binaries to working dir for nfpm
+          # Copy binary to working dir for nfpm
           cp "$BIN_DIR/malia" ./malia
-          cp "$BIN_DIR/jse" ./jse 2>/dev/null || cp ./malia ./jse
 
           # Build .deb
           ARCH="$ARCH" VERSION="$VERSION" /tmp/nfpm package \
@@ -157,7 +156,7 @@ jobs:
             --packager rpm \
             --target "dist/malia-${VERSION}-1.${RPM_ARCH}.rpm"
 
-          rm -f ./malia ./jse
+          rm -f ./malia
           ls -la dist/
 
       - name: Package zip (Windows)
@@ -166,7 +165,7 @@ jobs:
         run: |
           $BinDir = "target/${{ matrix.target }}/release"
           New-Item -ItemType Directory -Path "dist" -Force | Out-Null
-          Compress-Archive -Path "$BinDir\malia.exe", "$BinDir\jse.exe" -DestinationPath "dist\${{ matrix.asset_name }}.zip" -Force
+          Compress-Archive -Path "$BinDir\malia.exe" -DestinationPath "dist\${{ matrix.asset_name }}.zip" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

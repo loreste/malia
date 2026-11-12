@@ -102,10 +102,6 @@ nix = { version = "0.31", default-features = false, features = ["signal", "user"
 name = "malia"
 path = "src/main.rs"
 
-[[bin]]
-name = "jse"
-path = "src/bin/jse.rs"
-
 [profile.release]
 opt-level = 3
 lto = "fat"

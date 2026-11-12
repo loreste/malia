@@ -9,7 +9,6 @@ const STANDALONE_MAGIC: &[u8; 17] = b"__JSE_BUNDLE_V2__";
 #[derive(Parser)]
 #[command(
   name = "malia",
-  alias = "jse",
   disable_version_flag = true,
   about = "A JavaScript/TypeScript and WebAssembly runtime built in Rust"
 )]
@@ -183,7 +182,7 @@ enum ConfigAction {
 enum Command {
   /// Run a JavaScript or TypeScript file, or a script from jse.json / package.json.
   Run {
-    /// Path to the main module or script name (default: auto-detected from jse.json).
+    /// Path to the main module or script name (default: auto-detected from config).
     file: Option<String>,
     /// Watch file for changes and automatically reload.
     #[arg(short, long)]
@@ -1529,7 +1528,7 @@ pub fn run() -> anyhow::Result<()> {
             println!("Entry Point: {}", entry.display());
           }
           if let Some(ref scripts) = config.scripts {
-            println!("\nScripts (run with `jse <name>` or `jse run <name>`):");
+            println!("\nScripts (run with `malia <name>` or `malia run <name>`):");
             for (name, cmd) in scripts {
               println!("  • {:<12} -> {}", name, cmd);
             }

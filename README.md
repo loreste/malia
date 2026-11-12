@@ -43,8 +43,8 @@ If your app uses those, test before switching.
 - Bounded channels (`chan()`) with backpressure for async coordination
 - Hot reload swaps handlers on a live server without restarting
 
-The binary is available under two names, `malia` and `jse`. They are the
-same program. In code, the `malia.*` and `jse.*` globals are also the same.
+The `jse.*` globals are aliases of `malia.*` for backward compatibility.
+New code should use `malia.*`.
 
 Guides for common tasks are in [docs/HOWTO.md](docs/HOWTO.md).
 
