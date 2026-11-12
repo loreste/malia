@@ -164,11 +164,17 @@ class ChildProcess extends EventEmitter {
     return child;
   }
 
-  kill() {
+  kill(signal) {
     if (this.#id === null) return false;
     this.killed = ops.op_child_kill(this.#id);
+    if (this.killed && signal) this.signalCode = signal;
     return this.killed;
   }
+
+  ref() { return this; }
+  unref() { return this; }
+
+  get connected() { return this.#id !== null && !this.killed && this.exitCode === null; }
 
   _result() {
     return Promise.all([this.#exitPromise, readAll(this.stdout), readAll(this.stderr)]).then(

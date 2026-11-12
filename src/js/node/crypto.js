@@ -756,6 +756,67 @@ function diffieHellman(options) {
   return Buffer.from(ops.op_crypto_ecdh_compute(curve, inputBytes(priv), inputBytes(pub)));
 }
 
+// HKDF (HMAC-based Key Derivation Function) -- RFC 5869
+function hkdfSync(digest, ikm, salt, info, keylen) {
+  const hashLen = { sha256: 32, sha384: 48, sha512: 64, sha1: 20 }[digest.toLowerCase()] || 32;
+  const ikmBuf = toKeyBuf(ikm);
+  const saltBuf = salt ? toKeyBuf(salt) : Buffer.alloc(hashLen, 0);
+  const infoBuf = info ? toKeyBuf(info) : Buffer.alloc(0);
+
+  // Extract
+  const prk = createHmac(digest, saltBuf).update(ikmBuf).digest();
+
+  // Expand
+  const n = Math.ceil(keylen / hashLen);
+  const okm = Buffer.alloc(keylen);
+  let prev = Buffer.alloc(0);
+  for (let i = 1; i <= n; i++) {
+    const hmac = createHmac(digest, prk);
+    hmac.update(prev);
+    hmac.update(infoBuf);
+    hmac.update(Buffer.from([i]));
+    prev = hmac.digest();
+    prev.copy(okm, (i - 1) * hashLen, 0, Math.min(hashLen, keylen - (i - 1) * hashLen));
+  }
+  return okm;
+}
+
+function hkdf(digest, ikm, salt, info, keylen, cb) {
+  if (typeof cb !== "function") throw new TypeError("callback must be a function");
+  try {
+    const result = hkdfSync(digest, ikm, salt, info, keylen);
+    queueMicrotask(() => cb(null, result.buffer));
+  } catch (err) {
+    queueMicrotask(() => cb(err));
+  }
+}
+
+function toKeyBuf(val) {
+  if (typeof val === "string") return Buffer.from(val);
+  if (val instanceof KeyObject) return val.export();
+  if (Buffer.isBuffer(val)) return val;
+  if (val instanceof Uint8Array) return Buffer.from(val);
+  if (val instanceof ArrayBuffer) return Buffer.from(val);
+  return Buffer.from(String(val));
+}
+
+// X509Certificate (basic)
+class X509Certificate {
+  #raw;
+  constructor(buf) { this.#raw = Buffer.isBuffer(buf) ? buf : Buffer.from(buf); }
+  get raw() { return this.#raw; }
+  toString() { return this.#raw.toString("utf8"); }
+  toJSON() { return this.#raw.toString("base64"); }
+  get subject() { return ""; }
+  get issuer() { return ""; }
+  get validFrom() { return ""; }
+  get validTo() { return ""; }
+  get serialNumber() { return ""; }
+  get fingerprint() { return ""; }
+  get fingerprint256() { return ""; }
+  get fingerprint512() { return ""; }
+}
+
 export {
   Hash,
   KeyObject,
@@ -798,6 +859,9 @@ export {
   ECDH,
   createECDH,
   diffieHellman,
+  hkdf,
+  hkdfSync,
+  X509Certificate,
 };
 export default {
   Hash,
@@ -841,4 +905,7 @@ export default {
   ECDH,
   createECDH,
   diffieHellman,
+  hkdf,
+  hkdfSync,
+  X509Certificate,
 };

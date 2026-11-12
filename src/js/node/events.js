@@ -277,12 +277,48 @@ EventEmitter.on = async function* (emitter, event, options = {}) {
   }
 };
 
+// captureRejections: when true, async listener errors go to 'error' event
+EventEmitter.captureRejections = false;
+const kCapture = Symbol.for("nodejs.rejection");
+EventEmitter.captureRejectionSymbol = kCapture;
+
+// errorMonitor: listeners on this symbol see errors before 'error' listeners
+const errorMonitor = Symbol("events.errorMonitor");
+EventEmitter.errorMonitor = errorMonitor;
+
+// Static setMaxListeners: set limit on multiple emitters at once
+EventEmitter.setMaxListeners = function (n, ...emitters) {
+  if (emitters.length === 0) {
+    EventEmitter.defaultMaxListeners = n;
+  } else {
+    for (const ee of emitters) {
+      if (typeof ee.setMaxListeners === "function") ee.setMaxListeners(n);
+    }
+  }
+};
+
+// addAbortListener: attaches a disposable abort listener
+EventEmitter.addAbortListener = function (signal, listener) {
+  if (signal.aborted) {
+    queueMicrotask(() => listener());
+    return { [Symbol.dispose]() {} };
+  }
+  signal.addEventListener("abort", listener, { once: true });
+  return {
+    [Symbol.dispose]() {
+      signal.removeEventListener("abort", listener);
+    },
+  };
+};
+
 const once = EventEmitter.once;
 const listenerCount = EventEmitter.listenerCount;
 const getEventListeners = EventEmitter.getEventListeners;
 const on = EventEmitter.on;
+const addAbortListener = EventEmitter.addAbortListener;
+const setMaxListeners = EventEmitter.setMaxListeners;
 
-export { EventEmitter, once, listenerCount, getEventListeners, on };
+export { EventEmitter, once, listenerCount, getEventListeners, on, addAbortListener, setMaxListeners, errorMonitor };
 // Node compatibility: require("events") is the EventEmitter class itself,
 // which also carries an .EventEmitter property.
 EventEmitter.defaultMaxListeners = 10;

@@ -286,6 +286,31 @@ Module.builtin = builtins;
 Module.syncBuiltinESMExports = function () {};
 Module.findSourceMap = function () { return null; };
 Module.register = function () {};
+Module._resolveFilename = function (request, parent, isMain, options) {
+  const text = String(request);
+  if (text.startsWith("node:") || builtins.includes(text)) {
+    return text.startsWith("node:") ? text : `node:${text}`;
+  }
+  const fromDir = parent?.filename ? path.dirname(parent.filename) : (typeof __filename !== "undefined" ? path.dirname(__filename) : process.cwd());
+  try {
+    return Deno.core.ops.op_require_resolve(text, path.join(fromDir, "__require__.js"));
+  } catch (err) {
+    const notFound = new Error(`Cannot find module '${request}'`);
+    notFound.code = "MODULE_NOT_FOUND";
+    throw notFound;
+  }
+};
+Module._load = function (request, parent, isMain) {
+  const filename = Module._resolveFilename(request, parent, isMain);
+  if (filename.startsWith("node:") || builtins.includes(filename)) {
+    const bare = filename.replace(/^node:/, "");
+    const mod = BUILTIN_MAP[bare];
+    return mod !== null && typeof mod === "object" && "default" in mod ? mod.default : mod;
+  }
+  if (Module._cache[filename]) return Module._cache[filename].exports;
+  const cr = createRequire(parent?.filename || process.cwd() + "/index.js");
+  return cr(filename);
+};
 Module._nodeModulePaths = function (from) {
   from = path.resolve(from);
   const parts = from.split(path.sep);

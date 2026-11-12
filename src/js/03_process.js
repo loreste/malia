@@ -363,6 +363,28 @@
     },
     exitCode: undefined,
     emitWarning,
+    getBuiltinModule(name) {
+      // Node 22.3+ API: synchronously returns a built-in module
+      const builtins = [
+        "assert", "assert/strict", "async_hooks", "buffer", "child_process",
+        "cluster", "console", "constants", "crypto", "dgram", "diagnostics_channel",
+        "dns", "dns/promises", "domain", "events", "fs", "fs/promises", "http",
+        "http2", "https", "inspector", "module", "net", "os", "path", "path/posix",
+        "path/win32", "perf_hooks", "process", "punycode", "querystring", "readline",
+        "readline/promises", "sqlite", "stream", "stream/consumers", "stream/promises",
+        "stream/web", "string_decoder", "test", "timers", "timers/promises", "tls",
+        "tty", "url", "util", "util/types", "v8", "vm", "wasi", "worker_threads",
+        "ws", "zlib",
+      ];
+      const bare = name.replace(/^node:/, "");
+      if (!builtins.includes(bare)) return undefined;
+      // Return undefined for sync context -- callers should use require()
+      return undefined;
+    },
+    abort() {
+      ops.op_log(3, "runtime", "process.abort() called");
+      ops.op_exit(134);
+    },
     umask: (mask) => ops.op_umask(mask === undefined ? -1 : typeof mask === "string" ? parseInt(mask, 8) : mask),
     cwd: () => ops.op_cwd(),
     chdir: (dir) => ops.op_chdir(String(dir)),
@@ -439,8 +461,26 @@
         return [];
       }
     },
-    features: {},
+    features: { inspector: true, debug: false, uv: true, ipv6: true, tls_alpn: true, tls_sni: true, tls_ocsp: false, tls: true },
     config: { variables: {} },
+    report: {
+      writeReport() { return ""; },
+      getReport() { return {}; },
+      directory: "",
+      filename: "",
+      compact: false,
+      signal: "SIGUSR2",
+      reportOnFatalError: false,
+      reportOnSignal: false,
+      reportOnUncaughtException: false,
+    },
+    allowedNodeEnvironmentFlags: new Set([
+      "--require", "--import", "--no-warnings", "--no-deprecation",
+      "--trace-deprecation", "--trace-warnings", "--enable-source-maps",
+      "--experimental-modules", "--experimental-vm-modules",
+      "--expose-gc", "--max-old-space-size", "--inspect", "--inspect-brk",
+    ]),
+    sourceMapsEnabled: false,
     mainModule: undefined,
     connected: false,
   };
