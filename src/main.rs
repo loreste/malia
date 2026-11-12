@@ -395,6 +395,38 @@ enum Command {
     #[arg(long)]
     licenses: bool,
   },
+  /// Generate production deployment files (Dockerfile, docker-compose.yml, systemd service).
+  Deploy {
+    /// Target: docker, compose, systemd, all (default: all).
+    #[arg(default_value = "all")]
+    target: String,
+  },
+  /// CPU and memory profiling.
+  Profile {
+    /// File to profile.
+    file: String,
+    /// Duration in seconds (default: 10).
+    #[arg(long, default_value = "10")]
+    duration: u32,
+    #[command(flatten)]
+    permissions: PermissionArgs,
+  },
+  /// Database migration runner.
+  Migrate {
+    /// Subcommand: up, down, create <name>, status.
+    action: String,
+    /// Migration name (for create).
+    name: Option<String>,
+  },
+  /// Encrypt or decrypt .env files for safe git storage.
+  #[command(name = "env-encrypt")]
+  EnvEncrypt {
+    /// Action: encrypt, decrypt.
+    action: String,
+    /// Encryption key (or set MALIA_ENV_KEY).
+    #[arg(long)]
+    key: Option<String>,
+  },
   /// Run custom scripts defined in jse.json / package.json or execute files directly.
   #[command(external_subcommand)]
   Custom(Vec<String>),
@@ -701,6 +733,69 @@ fn chrono_now() -> String {
     minutes,
     seconds
   )
+}
+
+fn rand_bytes(n: usize) -> Vec<u8> {
+  let mut buf = vec![0u8; n];
+  getrandom::fill(&mut buf).expect("getrandom failed");
+  buf
+}
+
+fn hex_encode_bytes(b: &[u8]) -> String {
+  b.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_decode(s: &str) -> Vec<u8> {
+  (0..s.len())
+    .step_by(2)
+    .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+    .collect()
+}
+
+fn encrypt_aes256(plaintext: &[u8], key_hex: &str) -> Vec<u8> {
+  use ring::aead;
+  let key_bytes = hex_decode(key_hex);
+  let key_bytes = if key_bytes.len() >= 32 {
+    &key_bytes[..32]
+  } else {
+    // Pad short keys with SHA-256
+    let h = ring::digest::digest(&ring::digest::SHA256, key_hex.as_bytes());
+    return encrypt_aes256(plaintext, &hex_encode_bytes(h.as_ref()));
+  };
+  let key = aead::UnboundKey::new(&aead::AES_256_GCM, key_bytes).expect("bad key");
+  let nonce_bytes = rand_bytes(12);
+  let mut in_out = plaintext.to_vec();
+  let nonce = aead::Nonce::try_assume_unique_for_key(&nonce_bytes).unwrap();
+  let sealing_key = aead::LessSafeKey::new(key);
+  sealing_key
+    .seal_in_place_append_tag(nonce, aead::Aad::empty(), &mut in_out)
+    .expect("encryption failed");
+  // Output: nonce (12) + ciphertext + tag
+  let mut out = nonce_bytes;
+  out.extend_from_slice(&in_out);
+  out
+}
+
+fn decrypt_aes256(data: &[u8], key_hex: &str) -> Result<Vec<u8>, String> {
+  use ring::aead;
+  if data.len() < 12 + 16 {
+    return Err("data too short".into());
+  }
+  let key_bytes = hex_decode(key_hex);
+  let key_bytes_slice = if key_bytes.len() >= 32 {
+    key_bytes[..32].to_vec()
+  } else {
+    let h = ring::digest::digest(&ring::digest::SHA256, key_hex.as_bytes());
+    h.as_ref().to_vec()
+  };
+  let key = aead::UnboundKey::new(&aead::AES_256_GCM, &key_bytes_slice).map_err(|e| format!("{e}"))?;
+  let nonce = aead::Nonce::try_assume_unique_for_key(&data[..12]).map_err(|e| format!("{e}"))?;
+  let mut ciphertext = data[12..].to_vec();
+  let opening_key = aead::LessSafeKey::new(key);
+  let plaintext = opening_key
+    .open_in_place(nonce, aead::Aad::empty(), &mut ciphertext)
+    .map_err(|_| "decryption failed (wrong key?)")?;
+  Ok(plaintext.to_vec())
 }
 
 fn dir_size(path: &Path) -> u64 {
@@ -2912,6 +3007,344 @@ pub fn run() -> anyhow::Result<()> {
         sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
         for (lic, count) in &sorted {
           println!("    {lic}: {count}");
+        }
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Deploy { target }) => {
+      let pkg_path = current_dir.join("package.json");
+      let name = if pkg_path.exists() {
+        std::fs::read_to_string(&pkg_path)
+          .ok()
+          .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+          .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+          .unwrap_or_else(|| "app".into())
+      } else {
+        "app".into()
+      };
+      let entry = discovered_config
+        .as_ref()
+        .and_then(|(_, cfg)| cfg.entry.clone())
+        .unwrap_or_else(|| "index.js".into());
+      let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
+
+      let gen_docker = target == "docker" || target == "all";
+      let gen_compose = target == "compose" || target == "all";
+      let gen_systemd = target == "systemd" || target == "all";
+
+      if gen_docker && !current_dir.join("Dockerfile").exists() {
+        let dockerfile = format!(
+          "FROM ubuntu:24.04\n\
+           RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*\n\
+           RUN curl -fsSL https://raw.githubusercontent.com/loreste/malia/main/scripts/install.sh | sh\n\
+           ENV PATH=\"/root/.malia/bin:$PATH\"\n\
+           WORKDIR /app\n\
+           COPY package.json ./\n\
+           RUN malia install --production 2>/dev/null || true\n\
+           COPY . .\n\
+           EXPOSE {port}\n\
+           ENV NODE_ENV=production PORT={port}\n\
+           CMD [\"malia\", \"run\", \"--allow-all\", \"{entry}\"]\n",
+          port = port,
+          entry = entry
+        );
+        std::fs::write(current_dir.join("Dockerfile"), &dockerfile)?;
+        println!("  Generated: Dockerfile");
+      }
+
+      if gen_docker && !current_dir.join(".dockerignore").exists() {
+        std::fs::write(
+          current_dir.join(".dockerignore"),
+          "node_modules\n.git\n.env.local\n.env.*.local\ndist\nbuild\n.cache\ncoverage\n*.log\n",
+        )?;
+        println!("  Generated: .dockerignore");
+      }
+
+      if gen_compose && !current_dir.join("docker-compose.yml").exists() {
+        let compose = format!(
+          "services:\n\
+           \x20 {name}:\n\
+           \x20   build: .\n\
+           \x20   ports:\n\
+           \x20     - \"{port}:{port}\"\n\
+           \x20   environment:\n\
+           \x20     - NODE_ENV=production\n\
+           \x20     - PORT={port}\n\
+           \x20   restart: unless-stopped\n\
+           \x20   healthcheck:\n\
+           \x20     test: [\"CMD\", \"curl\", \"-f\", \"http://localhost:{port}/health\"]\n\
+           \x20     interval: 30s\n\
+           \x20     timeout: 10s\n\
+           \x20     retries: 3\n",
+          name = name,
+          port = port
+        );
+        std::fs::write(current_dir.join("docker-compose.yml"), &compose)?;
+        println!("  Generated: docker-compose.yml");
+      }
+
+      if gen_systemd {
+        let service = format!(
+          "[Unit]\nDescription={name}\nAfter=network.target\n\n\
+           [Service]\nType=simple\nUser=www-data\n\
+           WorkingDirectory={cwd}\n\
+           ExecStart=/usr/local/bin/malia run --allow-all {entry}\n\
+           Restart=always\nRestartSec=3\n\
+           Environment=NODE_ENV=production PORT={port}\n\
+           StandardOutput=journal\nStandardError=journal\n\n\
+           [Install]\nWantedBy=multi-user.target\n",
+          name = name,
+          cwd = current_dir.display(),
+          entry = entry,
+          port = port
+        );
+        let svc_path = current_dir.join(format!("{name}.service"));
+        std::fs::write(&svc_path, &service)?;
+        println!("  Generated: {}.service", name);
+        println!(
+          "  Install:   sudo cp {0}.service /etc/systemd/system/ && sudo systemctl enable --now {0}",
+          name
+        );
+      }
+      println!("\n  Deploy with: docker compose up -d");
+      std::process::exit(0);
+    }
+
+    Some(Command::Profile {
+      file,
+      duration,
+      permissions: _,
+    }) => {
+      println!("Profiling {} for {}s...\n", file, duration);
+      js_engine::permissions::set_permissions(js_engine::permissions::Permissions::allow_all());
+      let code = format!(
+        r#"
+        const inspector = require("node:inspector");
+        const fs = require("node:fs");
+        const session = new inspector.Session();
+        session.connect();
+
+        // Start CPU profiling
+        session.post("Profiler.enable", () => {{
+          session.post("Profiler.start", async () => {{
+            // Run the target file
+            try {{
+              await import("file://" + require("node:path").resolve("{}"));
+            }} catch (e) {{
+              console.error("Error:", e.message);
+            }}
+
+            // Wait for duration
+            await new Promise(r => setTimeout(r, {} * 1000));
+
+            // Stop and collect profile
+            session.post("Profiler.stop", (err, {{ profile }}) => {{
+              if (err) {{ console.error("Profile error:", err); process.exit(1); }}
+
+              // Analyze top functions
+              const nodes = profile.nodes || [];
+              const samples = profile.samples || [];
+              const timeDeltas = profile.timeDeltas || [];
+
+              // Count samples per node
+              const counts = {{}};
+              for (const id of samples) counts[id] = (counts[id] || 0) + 1;
+
+              // Sort by sample count
+              const top = nodes
+                .filter(n => counts[n.id])
+                .map(n => ({{
+                  fn: n.callFrame.functionName || "(anonymous)",
+                  file: n.callFrame.url.replace(/.*\//, ""),
+                  line: n.callFrame.lineNumber + 1,
+                  samples: counts[n.id] || 0,
+                  pct: ((counts[n.id] || 0) / samples.length * 100).toFixed(1),
+                }}))
+                .sort((a, b) => b.samples - a.samples)
+                .slice(0, 20);
+
+              console.log("Top functions by CPU time:\n");
+              console.log("  %Time  Samples  Function");
+              console.log("  -----  -------  --------");
+              for (const t of top) {{
+                console.log(`  ${{t.pct.padStart(5)}}%  ${{String(t.samples).padStart(7)}}  ${{t.fn}} (${{t.file}}:${{t.line}})`);
+              }}
+
+              // Save raw profile
+              const outPath = "profile-" + Date.now() + ".cpuprofile";
+              fs.writeFileSync(outPath, JSON.stringify(profile));
+              console.log(`\nFull profile saved: ${{outPath}}`);
+              console.log("Open in Chrome DevTools: chrome://inspect -> Open dedicated DevTools -> Performance -> Load profile");
+
+              // Memory snapshot
+              const mem = process.memoryUsage();
+              console.log(`\nMemory: RSS=${{(mem.rss/1048576).toFixed(1)}}MB Heap=${{(mem.heapUsed/1048576).toFixed(1)}}/${{(mem.heapTotal/1048576).toFixed(1)}}MB`);
+
+              process.exit(0);
+            }});
+          }});
+        }});
+        "#,
+        file, duration
+      );
+      let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+      let result = tokio_rt.block_on(supervise(move || js_engine::runtime::run_code_blocking(&code)));
+      if let Err(e) = result {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::Migrate { action, name }) => {
+      let migrations_dir = current_dir.join("migrations");
+      match action.as_str() {
+        "create" => {
+          let mig_name = name.as_deref().unwrap_or("unnamed");
+          let _ = std::fs::create_dir_all(&migrations_dir);
+          let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+          let up = migrations_dir.join(format!("{ts}_{mig_name}.up.sql"));
+          let down = migrations_dir.join(format!("{ts}_{mig_name}.down.sql"));
+          std::fs::write(&up, format!("-- Migration: {mig_name} (up)\n\n"))?;
+          std::fs::write(&down, format!("-- Migration: {mig_name} (down)\n\n"))?;
+          println!("Created:");
+          println!("  {}", up.display());
+          println!("  {}", down.display());
+        }
+        "up" | "down" | "status" => {
+          // Run migrations using built-in SQLite for tracking
+          let code = format!(
+            r#"
+            import fs from "node:fs";
+            import path from "node:path";
+
+            const migrationsDir = "{}";
+            const action = "{}";
+
+            // Track applied migrations
+            const db = jse.sql.open(".malia-migrations.db");
+            db.query("CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY, applied_at TEXT)");
+
+            const applied = new Set(db.query("SELECT name FROM migrations").map(r => r.name));
+
+            if (action === "status") {{
+              const files = fs.existsSync(migrationsDir)
+                ? fs.readdirSync(migrationsDir).filter(f => f.endsWith(".up.sql")).sort()
+                : [];
+              console.log("Migration status:\n");
+              for (const f of files) {{
+                const name = f.replace(".up.sql", "");
+                console.log(`  ${{applied.has(name) ? "[x]" : "[ ]"}} ${{name}}`);
+              }}
+              if (files.length === 0) console.log("  No migrations found in " + migrationsDir);
+            }} else if (action === "up") {{
+              const files = fs.existsSync(migrationsDir)
+                ? fs.readdirSync(migrationsDir).filter(f => f.endsWith(".up.sql")).sort()
+                : [];
+              let ran = 0;
+              for (const f of files) {{
+                const name = f.replace(".up.sql", "");
+                if (applied.has(name)) continue;
+                const sql = fs.readFileSync(path.join(migrationsDir, f), "utf8");
+                if (sql.trim()) {{
+                  db.query(sql);
+                  db.query("INSERT INTO migrations VALUES (?, datetime('now'))", name);
+                  console.log("  Applied: " + name);
+                  ran++;
+                }}
+              }}
+              if (ran === 0) console.log("  All migrations are up to date.");
+              else console.log(`\n  ${{ran}} migration(s) applied.`);
+            }} else if (action === "down") {{
+              const files = fs.existsSync(migrationsDir)
+                ? fs.readdirSync(migrationsDir).filter(f => f.endsWith(".down.sql")).sort().reverse()
+                : [];
+              const lastApplied = [...applied].sort().pop();
+              if (!lastApplied) {{ console.log("  No migrations to roll back."); }}
+              else {{
+                const downFile = lastApplied + ".down.sql";
+                const downPath = path.join(migrationsDir, downFile);
+                if (fs.existsSync(downPath)) {{
+                  const sql = fs.readFileSync(downPath, "utf8");
+                  if (sql.trim()) db.query(sql);
+                  db.query("DELETE FROM migrations WHERE name = ?", lastApplied);
+                  console.log("  Rolled back: " + lastApplied);
+                }} else {{
+                  console.log("  No down migration for: " + lastApplied);
+                }}
+              }}
+            }}
+            "#,
+            migrations_dir.display(),
+            action
+          );
+          js_engine::permissions::set_permissions(js_engine::permissions::Permissions::allow_all());
+          let tokio_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+          let result = tokio_rt.block_on(supervise(move || js_engine::runtime::run_code_blocking(&code)));
+          if let Err(e) = result {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+          }
+        }
+        other => {
+          eprintln!("Unknown migrate action: {other}. Use: create, up, down, status");
+          std::process::exit(1);
+        }
+      }
+      std::process::exit(0);
+    }
+
+    Some(Command::EnvEncrypt { action, key }) => {
+      let env_key = key.or_else(|| std::env::var("MALIA_ENV_KEY").ok()).unwrap_or_else(|| {
+        // Generate a key if none provided
+        let k = hex_encode_bytes(&rand_bytes(32));
+        eprintln!("Generated key (save this): {k}");
+        eprintln!("Set MALIA_ENV_KEY={k} or pass --key={k}\n");
+        k
+      });
+
+      match action.as_str() {
+        "encrypt" => {
+          let env_path = current_dir.join(".env");
+          if !env_path.exists() {
+            eprintln!("error: No .env file found");
+            std::process::exit(1);
+          }
+          let plaintext = std::fs::read(&env_path)?;
+          let encrypted = encrypt_aes256(&plaintext, &env_key);
+          let out_path = current_dir.join(".env.encrypted");
+          std::fs::write(&out_path, &encrypted)?;
+          println!("Encrypted .env -> .env.encrypted ({} bytes)", encrypted.len());
+          println!("Safe to commit .env.encrypted to git.");
+          println!("Add .env to .gitignore if not already there.");
+        }
+        "decrypt" => {
+          let enc_path = current_dir.join(".env.encrypted");
+          if !enc_path.exists() {
+            eprintln!("error: No .env.encrypted file found");
+            std::process::exit(1);
+          }
+          let encrypted = std::fs::read(&enc_path)?;
+          match decrypt_aes256(&encrypted, &env_key) {
+            Ok(plaintext) => {
+              let out_path = current_dir.join(".env");
+              std::fs::write(&out_path, &plaintext)?;
+              println!("Decrypted .env.encrypted -> .env ({} bytes)", plaintext.len());
+            }
+            Err(e) => {
+              eprintln!("error: Decryption failed: {e}");
+              eprintln!("Check your MALIA_ENV_KEY.");
+              std::process::exit(1);
+            }
+          }
+        }
+        other => {
+          eprintln!("Unknown action: {other}. Use: encrypt, decrypt");
+          std::process::exit(1);
         }
       }
       std::process::exit(0);
