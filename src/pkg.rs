@@ -23,10 +23,15 @@ struct VersionMeta {
   version: String,
   dist: Option<DistInfo>,
   dependencies: Option<HashMap<String, String>>,
+  #[serde(rename = "optionalDependencies")]
+  optional_dependencies: Option<HashMap<String, String>>,
   #[serde(rename = "peerDependencies")]
   peer_dependencies: Option<HashMap<String, String>>,
   #[serde(rename = "peerDependenciesMeta")]
   peer_dependencies_meta: Option<HashMap<String, PeerMeta>>,
+  #[serde(rename = "bundledDependencies", alias = "bundleDependencies")]
+  bundled_dependencies: Option<Vec<String>>,
+  scripts: Option<HashMap<String, String>>,
   #[allow(dead_code)]
   bin: Option<serde_json::Value>,
 }
@@ -181,15 +186,41 @@ impl Resolver {
     }
     self.resolved.insert(name.to_string(), (version.clone(), entry));
 
+    // Run preinstall script
+    run_lifecycle_script(&pkg_dir, "preinstall");
+
     // Resolve sub-dependencies (flat into same node_modules)
+    let bundled: HashSet<String> = ver_meta
+      .bundled_dependencies
+      .as_ref()
+      .map(|v| v.iter().cloned().collect())
+      .unwrap_or_default();
+
     if let Some(deps) = &ver_meta.dependencies {
       for (dep_name, dep_spec) in deps {
+        // Skip bundled deps (they're already in the tarball)
+        if bundled.contains(dep_name) {
+          continue;
+        }
         if node_modules.join(dep_name).exists() || self.resolved.contains_key(dep_name) {
           continue;
         }
         match self.resolve(node_modules, dep_name, dep_spec, false) {
           Ok(v) => println!("  + {dep_name}@{v}"),
           Err(e) => eprintln!("  warn: {dep_name}: {e}"),
+        }
+      }
+    }
+
+    // Resolve optional dependencies (failures are non-fatal)
+    if let Some(opt_deps) = &ver_meta.optional_dependencies {
+      for (dep_name, dep_spec) in opt_deps {
+        if node_modules.join(dep_name).exists() || self.resolved.contains_key(dep_name) {
+          continue;
+        }
+        match self.resolve(node_modules, dep_name, dep_spec, false) {
+          Ok(v) => println!("  + {dep_name}@{v} (optional)"),
+          Err(_) => {} // optional -- silently skip
         }
       }
     }
@@ -205,15 +236,17 @@ impl Resolver {
         match self.resolve(node_modules, peer_name, peer_spec, true) {
           Ok(v) => println!("  + {peer_name}@{v} (peer)"),
           Err(e) => {
-            if is_optional {
-              // Optional peer -- skip silently
-            } else {
+            if !is_optional {
               eprintln!("  warn: peer {peer_name}: {e}");
             }
           }
         }
       }
     }
+
+    // Run postinstall/install scripts
+    run_lifecycle_script(&pkg_dir, "install");
+    run_lifecycle_script(&pkg_dir, "postinstall");
 
     Ok(version)
   }
@@ -435,6 +468,10 @@ pub fn install_all(project_dir: &Path) -> Result<(), String> {
 
   // Write lockfile
   resolver.write_lockfile(project_dir, &pkg);
+
+  // Run root lifecycle scripts (prepare)
+  run_lifecycle_script(project_dir, "prepare");
+  run_lifecycle_script(project_dir, "postinstall");
 
   println!(
     "\nInstalled {installed}/{total} packages ({} total with sub-deps).",
@@ -1061,6 +1098,209 @@ pub fn outdated(project_dir: &Path) -> Result<(), String> {
   Ok(())
 }
 
+/// `npm info <pkg>` / `npm view <pkg>` -- show registry info.
+pub fn info(name: &str) -> Result<(), String> {
+  let auth = load_npmrc();
+  let registry = std::env::var("NPM_REGISTRY").unwrap_or_else(|_| auth.default_registry.clone());
+  let url = format!("{registry}/{}", urlenc(name));
+  let token = auth.tokens.values().next().map(|s| s.as_str());
+  let body = http_get(&url, token)?;
+  let meta: PackageMeta = serde_json::from_str(&body).map_err(|e| format!("Bad registry response: {e}"))?;
+
+  let latest = meta
+    .dist_tags
+    .as_ref()
+    .and_then(|t| t.get("latest"))
+    .cloned()
+    .unwrap_or_else(|| "?".into());
+
+  println!("\n{name}@{latest}\n");
+
+  if let Some(tags) = &meta.dist_tags {
+    print!("dist-tags:");
+    for (tag, ver) in tags {
+      print!("  {tag}: {ver}");
+    }
+    println!();
+  }
+
+  if let Some(versions) = &meta.versions {
+    let mut vers: Vec<&str> = versions.keys().map(|s| s.as_str()).collect();
+    vers.sort_by(|a, b| compare_versions(a, b));
+    let recent: Vec<&str> = vers.iter().rev().take(10).copied().collect();
+    println!("versions: {} total, recent: {}", vers.len(), recent.join(", "));
+
+    if let Some(ver_meta) = versions.get(&latest) {
+      if let Some(deps) = &ver_meta.dependencies {
+        if !deps.is_empty() {
+          println!("\ndependencies:");
+          for (k, v) in deps {
+            println!("  {k}: {v}");
+          }
+        }
+      }
+    }
+  }
+  println!();
+  Ok(())
+}
+
+/// `npm prune` -- remove extraneous packages not in package.json.
+pub fn prune(project_dir: &Path) -> Result<(), String> {
+  let pkg_path = project_dir.join("package.json");
+  if !pkg_path.exists() {
+    return Err("No package.json found".into());
+  }
+  let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
+  let pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+  // Collect declared deps
+  let mut declared: HashSet<String> = HashSet::new();
+  for key in &["dependencies", "devDependencies", "optionalDependencies"] {
+    if let Some(deps) = pkg.get(*key).and_then(|v| v.as_object()) {
+      for k in deps.keys() {
+        declared.insert(k.clone());
+      }
+    }
+  }
+
+  let nm = project_dir.join("node_modules");
+  if !nm.exists() {
+    return Ok(());
+  }
+
+  let mut removed = 0;
+  // Collect all installed top-level packages
+  if let Ok(entries) = fs::read_dir(&nm) {
+    for entry in entries.flatten() {
+      let name = entry.file_name().to_string_lossy().to_string();
+      if name.starts_with('.') {
+        continue;
+      }
+      if !declared.contains(&name) && !is_subdep_of_any(&nm, &name, &declared) {
+        fs::remove_dir_all(entry.path()).map_err(|e| format!("Cannot remove {name}: {e}"))?;
+        println!("  - {name} (extraneous)");
+        removed += 1;
+      }
+    }
+  }
+  if removed == 0 {
+    println!("No extraneous packages found.");
+  } else {
+    println!("Removed {removed} extraneous packages.");
+  }
+  Ok(())
+}
+
+/// `npm dedupe` -- reduce duplication by hoisting.
+pub fn dedupe(project_dir: &Path) -> Result<(), String> {
+  let nm = project_dir.join("node_modules");
+  if !nm.exists() {
+    return Ok(());
+  }
+
+  let mut deduped = 0;
+  // Look for nested node_modules that duplicate top-level packages
+  if let Ok(entries) = fs::read_dir(&nm) {
+    for entry in entries.flatten() {
+      let nested_nm = entry.path().join("node_modules");
+      if !nested_nm.is_dir() {
+        continue;
+      }
+      if let Ok(nested) = fs::read_dir(&nested_nm) {
+        for sub in nested.flatten() {
+          let sub_name = sub.file_name().to_string_lossy().to_string();
+          let top_level = nm.join(&sub_name);
+          if top_level.exists() {
+            // Check if versions are compatible
+            let top_ver = read_pkg_version(&top_level);
+            let nested_ver = read_pkg_version(&sub.path());
+            if top_ver == nested_ver {
+              fs::remove_dir_all(sub.path()).map_err(|e| format!("Cannot remove nested {sub_name}: {e}"))?;
+              deduped += 1;
+            }
+          }
+        }
+        // Remove empty nested node_modules
+        if fs::read_dir(&nested_nm).map(|d| d.count() == 0).unwrap_or(false) {
+          let _ = fs::remove_dir(&nested_nm);
+        }
+      }
+    }
+  }
+  println!("Deduplicated {deduped} packages.");
+  Ok(())
+}
+
+/// `npm prefix` -- print the prefix directory.
+pub fn prefix(project_dir: &Path) -> String {
+  project_dir.to_string_lossy().to_string()
+}
+
+/// `npm root` -- print the node_modules directory.
+pub fn root(project_dir: &Path, global: bool) -> String {
+  if global {
+    dirs_home()
+      .unwrap_or_else(|| PathBuf::from("/tmp"))
+      .join(".malia")
+      .join("lib")
+      .join("node_modules")
+      .to_string_lossy()
+      .to_string()
+  } else {
+    project_dir.join("node_modules").to_string_lossy().to_string()
+  }
+}
+
+/// `npm whoami` -- print the logged-in user (from token).
+pub fn whoami() -> Result<(), String> {
+  let auth = load_npmrc();
+  let registry = std::env::var("NPM_REGISTRY").unwrap_or_else(|_| auth.default_registry.clone());
+  let token = auth.tokens.values().next().ok_or("Not logged in. Run: npm login")?;
+  let url = format!("{registry}/-/whoami");
+  let body = http_get(&url, Some(token))?;
+  let resp: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("Bad response: {e}"))?;
+  if let Some(name) = resp.get("username").and_then(|v| v.as_str()) {
+    println!("{name}");
+  } else {
+    println!("{}", body.trim());
+  }
+  Ok(())
+}
+
+/// `npm fund` -- show funding info for installed packages.
+pub fn fund(project_dir: &Path) -> Result<(), String> {
+  let nm = project_dir.join("node_modules");
+  if !nm.exists() {
+    println!("No packages installed.");
+    return Ok(());
+  }
+  let mut count = 0;
+  if let Ok(entries) = fs::read_dir(&nm) {
+    for entry in entries.flatten() {
+      let pkg_json = entry.path().join("package.json");
+      if let Ok(content) = fs::read_to_string(&pkg_json) {
+        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+          if let Some(funding) = pkg.get("funding") {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let url = match funding {
+              serde_json::Value::String(s) => s.clone(),
+              serde_json::Value::Object(obj) => obj.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+              _ => String::new(),
+            };
+            if !url.is_empty() {
+              println!("  {name}: {url}");
+              count += 1;
+            }
+          }
+        }
+      }
+    }
+  }
+  println!("\n{count} packages are looking for funding.");
+  Ok(())
+}
+
 // ── Internals ───────────────────────────────────────────────────────────────
 
 fn home_dir() -> Result<String, String> {
@@ -1317,6 +1557,83 @@ fn link_all_bins(nm: &Path) {
       }
     }
   }
+}
+
+/// Public wrapper for lifecycle script execution (used by `npm rebuild`).
+pub fn run_lifecycle_script_pub(pkg_dir: &Path, script_name: &str) {
+  run_lifecycle_script(pkg_dir, script_name);
+}
+
+/// Public wrapper for cache dir display.
+pub fn cache_dir_str() -> String {
+  cache_dir().to_string_lossy().to_string()
+}
+
+/// Run a lifecycle script from a package's package.json.
+fn run_lifecycle_script(pkg_dir: &Path, script_name: &str) {
+  let pkg_json = pkg_dir.join("package.json");
+  if !pkg_json.exists() {
+    return;
+  }
+  let content = match fs::read_to_string(&pkg_json) {
+    Ok(c) => c,
+    Err(_) => return,
+  };
+  let pkg: serde_json::Value = match serde_json::from_str(&content) {
+    Ok(p) => p,
+    Err(_) => return,
+  };
+  let cmd = match pkg
+    .get("scripts")
+    .and_then(|s| s.get(script_name))
+    .and_then(|v| v.as_str())
+  {
+    Some(c) => c,
+    None => return,
+  };
+
+  // Run the script in the package directory
+  let shell = if cfg!(windows) { "cmd" } else { "sh" };
+  let flag = if cfg!(windows) { "/c" } else { "-c" };
+  let _ = std::process::Command::new(shell)
+    .arg(flag)
+    .arg(cmd)
+    .current_dir(pkg_dir)
+    .env("PATH", augmented_path())
+    .stdout(std::process::Stdio::inherit())
+    .stderr(std::process::Stdio::inherit())
+    .status();
+}
+
+/// Build PATH that includes node_modules/.bin for lifecycle scripts.
+fn augmented_path() -> String {
+  let current = std::env::var("PATH").unwrap_or_default();
+  if let Ok(cwd) = std::env::current_dir() {
+    let bin = cwd.join("node_modules").join(".bin");
+    if bin.exists() {
+      return format!("{}:{current}", bin.display());
+    }
+  }
+  current
+}
+
+/// Check if a package is a sub-dependency of any declared dep.
+fn is_subdep_of_any(nm: &Path, name: &str, declared: &HashSet<String>) -> bool {
+  for dep in declared {
+    let dep_pkg = nm.join(dep).join("package.json");
+    if let Ok(content) = fs::read_to_string(&dep_pkg) {
+      if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+        for key in &["dependencies", "optionalDependencies"] {
+          if let Some(deps) = pkg.get(*key).and_then(|v| v.as_object()) {
+            if deps.contains_key(name) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+  }
+  false
 }
 
 // ── File collection for pack ────────────────────────────────────────────────

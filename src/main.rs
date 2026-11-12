@@ -637,10 +637,26 @@ fn run_as_npm(args: &[String]) -> anyhow::Result<()> {
   // Collect flags
   let global = args.iter().any(|a| a == "-g" || a == "--global");
   let save_dev = args.iter().any(|a| a == "-D" || a == "--save-dev");
+  let _save_exact = args.iter().any(|a| a == "-E" || a == "--save-exact");
+  let _save_optional = args.iter().any(|a| a == "-O" || a == "--save-optional");
+  let _production = args.iter().any(|a| a == "--production" || a == "--omit=dev");
+  // --prefix support
+  let prefix_dir = args.windows(2).find_map(|w| {
+    if w[0] == "--prefix" {
+      Some(PathBuf::from(&w[1]))
+    } else {
+      None
+    }
+  });
+  let current_dir = prefix_dir.unwrap_or(current_dir);
   let packages: Vec<String> = args
     .iter()
     .skip(1) // skip the subcommand
     .filter(|a| !a.starts_with('-'))
+    .filter(|a| {
+      // Skip the value that follows --prefix
+      !args.windows(2).any(|w| w[0] == "--prefix" && w[1] == **a)
+    })
     .cloned()
     .collect();
 
@@ -813,6 +829,126 @@ fn run_as_npm(args: &[String]) -> anyhow::Result<()> {
         std::process::exit(1);
       }
     }
+    "info" | "view" | "show" => {
+      if let Some(name) = packages.first() {
+        if let Err(e) = js_engine::pkg::info(name) {
+          eprintln!("error: {e}");
+          std::process::exit(1);
+        }
+      } else {
+        eprintln!("Usage: npm info <package>");
+        std::process::exit(1);
+      }
+    }
+    "prune" => {
+      if let Err(e) = js_engine::pkg::prune(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "dedupe" | "ddp" => {
+      if let Err(e) = js_engine::pkg::dedupe(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "fund" => {
+      if let Err(e) = js_engine::pkg::fund(&current_dir) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "whoami" => {
+      if let Err(e) = js_engine::pkg::whoami() {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+      }
+    }
+    "prefix" => {
+      let val = if global {
+        let home = std::env::var("HOME")
+          .or_else(|_| std::env::var("USERPROFILE"))
+          .unwrap_or_else(|_| "/tmp".into());
+        format!("{home}/.malia")
+      } else {
+        js_engine::pkg::prefix(&current_dir)
+      };
+      println!("{val}");
+    }
+    "root" => {
+      println!("{}", js_engine::pkg::root(&current_dir, global));
+    }
+    "exec" => {
+      // npm exec <cmd> -> malia x <cmd>
+      if let Some(cmd) = packages.first() {
+        let pkg_args: Vec<String> = packages[1..].to_vec();
+        let cd = current_dir.clone();
+        std::process::exit(run_package_bin(&cd, cmd, &pkg_args)?);
+      } else {
+        eprintln!("Usage: npm exec <command>");
+        std::process::exit(1);
+      }
+    }
+    "rebuild" | "rb" => {
+      // Rebuild = re-run install scripts for all installed packages
+      let nm = current_dir.join("node_modules");
+      if nm.exists() {
+        if let Ok(entries) = std::fs::read_dir(&nm) {
+          for entry in entries.flatten() {
+            if entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
+              // re-run install/postinstall scripts
+              js_engine::pkg::run_lifecycle_script_pub(&entry.path(), "install");
+              js_engine::pkg::run_lifecycle_script_pub(&entry.path(), "postinstall");
+            }
+          }
+        }
+      }
+      println!("Rebuild complete.");
+    }
+    "config" | "c" | "set" | "get" => {
+      // Basic config support
+      let action = if sub == "set" || sub == "get" {
+        sub
+      } else {
+        packages.first().map(|s| s.as_str()).unwrap_or("list")
+      };
+      match action {
+        "list" | "ls" => {
+          println!(
+            "registry = {}",
+            std::env::var("NPM_REGISTRY").unwrap_or_else(|_| "https://registry.npmjs.org".into())
+          );
+          println!("cache = {}", js_engine::pkg::cache_dir_str());
+          println!("prefix = {}", js_engine::pkg::prefix(&current_dir));
+          if global {
+            println!("global = true");
+          }
+        }
+        "get" => {
+          let key = if sub == "get" {
+            packages.first()
+          } else {
+            packages.get(1)
+          };
+          match key.map(|s| s.as_str()) {
+            Some("registry") => println!(
+              "{}",
+              std::env::var("NPM_REGISTRY").unwrap_or_else(|_| "https://registry.npmjs.org".into())
+            ),
+            Some("cache") => println!("{}", js_engine::pkg::cache_dir_str()),
+            Some("prefix") => println!("{}", js_engine::pkg::prefix(&current_dir)),
+            Some(k) => println!("undefined (key: {k})"),
+            None => eprintln!("Usage: npm config get <key>"),
+          }
+        }
+        "set" => {
+          eprintln!("npm config set: edit ~/.npmrc directly to change settings.");
+        }
+        _ => {
+          eprintln!("Usage: npm config <list|get|set>");
+        }
+      }
+    }
     "version" | "-v" | "--version" => {
       println!("malia-npm/{}", env!("CARGO_PKG_VERSION"));
     }
@@ -827,12 +963,22 @@ fn run_as_npm(args: &[String]) -> anyhow::Result<()> {
       println!("  update, up       Update packages");
       println!("  list, ls         List installed packages");
       println!("  outdated         Show outdated packages");
+      println!("  info, view       Show package info from registry");
       println!("  audit            Check for vulnerabilities");
+      println!("  fund             Show funding info");
       println!("  init             Create a package.json");
       println!("  link             Symlink a local package");
       println!("  pack             Create a tarball");
       println!("  publish          Publish to registry");
+      println!("  prune            Remove extraneous packages");
+      println!("  dedupe           Reduce duplication");
+      println!("  rebuild          Re-run install scripts");
       println!("  cache            Manage download cache");
+      println!("  config           Manage configuration");
+      println!("  whoami           Show logged-in user");
+      println!("  prefix           Print prefix directory");
+      println!("  root             Print node_modules directory");
+      println!("  exec             Execute a package binary");
       println!("  run              Run a script from package.json");
       println!("  test, t          Run the test script");
       println!("  start            Run the start script");
@@ -904,6 +1050,15 @@ pub fn run() -> anyhow::Result<()> {
       eprintln!("Usage: npx <command> [args...]");
       std::process::exit(1);
     }
+  }
+  // Invoked as `node` -- behave like node: run file, eval, or REPL
+  if invoked_as == "node" {
+    // Rewrite argv[0] to malia so clap parses correctly
+    if !raw_args.is_empty() {
+      raw_args[0] = "malia".to_string();
+    }
+    // `node` with no args -> REPL; `node file.js` -> run
+    // This falls through to normal malia CLI parsing below
   }
 
   // `npm` and `x`/`exec`/`dlx` pass everything after them to the tool;
