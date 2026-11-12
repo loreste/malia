@@ -504,6 +504,74 @@ pub fn install_packages(project_dir: &Path, packages: &[String], save_dev: bool)
   let mut resolver = Resolver::new();
 
   for spec in packages {
+    // Local tarball: ./foo.tgz, ../foo.tgz, /path/to/foo.tgz, file:foo.tgz
+    let local_path = if spec.ends_with(".tgz") || spec.ends_with(".tar.gz") {
+      let p = spec.strip_prefix("file:").unwrap_or(spec);
+      let path = PathBuf::from(p);
+      if path.exists() {
+        Some(path)
+      } else if p.starts_with('/') || p.starts_with("./") || p.starts_with("../") {
+        return Err(format!("{spec}: file not found"));
+      } else {
+        None
+      }
+    } else if spec.starts_with("file:") {
+      let p = spec.strip_prefix("file:").unwrap();
+      let path = PathBuf::from(p);
+      if path.exists() { Some(path) } else { None }
+    } else if (spec.starts_with("./") || spec.starts_with("../") || spec.starts_with('/'))
+      && PathBuf::from(spec).exists()
+      && (spec.ends_with(".tgz") || spec.ends_with(".tar.gz") || PathBuf::from(spec).is_dir())
+    {
+      Some(PathBuf::from(spec))
+    } else {
+      None
+    };
+
+    if let Some(tarball_path) = local_path {
+      // Install from local tarball or directory
+      if tarball_path.is_dir() {
+        // Local directory: symlink (like npm link)
+        match link_local(project_dir, Some(tarball_path.to_str().unwrap_or(""))) {
+          Ok(()) => {}
+          Err(e) => eprintln!("error: {spec}: {e}"),
+        }
+        continue;
+      }
+      // Local tarball
+      let data = fs::read(&tarball_path).map_err(|e| format!("Cannot read {spec}: {e}"))?;
+      let tmp_dir = nm.join(".malia-install-tmp");
+      let _ = fs::remove_dir_all(&tmp_dir);
+      extract_tarball(&data, &tmp_dir)?;
+      // Read package.json from extracted tarball
+      let pkg_json = tmp_dir.join("package.json");
+      if !pkg_json.exists() {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(format!("{spec}: tarball has no package.json"));
+      }
+      let content = fs::read_to_string(&pkg_json).map_err(|e| e.to_string())?;
+      let tarball_pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+      let tname = tarball_pkg.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+      let tver = tarball_pkg.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+      let dest = nm.join(tname);
+      if dest.exists() {
+        let _ = fs::remove_dir_all(&dest);
+      }
+      fs::rename(&tmp_dir, &dest).map_err(|e| format!("Cannot install {tname}: {e}"))?;
+      println!("  + {tname}@{tver} (local)");
+      // Update package.json
+      let section = pkg
+        .as_object_mut()
+        .unwrap()
+        .entry(dep_key)
+        .or_insert_with(|| serde_json::json!({}));
+      section.as_object_mut().unwrap().insert(
+        tname.to_string(),
+        serde_json::Value::String(format!("file:{}", tarball_path.display())),
+      );
+      continue;
+    }
+
     let (name, version_spec) = parse_package_spec(spec);
     match resolver.resolve(&nm, &name, &version_spec, false) {
       Ok(ver) => {
