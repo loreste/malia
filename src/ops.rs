@@ -2366,11 +2366,29 @@ include!("ops_extra.rs");
 // N-API: load native addon and call its init function with a V8 scope.
 // ---------------------------------------------------------------------------
 
-/// N-API: returns addon marker. Init runs at dlopen time via loader.rs.
 #[op2]
-#[serde]
-pub fn op_napi_init(#[string] path: String) -> Result<serde_json::Value, JsErrorBox> {
-  Ok(serde_json::json!({ "__napi": true, "path": path, "loaded": true }))
+pub fn op_napi_init<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  state: Rc<RefCell<OpState>>,
+  #[string] path: String,
+  exports: v8::Local<'s, v8::Value>,
+) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
+  crate::napi::init_addon(scope, state, path, exports)
+}
+
+#[op2]
+pub async fn op_napi_next_event(state: Rc<RefCell<OpState>>) -> bool {
+  crate::napi::next_event(state).await
+}
+
+#[op2(fast)]
+pub fn op_napi_drain(scope: &mut v8::PinScope<'_, '_>, state: &mut OpState) {
+  crate::napi::drain_event(scope, state);
+}
+
+#[op2(fast)]
+pub fn op_napi_active_count(state: &OpState) -> u32 {
+  crate::napi::active_async_count(state) as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -2500,6 +2518,9 @@ deno_core::extension!(
     op_net_connect,
     op_tls_connect,
     op_napi_init,
+    op_napi_next_event,
+    op_napi_drain,
+    op_napi_active_count,
     op_tls_listen,
     op_net_read,
     op_net_write,

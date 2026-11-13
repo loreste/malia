@@ -2,7 +2,33 @@
 "use strict";
 
 ((globalThis) => {
-  const ops = Deno.core.ops;
+  const core = Deno.core;
+  const ops = core.ops;
+
+  let napiPendingPromise = null;
+  let napiPumpRunning = false;
+  function refreshNapiRef() {
+    if (!napiPumpRunning) {
+      napiPumpRunning = true;
+      (async () => {
+        while (true) {
+          const p = ops.op_napi_next_event();
+          napiPendingPromise = p;
+          if (ops.op_napi_active_count() > 0) core.refOpPromise(p);
+          else core.unrefOpPromise(p);
+          const hasEvent = await p;
+          napiPendingPromise = null;
+          if (!hasEvent) break;
+          ops.op_napi_drain();
+        }
+        napiPumpRunning = false;
+      })();
+    } else if (napiPendingPromise) {
+      if (ops.op_napi_active_count() > 0) core.refOpPromise(napiPendingPromise);
+      else core.unrefOpPromise(napiPendingPromise);
+    }
+  }
+  globalThis.__jseNapiRefresh = refreshNapiRef;
 
   // env/argv are read lazily: at snapshot-build time these ops would bake
   // the build machine's environment into the blob, so defer the first read
@@ -353,7 +379,15 @@
     arch: ops.op_arch(),
     title: "node",
     version: "v26.12.0",
-    versions: { malia: ops.op_runtime_version(), jse: ops.op_runtime_version(), v8: "15.0.4", node: "26.12.0" },
+    versions: { malia: ops.op_runtime_version(), jse: ops.op_runtime_version(), v8: "15.0.4", node: "26.12.0", napi: "9" },
+    dlopen(mod, filename, _flags) {
+      const exports = (mod && typeof mod.exports === "object" && mod.exports !== null) ? mod.exports : {};
+      const result = ops.op_napi_init(String(filename), exports);
+      if (mod && typeof mod === "object") {
+        mod.exports = result;
+      }
+      return result;
+    },
     release: {
       name: "node",
       lts: "Iron",

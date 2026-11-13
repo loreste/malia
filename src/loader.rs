@@ -824,15 +824,33 @@ impl JseModuleLoader {
       .map_err(|_| err(format!("Only file:// URLs are supported, got {spec_str}")))?;
 
     if path.extension().is_some_and(|extension| extension == "node") {
-      match crate::napi::load_native_addon(&path) {
-        Ok(code) => return Ok(module_source(ModuleType::JavaScript, code, specifier, None)),
+      let body = match crate::napi::load_native_addon(&path) {
+        Ok(code) => {
+          if lazy_cjs {
+            code
+          } else {
+            let s = path.display().to_string();
+            return Ok(module_source(
+              ModuleType::JavaScript,
+              format!("const __exp = Deno.core.ops.op_napi_init({s:?}, {{}});\nexport default __exp;\n"),
+              specifier,
+              None,
+            ));
+          }
+        }
         Err(e) => {
           // Fallback: throw so try/catch patterns (Next.js SWC native -> WASM) work.
           let msg = format!("ERR_DLOPEN_FAILED: {e}");
-          let code = format!("throw Object.assign(new Error({msg:?}), {{ code: 'ERR_DLOPEN_FAILED' }});");
-          return Ok(module_source(ModuleType::JavaScript, code, specifier, None));
+          format!("throw Object.assign(new Error({msg:?}), {{ code: 'ERR_DLOPEN_FAILED' }});")
         }
+      };
+      if lazy_cjs {
+        let wrapped = self.wrap_cjs(specifier, &body, true)?;
+        let mut requested = specifier.clone();
+        requested.set_fragment(Some(LAZY_CJS_FRAGMENT));
+        return Ok(module_source(ModuleType::JavaScript, wrapped, &requested, None));
       }
+      return Ok(module_source(ModuleType::JavaScript, body, specifier, None));
     }
 
     // JSON modules requested with `with { type: "json" }`.
@@ -1028,9 +1046,9 @@ impl JseModuleLoader {
       let url = match self.resolve_internal(spec, specifier.as_str(), true) {
         Ok(u) => {
           let url = u.to_string();
-          // Native addons and unknown builtins get a throwing stub so
+          // Unknown builtins get a throwing stub so
           // they resolve at runtime where try/catch works.
-          if u.path().ends_with(".node") || (url.starts_with("node:") && builtin_source(&url).is_none()) {
+          if url.starts_with("node:") && builtin_source(&url).is_none() {
             "jse:internal/cjs-missing".to_string()
           } else {
             url
@@ -1046,7 +1064,9 @@ impl JseModuleLoader {
       // CommonJS dependencies link to their lazy variant; the URL map keeps
       // the plain URL, which keys the shared exports cache.
       let import_url = match ModuleSpecifier::parse(&url) {
-        Ok(u) if u.scheme() == "file" && self.is_cjs_module(&u) => format!("{url}#{LAZY_CJS_FRAGMENT}"),
+        Ok(u) if u.scheme() == "file" && (self.is_cjs_module(&u) || u.path().ends_with(".node")) => {
+          format!("{url}#{LAZY_CJS_FRAGMENT}")
+        }
         _ => url.clone(),
       };
       out.push_str(&format!("import * as __jse_m{i} from \"{import_url}\";\n"));

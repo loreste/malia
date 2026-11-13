@@ -72,8 +72,8 @@ export function __extensions() {
         ".json": (module, filename) => {
           module.exports = JSON.parse(Deno.core.ops.op_read_text_file_sync(filename));
         },
-        ".node": (_module, filename) => {
-          throw Object.assign(new Error("Cannot load native addon " + filename + ": native addons are not supported"), { code: "ERR_DLOPEN_FAILED" });
+        ".node": (module, filename) => {
+          process.dlopen(module, filename);
         },
       },
     });

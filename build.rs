@@ -155,6 +155,31 @@ mod sql {
 }
 
 #[allow(dead_code)]
+mod napi {
+  use std::cell::RefCell;
+  use std::rc::Rc;
+  use deno_core::OpState;
+  use deno_core::v8;
+  use deno_error::JsErrorBox;
+
+  pub fn init_addon<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _state: Rc<RefCell<OpState>>,
+    _path: String,
+    _exports: v8::Local<'s, v8::Value>,
+  ) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
+    Ok(v8::undefined(scope).into())
+  }
+  pub async fn next_event(_state: Rc<RefCell<OpState>>) -> bool {
+    false
+  }
+  pub fn drain_event(_scope: &mut v8::PinScope<'_, '_>, _state: &mut OpState) {}
+  pub fn active_async_count(_state: &OpState) -> usize {
+    0
+  }
+}
+
+#[allow(dead_code)]
 mod config {
   use std::collections::HashMap;
   use std::sync::{LazyLock, RwLock};
@@ -167,6 +192,11 @@ mod ops {
 }
 
 fn main() {
+  if cfg!(target_os = "macos") {
+    println!("cargo::rustc-link-arg=-Wl,-export_dynamic");
+  } else if cfg!(target_os = "linux") {
+    println!("cargo::rustc-link-arg=-Wl,--export-dynamic");
+  }
   println!("cargo::rerun-if-changed=src/js");
   println!("cargo::rerun-if-changed=src/ops.rs");
   println!("cargo::rerun-if-changed=src/vm.rs");

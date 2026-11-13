@@ -1277,3 +1277,131 @@ fn framework_svelte_ssr() {
 fn framework_fastify_routes() {
   run_framework_test("test_fastify.js");
 }
+
+#[test]
+fn napi_addon_compat() {
+  // Locate Node.js N-API headers from `node` in PATH.
+  let node_out = std::process::Command::new("node")
+    .args(["-p", "require('path').resolve(process.execPath, '..', '..', 'include', 'node')"])
+    .output()
+    .expect("failed to run node to locate N-API headers");
+  assert!(node_out.status.success(), "node failed to locate include dir");
+  let include_dir = String::from_utf8_lossy(&node_out.stdout).trim().to_string();
+  assert!(
+    std::path::Path::new(&include_dir).join("node_api.h").exists(),
+    "node_api.h not found in {include_dir}"
+  );
+
+  let tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("target")
+    .join(format!("malia_napi_test_{}", std::process::id()));
+  std::fs::create_dir_all(&tmp).unwrap();
+  std::fs::write(tmp.join("package.json"), "{}").unwrap();
+  let addon_src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/napi_addon.c");
+  let addon_out = tmp.join("napi_addon.node");
+
+  let mut cc = std::process::Command::new("cc");
+  cc.arg("-shared").arg("-fPIC").arg("-O2").arg("-I").arg(&include_dir);
+  #[cfg(target_os = "macos")]
+  cc.arg("-undefined").arg("dynamic_lookup");
+  let cc_res = cc.arg(&addon_src).arg("-o").arg(&addon_out).output().unwrap();
+  assert!(
+    cc_res.status.success(),
+    "cc failed: {}",
+    String::from_utf8_lossy(&cc_res.stderr)
+  );
+
+  let esm_script = tmp.join("test_esm.mjs");
+  std::fs::write(
+    &esm_script,
+    r#"
+import assert from "node:assert/strict";
+import addon from "./napi_addon.node";
+
+assert.equal(process.versions.napi, "9");
+assert.equal(addon.add(19, 23), 42);
+
+const strs = addon.echoStrings("hello 🚀");
+assert.equal(strs.utf8, "hello 🚀");
+assert.equal(strs.utf16, "hi☃");
+assert.equal(strs.latin1, "abc");
+
+const types = addon.testTypes();
+assert.equal(types.bigint, -9007199254740993n);
+assert.ok(types.date instanceof Date);
+assert.equal(types.date.getTime(), 1700000000000);
+assert.equal(types.sym, Symbol.for("malia.napi.sym"));
+assert.deepEqual(types.arr, [10, 20]);
+
+const bufs = addon.testBuffers();
+assert.ok(Buffer.isBuffer(bufs.buf));
+assert.equal(bufs.buf.toString("utf8"), "hello-napi");
+assert.equal(bufs.ta[0], 42);
+assert.equal(bufs.ta[1], 99);
+assert.equal(bufs.dv.getInt32(0, true), 42);
+
+const c = new addon.Counter(10);
+assert.equal(c.value, 10);
+assert.equal(c.inc(), 11);
+assert.equal(c.value, 11);
+assert.equal(addon.Counter.magic(), 77);
+
+const caught = addon.callWithTry((x) => { throw new Error("boom:" + x); }, "ok");
+assert.equal(caught.message, "boom:ok");
+
+const meta = addon.getMeta();
+assert.equal(meta.version, 9);
+assert.equal(meta.instanceData, "malia-instance-data");
+
+const sq = await addon.asyncSquare(12);
+assert.equal(sq, 144);
+
+const tsfnVals = await new Promise((resolve) => {
+  const got = [];
+  addon.runTsfn((v) => {
+    got.push(v);
+    if (got.length === 3) resolve(got);
+  }, 3);
+});
+assert.deepEqual(tsfnVals, [10, 20, 30]);
+console.log("ESM N-API OK");
+"#,
+  )
+  .unwrap();
+
+  let cjs_script = tmp.join("test_cjs.cjs");
+  std::fs::write(
+    &cjs_script,
+    r#"
+const assert = require("node:assert/strict");
+const path = require("node:path");
+const addon = require("./napi_addon.node");
+assert.equal(addon.add(1, 2), 3);
+
+const mod = { exports: {} };
+process.dlopen(mod, path.join(__dirname, "napi_addon.node"));
+assert.equal(mod.exports.add(5, 6), 11);
+console.log("CJS N-API OK");
+"#,
+  )
+  .unwrap();
+
+  let malia = env!("CARGO_BIN_EXE_malia");
+  for script in [&esm_script, &cjs_script] {
+    let out = std::process::Command::new(malia)
+      .args(["run", "--allow-all", script.to_str().unwrap()])
+      .current_dir(&tmp)
+      .output()
+      .unwrap();
+    assert!(
+      out.status.success(),
+      "script {} failed (status: {:?}):\nSTDOUT:\n{}\nSTDERR:\n{}",
+      script.display(),
+      out.status,
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr)
+    );
+  }
+
+  let _ = std::fs::remove_dir_all(&tmp);
+}
