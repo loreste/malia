@@ -373,6 +373,12 @@ fn http_incoming_headers() {
   run_fixture("nextjs_compat/http_headers.cjs");
 }
 
+/// res._implicitHeader() starts the response; later writes complete it.
+#[test]
+fn http_implicit_header() {
+  run_fixture("nextjs_compat/http_implicit_header.cjs");
+}
+
 #[test]
 fn http_client_gone() {
   run_fixture("nextjs_compat/http_client_gone.cjs");

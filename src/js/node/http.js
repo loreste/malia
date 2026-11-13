@@ -284,13 +284,22 @@ Object.assign(ServerResponse.prototype, {
 
   flushHeaders() {},
 
-  // Node internal, called by middleware (e.g. compression) before writing.
+  // Node internal, called by middleware (e.g. compression) and Next.js before
+  // writing: sends the status and headers, so later writes stream the body.
   _implicitHeader() {
-    if (!this._started) {
-      this.writeHead(this.statusCode);
-      this._started = true;
-      this._header = this._headerPairs();
-    }
+    this._startResponse();
+  },
+
+  // Sends the status and headers once; false if the client is gone.
+  _startResponse() {
+    if (this._started) return true;
+    // Like Node: implicit headers go through writeHead, so hooks on it
+    // (on-headers, used by compression middleware) can still add headers.
+    this.writeHead(this.statusCode);
+    this._started = true;
+    this._header = this._headerPairs();
+    return this._listenerId === null || this._reqId === null ||
+      this._respond(() => ops.op_serve_respond_start(this._listenerId, this._reqId, this.statusCode, this._header));
   },
 
   _headerPairs() {
@@ -321,17 +330,7 @@ Object.assign(ServerResponse.prototype, {
       else this.emit("error", err);
       return false;
     }
-    if (!this._started) {
-      // Like Node: implicit headers go through writeHead, so hooks on it
-      // (on-headers, used by compression middleware) can still add headers.
-      this._implicitHeader();
-      this._started = true;
-      this._header = this._headerPairs();
-      if (this._listenerId !== null && this._reqId !== null &&
-          !this._respond(() => ops.op_serve_respond_start(this._listenerId, this._reqId, this.statusCode, this._header))) {
-        return this.write(chunk, encoding, cb);
-      }
-    }
+    if (!this._started && !this._startResponse()) return this.write(chunk, encoding, cb);
     const bytes = toChunkBytes(chunk, encoding);
     if (bytes.length > 1024 * 1024 || (this._pendingBytes ?? 0) + bytes.length > 1024 * 1024) {
       const error = new Error('HTTP response writable capacity exceeded');
@@ -434,7 +433,7 @@ Object.assign(ServerResponse.prototype, {
       const body = chunk === undefined || chunk === null
         ? new Uint8Array(0)
         : toChunkBytes(chunk, encoding);
-      this._implicitHeader();
+      this.writeHead(this.statusCode);
       this._started = true;
       this._header = this._headerPairs();
       if (this._listenerId !== null && this._reqId !== null &&
