@@ -379,6 +379,12 @@ fn http_implicit_header() {
   run_fixture("nextjs_compat/http_implicit_header.cjs");
 }
 
+/// A compression stream destroyed during its final flush does not crash.
+#[test]
+fn zlib_destroy_during_flush() {
+  run_fixture("nextjs_compat/zlib_destroy_during_flush.cjs");
+}
+
 #[test]
 fn http_client_gone() {
   run_fixture("nextjs_compat/http_client_gone.cjs");

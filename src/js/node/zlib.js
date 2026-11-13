@@ -47,7 +47,17 @@ class ZlibTransform extends Transform {
     this._id = ops.op_zlib_new(kind, levelOf(options));
   }
 
+  // Closes the native stream once; destroy() can run while a write or the
+  // final flush is still in flight.
+  _close() {
+    if (this._id !== null) {
+      ops.op_zlib_close(this._id);
+      this._id = null;
+    }
+  }
+
   _transform(chunk, _encoding, cb) {
+    if (this._id === null) return cb();
     const self = this;
     ops.op_zlib_write_off(this._id, toBytes(chunk), false).then(
       (out) => {
@@ -59,23 +69,20 @@ class ZlibTransform extends Transform {
   }
 
   _flush(cb) {
+    if (this._id === null) return cb();
     const self = this;
     ops.op_zlib_write_off(this._id, new Uint8Array(0), true).then(
       (out) => {
         if (out.byteLength) self.push(asBuffer(out));
-        ops.op_zlib_close(self._id);
-        self._id = null;
+        self._close();
         cb();
       },
-      (err) => { ops.op_zlib_close(self._id); self._id = null; cb(err); },
+      (err) => { self._close(); cb(err); },
     );
   }
 
   _destroy(err, cb) {
-    if (this._id !== null) {
-      ops.op_zlib_close(this._id);
-      this._id = null;
-    }
+    this._close();
     cb(err);
   }
 }
