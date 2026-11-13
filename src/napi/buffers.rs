@@ -13,11 +13,7 @@ struct ExternalBackingDeleter {
   finalize_hint: *mut c_void,
 }
 
-unsafe extern "C" fn external_backing_deleter(
-  data: *mut c_void,
-  _byte_length: usize,
-  deleter_data: *mut c_void,
-) {
+unsafe extern "C" fn external_backing_deleter(data: *mut c_void, _byte_length: usize, deleter_data: *mut c_void) {
   if deleter_data.is_null() {
     return;
   }
@@ -41,12 +37,7 @@ fn make_external_ab<'s>(
     finalize_hint,
   }));
   let store = unsafe {
-    v8::ArrayBuffer::new_backing_store_from_ptr(
-      data,
-      byte_length,
-      external_backing_deleter,
-      deleter as *mut c_void,
-    )
+    v8::ArrayBuffer::new_backing_store_from_ptr(data, byte_length, external_backing_deleter, deleter as *mut c_void)
   };
   let shared = store.make_shared();
   v8::ArrayBuffer::with_backing_store(scope, &shared)
@@ -156,8 +147,7 @@ pub unsafe extern "C" fn napi_get_buffer_info(
   unsafe {
     with_env(env, |_inner, scope| {
       let v = from_napi_value(value)?;
-      let view =
-        v8::Local::<v8::ArrayBufferView>::try_from(v).map_err(|_| NAPI_INVALID_ARG)?;
+      let view = v8::Local::<v8::ArrayBufferView>::try_from(v).map_err(|_| NAPI_INVALID_ARG)?;
       if !length.is_null() {
         *length = view.byte_length();
       }
@@ -208,14 +198,7 @@ pub unsafe extern "C" fn napi_create_external_arraybuffer(
 ) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
-      let ab = make_external_ab(
-        scope,
-        env,
-        external_data,
-        byte_length,
-        finalize_cb,
-        finalize_hint,
-      );
+      let ab = make_external_ab(scope, env, external_data, byte_length, finalize_cb, finalize_hint);
       write_out(result, to_napi_value(ab))
     })
   }
@@ -231,8 +214,7 @@ pub unsafe extern "C" fn napi_get_arraybuffer_info(
   unsafe {
     with_env(env, |_inner, _scope| {
       let v = from_napi_value(arraybuffer)?;
-      let ab =
-        v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
+      let ab = v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
       if !byte_length.is_null() {
         *byte_length = ab.byte_length();
       }
@@ -245,15 +227,11 @@ pub unsafe extern "C" fn napi_get_arraybuffer_info(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_detach_arraybuffer(
-  env: NapiEnv,
-  arraybuffer: NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_detach_arraybuffer(env: NapiEnv, arraybuffer: NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, _scope| {
       let v = from_napi_value(arraybuffer)?;
-      let ab =
-        v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
+      let ab = v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
       if !ab.is_detachable() {
         return Err(NAPI_DETACHABLE_ARRAYBUFFER_EXPECTED);
       }
@@ -274,8 +252,7 @@ pub unsafe extern "C" fn node_api_create_buffer_from_arraybuffer(
   unsafe {
     with_env(env, |_inner, scope| {
       let v = from_napi_value(arraybuffer)?;
-      let ab =
-        v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
+      let ab = v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
       let buf = wrap_ab_as_buffer(scope, ab, byte_offset, byte_length)?;
       write_out(result, to_napi_value(buf))
     })
@@ -308,11 +285,7 @@ struct NoenvBackingDeleter {
   finalize_hint: *mut c_void,
 }
 
-unsafe extern "C" fn noenv_backing_deleter(
-  data: *mut c_void,
-  _byte_length: usize,
-  deleter_data: *mut c_void,
-) {
+unsafe extern "C" fn noenv_backing_deleter(data: *mut c_void, _byte_length: usize, deleter_data: *mut c_void) {
   if deleter_data.is_null() {
     return;
   }
@@ -366,8 +339,7 @@ pub unsafe extern "C" fn napi_create_typedarray(
   unsafe {
     with_env(env, |_inner, scope| {
       let v = from_napi_value(arraybuffer)?;
-      let ab =
-        v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
+      let ab = v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
       let ta: v8::Local<'_, v8::TypedArray> = match type_ {
         NAPI_INT8_ARRAY => v8::Int8Array::new(scope, ab, byte_offset, length)
           .ok_or(NAPI_GENERIC_FAILURE)?
@@ -489,8 +461,7 @@ pub unsafe extern "C" fn napi_create_dataview(
   unsafe {
     with_env(env, |_inner, scope| {
       let v = from_napi_value(arraybuffer)?;
-      let ab =
-        v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
+      let ab = v8::Local::<v8::ArrayBuffer>::try_from(v).map_err(|_| NAPI_ARRAYBUFFER_EXPECTED)?;
       let dv = v8::DataView::new(scope, ab, byte_offset, length);
       write_out(result, to_napi_value(dv))
     })

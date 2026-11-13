@@ -29,11 +29,7 @@ macro_rules! impl_napi_singleton {
 macro_rules! impl_napi_create_num {
   ($name:ident, $ty:ty, $scope:ident, $val:ident => $build:expr) => {
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn $name(
-      env: NapiEnv,
-      $val: $ty,
-      result: *mut NapiValue,
-    ) -> NapiStatus {
+    pub unsafe extern "C" fn $name(env: NapiEnv, $val: $ty, result: *mut NapiValue) -> NapiStatus {
       unsafe {
         with_env(env, |_inner, $scope| {
           let out: v8::Local<'_, v8::Value> = ($build).into();
@@ -47,11 +43,7 @@ macro_rules! impl_napi_create_num {
 macro_rules! impl_napi_get_num {
   ($name:ident, $ty:ty, $check:expr, $expected:expr, $extract:expr) => {
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn $name(
-      env: NapiEnv,
-      value: NapiValue,
-      result: *mut $ty,
-    ) -> NapiStatus {
+    pub unsafe extern "C" fn $name(env: NapiEnv, value: NapiValue, result: *mut $ty) -> NapiStatus {
       unsafe {
         with_env(env, |_inner, scope| {
           let v = from_napi_value(value)?;
@@ -69,11 +61,7 @@ macro_rules! impl_napi_get_num {
 macro_rules! impl_napi_is {
   ($name:ident, $pred:expr) => {
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn $name(
-      env: NapiEnv,
-      value: NapiValue,
-      result: *mut bool,
-    ) -> NapiStatus {
+    pub unsafe extern "C" fn $name(env: NapiEnv, value: NapiValue, result: *mut bool) -> NapiStatus {
       unsafe {
         with_env(env, |_inner, scope| {
           let v = from_napi_value(value)?;
@@ -87,11 +75,7 @@ macro_rules! impl_napi_is {
 macro_rules! impl_napi_coerce {
   ($name:ident, $tc:ident, $v:ident => $conv:expr) => {
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn $name(
-      env: NapiEnv,
-      value: NapiValue,
-      result: *mut NapiValue,
-    ) -> NapiStatus {
+    pub unsafe extern "C" fn $name(env: NapiEnv, value: NapiValue, result: *mut NapiValue) -> NapiStatus {
       unsafe {
         with_env(env, |inner, scope| {
           let $v = from_napi_value(value)?;
@@ -112,11 +96,7 @@ impl_napi_singleton!(napi_get_null, scope => v8::null(scope));
 impl_napi_singleton!(napi_get_global, scope => scope.get_current_context().global(scope));
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_get_boolean(
-  env: NapiEnv,
-  value: bool,
-  result: *mut NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_get_boolean(env: NapiEnv, value: bool, result: *mut NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
       write_out(result, to_napi_value(v8::Boolean::new(scope, value)))
@@ -149,19 +129,14 @@ pub unsafe extern "C" fn napi_create_bigint_words(
         }
         std::slice::from_raw_parts(words, word_count)
       };
-      let bi = v8::BigInt::new_from_words(scope, sign_bit != 0, slice)
-        .ok_or(NAPI_GENERIC_FAILURE)?;
+      let bi = v8::BigInt::new_from_words(scope, sign_bit != 0, slice).ok_or(NAPI_GENERIC_FAILURE)?;
       write_out(result, to_napi_value(bi))
     })
   }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_create_date(
-  env: NapiEnv,
-  time: f64,
-  result: *mut NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_create_date(env: NapiEnv, time: f64, result: *mut NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
       let d = v8::Date::new(scope, time).ok_or(NAPI_GENERIC_FAILURE)?;
@@ -250,8 +225,7 @@ unsafe fn create_latin1_str_impl(
       } else {
         v8::NewStringType::Normal
       };
-      let v8_str =
-        v8::String::new_from_one_byte(scope, bytes, kind).ok_or(NAPI_GENERIC_FAILURE)?;
+      let v8_str = v8::String::new_from_one_byte(scope, bytes, kind).ok_or(NAPI_GENERIC_FAILURE)?;
       write_out(result, to_napi_value(v8_str))
     })
   }
@@ -283,8 +257,7 @@ unsafe fn create_utf16_str_impl(
       } else {
         v8::NewStringType::Normal
       };
-      let v8_str =
-        v8::String::new_from_two_byte(scope, slice, kind).ok_or(NAPI_GENERIC_FAILURE)?;
+      let v8_str = v8::String::new_from_two_byte(scope, slice, kind).ok_or(NAPI_GENERIC_FAILURE)?;
       write_out(result, to_napi_value(v8_str))
     })
   }
@@ -394,9 +367,7 @@ pub unsafe extern "C" fn node_api_create_external_string_utf16(
   status
 }
 
-unsafe fn get_v8_string<'s>(
-  val: NapiValue,
-) -> Result<v8::Local<'s, v8::String>, NapiStatus> {
+unsafe fn get_v8_string<'s>(val: NapiValue) -> Result<v8::Local<'s, v8::String>, NapiStatus> {
   let v = unsafe { from_napi_value(val)? };
   if !v.is_string() {
     return Err(NAPI_STRING_EXPECTED);
@@ -509,11 +480,7 @@ pub unsafe extern "C" fn napi_get_value_string_utf16(
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_typeof(
-  env: NapiEnv,
-  value: NapiValue,
-  result: *mut NapiValueType,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_typeof(env: NapiEnv, value: NapiValue, result: *mut NapiValueType) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, _scope| {
       let v = from_napi_value(value)?;
@@ -583,9 +550,7 @@ impl_napi_get_num!(
   f64,
   |v: &v8::Local<'_, v8::Value>| v.is_date(),
   NAPI_DATE_EXPECTED,
-  |_scope, v: v8::Local<'_, v8::Value>| {
-    v8::Local::<v8::Date>::try_from(v).ok().map(|d| d.value_of())
-  }
+  |_scope, v: v8::Local<'_, v8::Value>| { v8::Local::<v8::Date>::try_from(v).ok().map(|d| d.value_of()) }
 );
 
 #[unsafe(no_mangle)]
@@ -676,38 +641,40 @@ impl_napi_is!(napi_is_array, |_, v: v8::Local<'_, v8::Value>| v.is_array());
 impl_napi_is!(napi_is_date, |_, v: v8::Local<'_, v8::Value>| v.is_date());
 impl_napi_is!(napi_is_error, |_, v: v8::Local<'_, v8::Value>| v.is_native_error());
 impl_napi_is!(napi_is_promise, |_, v: v8::Local<'_, v8::Value>| v.is_promise());
-impl_napi_is!(napi_is_arraybuffer, |_, v: v8::Local<'_, v8::Value>| v.is_array_buffer());
-impl_napi_is!(node_api_is_sharedarraybuffer, |_, v: v8::Local<'_, v8::Value>| v.is_shared_array_buffer());
+impl_napi_is!(napi_is_arraybuffer, |_, v: v8::Local<'_, v8::Value>| v
+  .is_array_buffer());
+impl_napi_is!(node_api_is_sharedarraybuffer, |_, v: v8::Local<'_, v8::Value>| v
+  .is_shared_array_buffer());
 impl_napi_is!(napi_is_typedarray, |_, v: v8::Local<'_, v8::Value>| v.is_typed_array());
 impl_napi_is!(napi_is_dataview, |_, v: v8::Local<'_, v8::Value>| v.is_data_view());
-impl_napi_is!(napi_is_buffer, |scope: &mut v8::PinScope<'_, '_>, v: v8::Local<'_, v8::Value>| {
-  if v.is_uint8_array() {
-    let global = scope.get_current_context().global(scope);
-    let key = v8::String::new(scope, "Buffer").unwrap();
-    if let Some(buf_ctor) = global.get(scope, key.into())
-      && let Ok(func) = v8::Local::<v8::Function>::try_from(buf_ctor)
-    {
-      let is_buf_key = v8::String::new(scope, "isBuffer").unwrap();
-      if let Some(is_buf_val) = func.get(scope, is_buf_key.into())
-        && let Ok(is_buf_fn) = v8::Local::<v8::Function>::try_from(is_buf_val)
-      {
-        return is_buf_fn
-          .call(scope, func.into(), &[v])
-          .is_some_and(|r| r.boolean_value(scope));
-      }
-    }
-    return true;
-  }
-  false
-});
 impl_napi_is!(
-  napi_is_detached_arraybuffer,
-  |_, v: v8::Local<'_, v8::Value>| {
-    v8::Local::<v8::ArrayBuffer>::try_from(v)
-      .map(|ab| ab.was_detached())
-      .unwrap_or(false)
+  napi_is_buffer,
+  |scope: &mut v8::PinScope<'_, '_>, v: v8::Local<'_, v8::Value>| {
+    if v.is_uint8_array() {
+      let global = scope.get_current_context().global(scope);
+      let key = v8::String::new(scope, "Buffer").unwrap();
+      if let Some(buf_ctor) = global.get(scope, key.into())
+        && let Ok(func) = v8::Local::<v8::Function>::try_from(buf_ctor)
+      {
+        let is_buf_key = v8::String::new(scope, "isBuffer").unwrap();
+        if let Some(is_buf_val) = func.get(scope, is_buf_key.into())
+          && let Ok(is_buf_fn) = v8::Local::<v8::Function>::try_from(is_buf_val)
+        {
+          return is_buf_fn
+            .call(scope, func.into(), &[v])
+            .is_some_and(|r| r.boolean_value(scope));
+        }
+      }
+      return true;
+    }
+    false
   }
 );
+impl_napi_is!(napi_is_detached_arraybuffer, |_, v: v8::Local<'_, v8::Value>| {
+  v8::Local::<v8::ArrayBuffer>::try_from(v)
+    .map(|ab| ab.was_detached())
+    .unwrap_or(false)
+});
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_strict_equals(

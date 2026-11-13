@@ -14,26 +14,13 @@ use tokio::sync::mpsc;
 use super::types::*;
 
 // Compile-time guarantee that `v8::Local<'s, v8::Value>` is pointer-sized.
-const _: () = assert!(
-  std::mem::size_of::<v8::Local<'static, v8::Value>>() == std::mem::size_of::<NapiValue>()
-);
+const _: () = assert!(std::mem::size_of::<v8::Local<'static, v8::Value>>() == std::mem::size_of::<NapiValue>());
 
 pub enum NapiEvent {
-  AsyncWorkComplete {
-    work: usize,
-  },
-  ThreadsafeCall {
-    tsfn: usize,
-    data: usize,
-  },
-  ThreadsafeFinalize {
-    tsfn: usize,
-  },
-  PostFinalizer {
-    cb: NapiFinalize,
-    data: usize,
-    hint: usize,
-  },
+  AsyncWorkComplete { work: usize },
+  ThreadsafeCall { tsfn: usize, data: usize },
+  ThreadsafeFinalize { tsfn: usize },
+  PostFinalizer { cb: NapiFinalize, data: usize, hint: usize },
 }
 
 pub struct InstanceData {
@@ -63,8 +50,7 @@ pub struct NapiEnvInner {
 impl NapiEnvInner {
   pub fn new(scope: &mut v8::PinScope<'_, '_>) -> Box<Self> {
     let wrap_key = v8::Private::for_api(scope, Some(v8::String::new(scope, "__napi_wrap").unwrap()));
-    let tag_key =
-      v8::Private::for_api(scope, Some(v8::String::new(scope, "__napi_type_tag").unwrap()));
+    let tag_key = v8::Private::for_api(scope, Some(v8::String::new(scope, "__napi_type_tag").unwrap()));
     let wrap_private_key = v8::Global::new(scope, wrap_key);
     let type_tag_private_key = v8::Global::new(scope, tag_key);
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -315,11 +301,7 @@ pub fn attach_finalizer<'s>(
     scope,
     val,
     Box::new(move || unsafe {
-      finalize_cb(
-        env_addr as NapiEnv,
-        data_addr as *mut c_void,
-        hint_addr as *mut c_void,
-      );
+      finalize_cb(env_addr as NapiEnv, data_addr as *mut c_void, hint_addr as *mut c_void);
     }),
   );
   env.weak_handles.push(weak);
@@ -357,9 +339,7 @@ pub unsafe extern "C" fn napi_get_last_error_info(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_get_version(env: NapiEnv, result: *mut u32) -> NapiStatus {
-  unsafe {
-    with_env_basic(env, |_| write_out(result, NAPI_VERSION_SUPPORTED))
-  }
+  unsafe { with_env_basic(env, |_| write_out(result, NAPI_VERSION_SUPPORTED)) }
 }
 
 static NODE_RELEASE: &[u8] = b"node\0";
@@ -371,35 +351,24 @@ static NODE_VERSION_INFO: NapiNodeVersion = NapiNodeVersion {
 };
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_get_node_version(
-  env: NapiEnv,
-  version: *mut *const NapiNodeVersion,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_get_node_version(env: NapiEnv, version: *mut *const NapiNodeVersion) -> NapiStatus {
   unsafe {
-    with_env_basic(env, |_| write_out(version, &NODE_VERSION_INFO as *const NapiNodeVersion))
+    with_env_basic(env, |_| {
+      write_out(version, &NODE_VERSION_INFO as *const NapiNodeVersion)
+    })
   }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn node_api_get_module_file_name(
-  env: NapiEnv,
-  result: *mut *const c_char,
-) -> NapiStatus {
-  unsafe {
-    with_env_basic(env, |inner| write_out(result, inner.module_filename.as_ptr()))
-  }
+pub unsafe extern "C" fn node_api_get_module_file_name(env: NapiEnv, result: *mut *const c_char) -> NapiStatus {
+  unsafe { with_env_basic(env, |inner| write_out(result, inner.module_filename.as_ptr())) }
 }
 
 static mut DUMMY_UV_LOOP: usize = 0;
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_get_uv_event_loop(
-  env: NapiEnv,
-  loop_: *mut *mut c_void,
-) -> NapiStatus {
-  unsafe {
-    with_env_basic(env, |_| write_out(loop_, &raw mut DUMMY_UV_LOOP as *mut c_void))
-  }
+pub unsafe extern "C" fn napi_get_uv_event_loop(env: NapiEnv, loop_: *mut *mut c_void) -> NapiStatus {
+  unsafe { with_env_basic(env, |_| write_out(loop_, &raw mut DUMMY_UV_LOOP as *mut c_void)) }
 }
 
 #[unsafe(no_mangle)]
@@ -422,26 +391,17 @@ pub unsafe extern "C" fn napi_set_instance_data(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_get_instance_data(
-  env: NapiEnv,
-  data: *mut *mut c_void,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_get_instance_data(env: NapiEnv, data: *mut *mut c_void) -> NapiStatus {
   unsafe {
     with_env_basic(env, |inner| {
-      let ptr = inner
-        .instance_data
-        .as_ref()
-        .map_or(std::ptr::null_mut(), |d| d.data);
+      let ptr = inner.instance_data.as_ref().map_or(std::ptr::null_mut(), |d| d.data);
       write_out(data, ptr)
     })
   }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_open_handle_scope(
-  env: NapiEnv,
-  result: *mut NapiHandleScope,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_open_handle_scope(env: NapiEnv, result: *mut NapiHandleScope) -> NapiStatus {
   unsafe {
     with_env_basic(env, |inner| {
       inner.handle_scope_stack.push(false);
@@ -452,10 +412,7 @@ pub unsafe extern "C" fn napi_open_handle_scope(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_close_handle_scope(
-  env: NapiEnv,
-  scope: NapiHandleScope,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_close_handle_scope(env: NapiEnv, scope: NapiHandleScope) -> NapiStatus {
   unsafe {
     with_env_basic(env, |inner| {
       let expected = inner.handle_scope_stack.len() as NapiHandleScope;
@@ -497,10 +454,7 @@ pub unsafe extern "C" fn napi_escape_handle(
       if scope.is_null() || scope != expected {
         return Err(NAPI_HANDLE_SCOPE_MISMATCH);
       }
-      let escaped = inner
-        .handle_scope_stack
-        .last_mut()
-        .ok_or(NAPI_HANDLE_SCOPE_MISMATCH)?;
+      let escaped = inner.handle_scope_stack.last_mut().ok_or(NAPI_HANDLE_SCOPE_MISMATCH)?;
       if *escaped {
         return Err(NAPI_ESCAPE_CALLED_TWICE);
       }

@@ -44,12 +44,7 @@ pub unsafe extern "C" fn napi_create_promise(
   }
 }
 
-unsafe fn settle_deferred(
-  env: NapiEnv,
-  deferred: NapiDeferred,
-  value: NapiValue,
-  resolve: bool,
-) -> NapiStatus {
+unsafe fn settle_deferred(env: NapiEnv, deferred: NapiDeferred, value: NapiValue, resolve: bool) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
       if deferred.is_null() {
@@ -101,16 +96,11 @@ pub unsafe extern "C" fn napi_async_init(
   _async_resource_name: NapiValue,
   result: *mut NapiAsyncContext,
 ) -> NapiStatus {
-  unsafe {
-    with_env_basic(env, |_| write_out(result, 1usize as NapiAsyncContext))
-  }
+  unsafe { with_env_basic(env, |_| write_out(result, 1usize as NapiAsyncContext)) }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_async_destroy(
-  env: NapiEnv,
-  async_context: NapiAsyncContext,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_async_destroy(env: NapiEnv, async_context: NapiAsyncContext) -> NapiStatus {
   unsafe {
     with_env_basic(env, |_| {
       if async_context.is_null() {
@@ -137,10 +127,7 @@ pub unsafe extern "C" fn napi_open_callback_scope(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_close_callback_scope(
-  env: NapiEnv,
-  scope: NapiCallbackScope,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_close_callback_scope(env: NapiEnv, scope: NapiCallbackScope) -> NapiStatus {
   unsafe {
     with_env_basic(env, |inner| {
       if scope.is_null() || scope != inner.callback_scope_depth as NapiCallbackScope {
@@ -372,10 +359,8 @@ pub unsafe extern "C" fn napi_call_threadsafe_function(
   if st.closing {
     return NAPI_CLOSING;
   }
-  if tsfn.max_queue_size > 0 && st.queued_count >= tsfn.max_queue_size {
-    if is_blocking == NAPI_TSFN_NONBLOCKING {
-      return NAPI_QUEUE_FULL;
-    }
+  if tsfn.max_queue_size > 0 && st.queued_count >= tsfn.max_queue_size && is_blocking == NAPI_TSFN_NONBLOCKING {
+    return NAPI_QUEUE_FULL;
   }
   st.queued_count += 1;
   drop(st);
@@ -387,9 +372,7 @@ pub unsafe extern "C" fn napi_call_threadsafe_function(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_acquire_threadsafe_function(
-  func: NapiThreadsafeFunction,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_acquire_threadsafe_function(func: NapiThreadsafeFunction) -> NapiStatus {
   if func.is_null() {
     return NAPI_INVALID_ARG;
   }
@@ -403,10 +386,7 @@ pub unsafe extern "C" fn napi_acquire_threadsafe_function(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_release_threadsafe_function(
-  func: NapiThreadsafeFunction,
-  mode: i32,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_release_threadsafe_function(func: NapiThreadsafeFunction, mode: i32) -> NapiStatus {
   if func.is_null() {
     return NAPI_INVALID_ARG;
   }
@@ -428,10 +408,7 @@ pub unsafe extern "C" fn napi_release_threadsafe_function(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_unref_threadsafe_function(
-  env: NapiEnv,
-  func: NapiThreadsafeFunction,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_unref_threadsafe_function(env: NapiEnv, func: NapiThreadsafeFunction) -> NapiStatus {
   unsafe {
     with_env_basic(env, |_| {
       if func.is_null() {
@@ -449,10 +426,7 @@ pub unsafe extern "C" fn napi_unref_threadsafe_function(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_ref_threadsafe_function(
-  env: NapiEnv,
-  func: NapiThreadsafeFunction,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_ref_threadsafe_function(env: NapiEnv, func: NapiThreadsafeFunction) -> NapiStatus {
   unsafe {
     with_env_basic(env, |_| {
       if func.is_null() {
@@ -525,8 +499,7 @@ pub unsafe extern "C" fn napi_add_async_cleanup_hook(
   unsafe {
     with_env_basic(env, |_| {
       let hook = hook.ok_or(NAPI_INVALID_ARG)?;
-      let handle = Box::into_raw(Box::new(AsyncCleanupHandle { hook, data: arg }))
-        as NapiAsyncCleanupHookHandle;
+      let handle = Box::into_raw(Box::new(AsyncCleanupHandle { hook, data: arg })) as NapiAsyncCleanupHookHandle;
       if !remove_handle.is_null() {
         *remove_handle = handle;
       }
@@ -536,9 +509,7 @@ pub unsafe extern "C" fn napi_add_async_cleanup_hook(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_remove_async_cleanup_hook(
-  remove_handle: NapiAsyncCleanupHookHandle,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_remove_async_cleanup_hook(remove_handle: NapiAsyncCleanupHookHandle) -> NapiStatus {
   if remove_handle.is_null() {
     return NAPI_INVALID_ARG;
   }
@@ -570,11 +541,7 @@ pub unsafe extern "C" fn node_api_post_finalizer(
 // Event Dispatcher (runs on JS thread with live v8::PinScope)
 // ---------------------------------------------------------------------------
 
-pub fn dispatch_event(
-  scope: &mut v8::PinScope<'_, '_>,
-  env_ptr: NapiEnv,
-  event: NapiEvent,
-) {
+pub fn dispatch_event(scope: &mut v8::PinScope<'_, '_>, env_ptr: NapiEnv, event: NapiEvent) {
   let _guard = unsafe { ScopeGuard::enter(env_ptr, scope) };
   match event {
     NapiEvent::AsyncWorkComplete { work } => {

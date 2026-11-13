@@ -1,6 +1,7 @@
-// jse — a mini JavaScript/TypeScript runtime: V8 (via deno_core) embedded
+// malia -- JavaScript/TypeScript runtime: V8 (via deno_core) embedded
 // in a tokio multi-thread host, with TS transpilation, npm/CJS resolution,
 // OS-thread workers and channel-based async messaging.
+#![allow(clippy::missing_safety_doc, clippy::not_unsafe_ptr_arg_deref)]
 pub mod cache;
 pub mod config;
 pub mod crypto;

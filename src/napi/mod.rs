@@ -2,6 +2,8 @@
 //!
 //! Bridges `extern "C"` N-API functions to `deno_core` / `v8::PinScope`,
 //! with native `.node` addon loading via `dlopen` and async event pumping.
+//!
+//! All extern "C" functions in this module are unsafe N-API C ABI entry points.
 
 pub mod async_rt;
 pub mod buffers;
@@ -74,29 +76,20 @@ pub fn load_native_addon(path: &Path) -> Result<String, String> {
   *PENDING_REGISTER.lock().unwrap() = None;
   let lib = unsafe { libloading::Library::new(path).map_err(|e| format!("dlopen {s}: {e}"))? };
 
-  let init_fn: NapiAddonRegisterFunc = if let Ok(sym) =
-    unsafe { lib.get::<NapiAddonRegisterFunc>(b"napi_register_module_v1") }
-  {
-    *sym
-  } else if let Some(reg) = PENDING_REGISTER.lock().unwrap().take() {
-    reg
-  } else {
-    return Err(format!(
-      "{s}: missing napi_register_module_v1 or napi_module_register"
-    ));
-  };
+  let init_fn: NapiAddonRegisterFunc =
+    if let Ok(sym) = unsafe { lib.get::<NapiAddonRegisterFunc>(b"napi_register_module_v1") } {
+      *sym
+    } else if let Some(reg) = PENDING_REGISTER.lock().unwrap().take() {
+      reg
+    } else {
+      return Err(format!("{s}: missing napi_register_module_v1 or napi_module_register"));
+    };
 
   LOADED
     .lock()
     .unwrap()
     .get_or_insert_with(HashMap::new)
-    .insert(
-      s.clone(),
-      LoadedAddon {
-        _lib: lib,
-        init_fn,
-      },
-    );
+    .insert(s.clone(), LoadedAddon { _lib: lib, init_fn });
 
   Ok(format!(
     "module.exports = Deno.core.ops.op_napi_init({s:?}, module.exports);"
@@ -116,16 +109,10 @@ pub struct NapiRuntimeState {
   pub event_rx: Option<Rc<tokio::sync::Mutex<mpsc::UnboundedReceiver<NapiEvent>>>>,
 }
 
-pub fn ensure_env(
-  scope: &mut v8::PinScope<'_, '_>,
-  state: &mut OpState,
-) -> *mut NapiEnvInner {
+pub fn ensure_env(scope: &mut v8::PinScope<'_, '_>, state: &mut OpState) -> *mut NapiEnvInner {
   if !state.has::<NapiRuntimeState>() {
     let mut env = NapiEnvInner::new(scope);
-    let rx = env
-      .event_rx
-      .take()
-      .map(|r| Rc::new(tokio::sync::Mutex::new(r)));
+    let rx = env.event_rx.take().map(|r| Rc::new(tokio::sync::Mutex::new(r)));
     state.put(NapiRuntimeState { env, event_rx: rx });
   }
   let rt_state = state.borrow_mut::<NapiRuntimeState>();
@@ -140,13 +127,9 @@ pub fn init_addon<'s>(
 ) -> Result<v8::Local<'s, v8::Value>, deno_error::JsErrorBox> {
   // Ensure the .node library is loaded (handles direct process.dlopen calls).
   {
-    let already = LOADED
-      .lock()
-      .unwrap()
-      .as_ref()
-      .is_some_and(|m| m.contains_key(&path));
+    let already = LOADED.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&path));
     if !already {
-      load_native_addon(Path::new(&path)).map_err(|e| deno_error::JsErrorBox::generic(e))?;
+      load_native_addon(Path::new(&path)).map_err(deno_error::JsErrorBox::generic)?;
     }
   }
 
@@ -193,8 +176,7 @@ pub struct PendingNapiEvent(pub Option<NapiEvent>);
 pub async fn next_event(state: Rc<RefCell<OpState>>) -> bool {
   let rx = {
     let st = state.borrow();
-    st.try_borrow::<NapiRuntimeState>()
-      .and_then(|r| r.event_rx.clone())
+    st.try_borrow::<NapiRuntimeState>().and_then(|r| r.event_rx.clone())
   };
   let Some(rx) = rx else {
     return false;
@@ -209,13 +191,8 @@ pub async fn next_event(state: Rc<RefCell<OpState>>) -> bool {
   }
 }
 
-pub fn drain_event(
-  scope: &mut v8::PinScope<'_, '_>,
-  state: &mut OpState,
-) {
-  let ev = state
-    .try_borrow_mut::<PendingNapiEvent>()
-    .and_then(|p| p.0.take());
+pub fn drain_event(scope: &mut v8::PinScope<'_, '_>, state: &mut OpState) {
+  let ev = state.try_borrow_mut::<PendingNapiEvent>().and_then(|p| p.0.take());
   if let Some(event) = ev {
     let env_ptr = ensure_env(scope, state);
     async_rt::dispatch_event(scope, env_ptr, event);

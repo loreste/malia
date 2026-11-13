@@ -116,15 +116,7 @@ pub unsafe extern "C" fn napi_wrap(
   finalize_hint: *mut c_void,
   result: *mut NapiRef,
 ) -> NapiStatus {
-  wrap_impl(
-    env,
-    js_object,
-    native_object,
-    finalize_cb,
-    finalize_hint,
-    result,
-    true,
-  )
+  wrap_impl(env, js_object, native_object, finalize_cb, finalize_hint, result, true)
 }
 
 #[unsafe(no_mangle)]
@@ -136,30 +128,15 @@ pub unsafe extern "C" fn napi_add_finalizer(
   finalize_hint: *mut c_void,
   result: *mut NapiRef,
 ) -> NapiStatus {
-  wrap_impl(
-    env,
-    js_object,
-    native_object,
-    finalize_cb,
-    finalize_hint,
-    result,
-    false,
-  )
+  wrap_impl(env, js_object, native_object, finalize_cb, finalize_hint, result, false)
 }
 
-fn unwrap_impl(
-  env: NapiEnv,
-  js_object: NapiValue,
-  result: *mut *mut c_void,
-  remove: bool,
-) -> NapiStatus {
+fn unwrap_impl(env: NapiEnv, js_object: NapiValue, result: *mut *mut c_void, remove: bool) -> NapiStatus {
   unsafe {
     with_env(env, |inner, scope| {
       let obj = from_napi_object(scope, js_object)?;
       let key = v8::Local::new(scope, &inner.wrap_private_key);
-      let val = obj
-        .get_private(scope, key)
-        .ok_or(NAPI_INVALID_ARG)?;
+      let val = obj.get_private(scope, key).ok_or(NAPI_INVALID_ARG)?;
       if !val.is_external() {
         return Err(NAPI_INVALID_ARG);
       }
@@ -174,20 +151,12 @@ fn unwrap_impl(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_unwrap(
-  env: NapiEnv,
-  js_object: NapiValue,
-  result: *mut *mut c_void,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_unwrap(env: NapiEnv, js_object: NapiValue, result: *mut *mut c_void) -> NapiStatus {
   unwrap_impl(env, js_object, result, false)
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_remove_wrap(
-  env: NapiEnv,
-  js_object: NapiValue,
-  result: *mut *mut c_void,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_remove_wrap(env: NapiEnv, js_object: NapiValue, result: *mut *mut c_void) -> NapiStatus {
   unwrap_impl(env, js_object, result, true)
 }
 
@@ -300,11 +269,7 @@ pub unsafe extern "C" fn napi_delete_reference(env: NapiEnv, ref_: NapiRef) -> N
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_reference_ref(
-  env: NapiEnv,
-  ref_: NapiRef,
-  result: *mut u32,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_reference_ref(env: NapiEnv, ref_: NapiRef, result: *mut u32) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
       if ref_.is_null() {
@@ -314,10 +279,9 @@ pub unsafe extern "C" fn napi_reference_ref(
       r.refcount += 1;
       if r.refcount == 1
         && let Some(RefStorage::Weak(w)) = r.storage.take()
+        && let Some(local) = w.to_local(scope)
       {
-        if let Some(local) = w.to_local(scope) {
-          r.storage = Some(RefStorage::Strong(v8::Global::new(scope, local)));
-        }
+        r.storage = Some(RefStorage::Strong(v8::Global::new(scope, local)));
       }
       if !result.is_null() {
         *result = r.refcount;
@@ -328,11 +292,7 @@ pub unsafe extern "C" fn napi_reference_ref(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_reference_unref(
-  env: NapiEnv,
-  ref_: NapiRef,
-  result: *mut u32,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_reference_unref(env: NapiEnv, ref_: NapiRef, result: *mut u32) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
       if ref_.is_null() {
@@ -358,22 +318,15 @@ pub unsafe extern "C" fn napi_reference_unref(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_get_reference_value(
-  env: NapiEnv,
-  ref_: NapiRef,
-  result: *mut NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_get_reference_value(env: NapiEnv, ref_: NapiRef, result: *mut NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
       if ref_.is_null() || result.is_null() {
         return Err(NAPI_INVALID_ARG);
       }
       let r = &*(ref_ as *const NapiRefInner);
-      *result = r
-        .get_local(scope)
-        .map_or(std::ptr::null_mut(), to_napi_value);
+      *result = r.get_local(scope).map_or(std::ptr::null_mut(), to_napi_value);
       Ok(())
     })
   }
 }
-

@@ -1282,7 +1282,10 @@ fn framework_fastify_routes() {
 fn napi_addon_compat() {
   // Locate Node.js N-API headers from `node` in PATH.
   let node_out = std::process::Command::new("node")
-    .args(["-p", "require('path').resolve(process.execPath, '..', '..', 'include', 'node')"])
+    .args([
+      "-p",
+      "require('path').resolve(process.execPath, '..', '..', 'include', 'node')",
+    ])
     .output()
     .expect("failed to run node to locate N-API headers");
   assert!(node_out.status.success(), "node failed to locate include dir");

@@ -62,11 +62,7 @@ pub(crate) fn make_v8_function<'s>(
   cb: NapiCallback,
   data: *mut c_void,
 ) -> Result<v8::Local<'s, v8::Function>, NapiStatus> {
-  let cb_data = Box::into_raw(Box::new(CallbackData {
-    env: env_ptr,
-    cb,
-    data,
-  }));
+  let cb_data = Box::into_raw(Box::new(CallbackData { env: env_ptr, cb, data }));
   let ext = v8::External::new(scope, cb_data as *mut c_void);
   let func = v8::Function::builder(v8_callback_trampoline)
     .data(ext.into())
@@ -170,10 +166,7 @@ pub unsafe extern "C" fn napi_get_new_target(
   }
 }
 
-unsafe fn collect_args<'s>(
-  argc: usize,
-  argv: *const NapiValue,
-) -> Result<Vec<v8::Local<'s, v8::Value>>, NapiStatus> {
+unsafe fn collect_args<'s>(argc: usize, argv: *const NapiValue) -> Result<Vec<v8::Local<'s, v8::Value>>, NapiStatus> {
   if argc == 0 {
     return Ok(Vec::new());
   }
@@ -266,11 +259,7 @@ pub unsafe extern "C" fn napi_define_class(
       } else {
         read_c_str(utf8name, length)?
       };
-      let cb_data = Box::into_raw(Box::new(CallbackData {
-        env,
-        cb: ctor_cb,
-        data,
-      }));
+      let cb_data = Box::into_raw(Box::new(CallbackData { env, cb: ctor_cb, data }));
       let ext = v8::External::new(scope, cb_data as *mut c_void);
       let tpl = v8::FunctionTemplate::builder(v8_callback_trampoline)
         .data(ext.into())
@@ -284,9 +273,7 @@ pub unsafe extern "C" fn napi_define_class(
       let ctor_obj: v8::Local<'_, v8::Object> = func.into();
 
       let proto_key = v8::String::new(scope, "prototype").ok_or(NAPI_GENERIC_FAILURE)?;
-      let proto_val = ctor_obj
-        .get(scope, proto_key.into())
-        .ok_or(NAPI_GENERIC_FAILURE)?;
+      let proto_val = ctor_obj.get(scope, proto_key.into()).ok_or(NAPI_GENERIC_FAILURE)?;
       let proto_obj = proto_val.to_object(scope).ok_or(NAPI_OBJECT_EXPECTED)?;
 
       if property_count > 0 {
@@ -310,11 +297,7 @@ pub unsafe extern "C" fn napi_define_class(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_run_script(
-  env: NapiEnv,
-  script: NapiValue,
-  result: *mut NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_run_script(env: NapiEnv, script: NapiValue, result: *mut NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |inner, scope| {
       let v = from_napi_value(script)?;

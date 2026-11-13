@@ -108,24 +108,15 @@ pub type NapiThreadsafeFunction = *mut c_void;
 pub type NapiAsyncCleanupHookHandle = *mut c_void;
 
 pub type NapiCallback = unsafe extern "C" fn(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue;
-pub type NapiFinalize =
-  unsafe extern "C" fn(env: NapiEnv, finalize_data: *mut c_void, finalize_hint: *mut c_void);
-pub type NodeApiNoenvFinalize =
-  unsafe extern "C" fn(finalize_data: *mut c_void, finalize_hint: *mut c_void);
-pub type NapiAddonRegisterFunc =
-  unsafe extern "C" fn(env: NapiEnv, exports: NapiValue) -> NapiValue;
+pub type NapiFinalize = unsafe extern "C" fn(env: NapiEnv, finalize_data: *mut c_void, finalize_hint: *mut c_void);
+pub type NodeApiNoenvFinalize = unsafe extern "C" fn(finalize_data: *mut c_void, finalize_hint: *mut c_void);
+pub type NapiAddonRegisterFunc = unsafe extern "C" fn(env: NapiEnv, exports: NapiValue) -> NapiValue;
 pub type NapiCleanupHook = unsafe extern "C" fn(arg: *mut c_void);
-pub type NapiAsyncCleanupHook =
-  unsafe extern "C" fn(handle: NapiAsyncCleanupHookHandle, data: *mut c_void);
+pub type NapiAsyncCleanupHook = unsafe extern "C" fn(handle: NapiAsyncCleanupHookHandle, data: *mut c_void);
 pub type NapiAsyncExecuteCallback = unsafe extern "C" fn(env: NapiEnv, data: *mut c_void);
-pub type NapiAsyncCompleteCallback =
-  unsafe extern "C" fn(env: NapiEnv, status: NapiStatus, data: *mut c_void);
-pub type NapiThreadsafeFunctionCallJs = unsafe extern "C" fn(
-  env: NapiEnv,
-  js_callback: NapiValue,
-  context: *mut c_void,
-  data: *mut c_void,
-);
+pub type NapiAsyncCompleteCallback = unsafe extern "C" fn(env: NapiEnv, status: NapiStatus, data: *mut c_void);
+pub type NapiThreadsafeFunctionCallJs =
+  unsafe extern "C" fn(env: NapiEnv, js_callback: NapiValue, context: *mut c_void, data: *mut c_void);
 
 #[repr(C)]
 #[derive(Clone, Copy)]

@@ -156,11 +156,11 @@ mod sql {
 
 #[allow(dead_code)]
 mod napi {
-  use std::cell::RefCell;
-  use std::rc::Rc;
   use deno_core::OpState;
   use deno_core::v8;
   use deno_error::JsErrorBox;
+  use std::cell::RefCell;
+  use std::rc::Rc;
 
   pub fn init_addon<'s>(
     scope: &mut v8::PinScope<'s, '_>,

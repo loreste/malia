@@ -56,12 +56,7 @@ unsafe fn create_error_impl(
   }
 }
 
-unsafe fn throw_error_impl(
-  env: NapiEnv,
-  kind: ErrorKind,
-  code: *const c_char,
-  msg: *const c_char,
-) -> NapiStatus {
+unsafe fn throw_error_impl(env: NapiEnv, kind: ErrorKind, code: *const c_char, msg: *const c_char) -> NapiStatus {
   unsafe {
     with_env(env, |inner, scope| {
       let msg_s = read_c_str(msg, NAPI_AUTO_LENGTH)?;
@@ -134,29 +129,17 @@ pub unsafe extern "C" fn napi_throw(env: NapiEnv, error: NapiValue) -> NapiStatu
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_throw_error(
-  env: NapiEnv,
-  code: *const c_char,
-  msg: *const c_char,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_throw_error(env: NapiEnv, code: *const c_char, msg: *const c_char) -> NapiStatus {
   unsafe { throw_error_impl(env, ErrorKind::Error, code, msg) }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_throw_type_error(
-  env: NapiEnv,
-  code: *const c_char,
-  msg: *const c_char,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_throw_type_error(env: NapiEnv, code: *const c_char, msg: *const c_char) -> NapiStatus {
   unsafe { throw_error_impl(env, ErrorKind::TypeError, code, msg) }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_throw_range_error(
-  env: NapiEnv,
-  code: *const c_char,
-  msg: *const c_char,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_throw_range_error(env: NapiEnv, code: *const c_char, msg: *const c_char) -> NapiStatus {
   unsafe { throw_error_impl(env, ErrorKind::RangeError, code, msg) }
 }
 
@@ -170,22 +153,12 @@ pub unsafe extern "C" fn node_api_throw_syntax_error(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_is_exception_pending(
-  env: NapiEnv,
-  result: *mut bool,
-) -> NapiStatus {
-  unsafe {
-    with_env_basic(env, |inner| {
-      write_out(result, inner.pending_exception.is_some())
-    })
-  }
+pub unsafe extern "C" fn napi_is_exception_pending(env: NapiEnv, result: *mut bool) -> NapiStatus {
+  unsafe { with_env_basic(env, |inner| write_out(result, inner.pending_exception.is_some())) }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_get_and_clear_last_exception(
-  env: NapiEnv,
-  result: *mut NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_get_and_clear_last_exception(env: NapiEnv, result: *mut NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |inner, scope| {
       let val = match inner.pending_exception.take() {
@@ -214,4 +187,3 @@ pub unsafe extern "C" fn napi_fatal_error(
 pub unsafe extern "C" fn napi_fatal_exception(env: NapiEnv, err: NapiValue) -> NapiStatus {
   unsafe { napi_throw(env, err) }
 }
-

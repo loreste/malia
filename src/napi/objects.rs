@@ -53,11 +53,7 @@ pub unsafe extern "C" fn node_api_create_object_with_properties(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn node_api_set_prototype(
-  env: NapiEnv,
-  object: NapiValue,
-  value: NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn node_api_set_prototype(env: NapiEnv, object: NapiValue, value: NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
       let obj = from_napi_object(scope, object)?;
@@ -96,11 +92,7 @@ pub unsafe extern "C" fn napi_create_array_with_length(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_get_array_length(
-  env: NapiEnv,
-  value: NapiValue,
-  result: *mut u32,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_get_array_length(env: NapiEnv, value: NapiValue, result: *mut u32) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, _scope| {
       let v = from_napi_value(value)?;
@@ -114,11 +106,7 @@ pub unsafe extern "C" fn napi_get_array_length(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_get_prototype(
-  env: NapiEnv,
-  object: NapiValue,
-  result: *mut NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_get_prototype(env: NapiEnv, object: NapiValue, result: *mut NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |_inner, scope| {
       let obj = from_napi_object(scope, object)?;
@@ -348,12 +336,7 @@ pub unsafe extern "C" fn napi_get_named_property(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_set_element(
-  env: NapiEnv,
-  object: NapiValue,
-  index: u32,
-  value: NapiValue,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_set_element(env: NapiEnv, object: NapiValue, index: u32, value: NapiValue) -> NapiStatus {
   unsafe {
     with_env(env, |inner, scope| {
       let obj = from_napi_object(scope, object)?;
@@ -426,9 +409,7 @@ pub(crate) unsafe fn define_property_on_object<'s>(
 ) -> Result<(), NapiStatus> {
   let key_name: v8::Local<'s, v8::Name> = if !prop.utf8name.is_null() {
     let s = unsafe { read_c_str(prop.utf8name, NAPI_AUTO_LENGTH)? };
-    v8::String::new(scope, &s)
-      .ok_or(NAPI_GENERIC_FAILURE)?
-      .into()
+    v8::String::new(scope, &s).ok_or(NAPI_GENERIC_FAILURE)?.into()
   } else if !prop.name.is_null() {
     let v = unsafe { from_napi_value(prop.name)? };
     v8::Local::<v8::Name>::try_from(v).map_err(|_| NAPI_NAME_EXPECTED)?
@@ -451,14 +432,8 @@ pub(crate) unsafe fn define_property_on_object<'s>(
       .transpose()?;
     let mut desc = match (getter, setter) {
       (Some(g), Some(s)) => v8::PropertyDescriptor::new_from_get_set(g.into(), s.into()),
-      (Some(g), None) => v8::PropertyDescriptor::new_from_get_set(
-        g.into(),
-        v8::undefined(scope).into(),
-      ),
-      (None, Some(s)) => v8::PropertyDescriptor::new_from_get_set(
-        v8::undefined(scope).into(),
-        s.into(),
-      ),
+      (Some(g), None) => v8::PropertyDescriptor::new_from_get_set(g.into(), v8::undefined(scope).into()),
+      (None, Some(s)) => v8::PropertyDescriptor::new_from_get_set(v8::undefined(scope).into(), s.into()),
       (None, None) => unreachable!(),
     };
     desc.set_enumerable(enumerable);
