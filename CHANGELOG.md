@@ -2,6 +2,26 @@
 
 All notable changes to Malia are documented here.
 
+## [0.2.0] - 2026-11-13
+
+### Added
+- **N-API native addon support**: full Node-API v1-v9 function table (149 extern C functions). Loads `.node` files via `dlopen`, bridges to V8 through deno_core's PinScope. Covers value creation, property access, function calls/callbacks, error handling, reference management, buffer operations, async work, and thread-safe functions. Tested with a C addon exercising the core surface.
+- **Rust-level HTTP response cache**: responses with `Cache-Control: public, max-age=N` are cached in the hyper thread. Cache hits skip the JS hop entirely (~0us vs ~100-200us). Opt-in via standard HTTP headers.
+- **TLS server support**: `tls.createServer({cert, key})` works via `op_tls_listen` with rustls. Async TLS handshake per connection.
+- **Local tarball install**: `malia install ./pkg.tgz` and `file:path` specifiers work. Nonexistent paths error instead of silent success.
+- **`jse` binary retired**: only `malia` ships now. `jse.*` JS globals remain as aliases.
+
+### Fixed
+- Cluster duplicate `online` events (guard on worker state)
+- Cache: oversized entries rejected instead of exceeding `maxSize`
+- Cache: `staleWhileRevalidate` triggers background refresh
+- HTTP bodiless methods (GET/HEAD/OPTIONS/DELETE) skip body collection
+
+### Changed
+- Performance claims in README based on independent benchmark results
+- Framework compatibility documented with specific tested vs untested features
+- `--wasm` compile described accurately as source packaging
+
 ## [0.1.9] - 2026-11-12
 
 ### Added

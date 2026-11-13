@@ -1,8 +1,8 @@
 [package]
 name = "malia"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2024"
-description = "Drop-in Node.js replacement built in Rust. 3x faster HTTP, built-in AI, hot reload, zero-config TypeScript."
+description = "JavaScript/TypeScript runtime built in Rust. Built-in npm, concurrency, caching, cron, security, AI, N-API native addons."
 repository = "https://github.com/loreste/malia"
 homepage = "https://github.com/loreste/malia"
 license = "MIT"

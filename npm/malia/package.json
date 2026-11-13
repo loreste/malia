@@ -1,6 +1,6 @@
 {
   "name": "malia",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Drop-in Node.js replacement built in Rust. 3x faster HTTP, built-in AI, hot reload, zero-config TypeScript.",
   "main": "./bin/malia.js",
   "bin": {
@@ -40,12 +40,12 @@
   },
   "homepage": "https://github.com/loreste/malia#readme",
   "optionalDependencies": {
-    "@malia/darwin-arm64": "0.1.9",
-    "@malia/darwin-x64": "0.1.9",
-    "@malia/linux-x64-gnu": "0.1.9",
-    "@malia/linux-x64-musl": "0.1.9",
-    "@malia/linux-arm64-gnu": "0.1.9",
-    "@malia/linux-arm64-musl": "0.1.9",
-    "@malia/win32-x64": "0.1.9"
+    "@malia/darwin-arm64": "0.2.0",
+    "@malia/darwin-x64": "0.2.0",
+    "@malia/linux-x64-gnu": "0.2.0",
+    "@malia/linux-x64-musl": "0.2.0",
+    "@malia/linux-arm64-gnu": "0.2.0",
+    "@malia/linux-arm64-musl": "0.2.0",
+    "@malia/win32-x64": "0.2.0"
   }
 }

@@ -30,12 +30,13 @@ still runs on V8, same as Node.
 the same V8 engine. Malia doesn't make your JS faster, it makes the
 surrounding infrastructure (startup, HTTP, workers) faster.
 
-**Native addons:** We can load `.node` files and verify they have
-the right init symbol, so try/catch fallback patterns work (Next.js
-SWC falls back to WASM, for example). But the N-API function table
-isn't wired up yet, so addons that actually create JS values from C
-won't work. That means `bcrypt`, `sharp`, `better-sqlite3`, etc. are
-still blocked. See [Limitations](#limitations) for details.
+**Native addons (N-API):** `.node` files load via `dlopen` with the
+full N-API function table (149 functions, Node-API v1 through v9).
+Addons that use `node-addon-api` or raw N-API can create values,
+access properties, call functions, handle errors, manage references,
+create buffers, and run async work. Tested with a C addon exercising
+the core surface. Some complex addons may still hit unimplemented
+edges -- file an issue if you find one.
 
 **Things you don't need to install separately:**
 
@@ -888,13 +889,11 @@ See the [Dockerfile](Dockerfile) in the repository root and
 
 ## Limitations
 
-- **Native addons:** We load `.node` files and check for the init
-  symbol, so frameworks that try native first and fall back to WASM
-  (like Next.js with SWC) work fine. But we haven't wired up the
-  N-API function table yet -- the part where C code calls back into
-  V8 to create strings, objects, etc. That's blocked on bridging
-  extern C to deno_core's scope management. Until then, packages
-  like `bcrypt`, `sharp`, and `better-sqlite3` won't load.
+- **Native addons:** N-API v1-v9 is implemented (149 functions).
+  Most addons using `node-addon-api` or raw N-API should work.
+  Complex addons that use less common N-API functions (e.g.
+  `napi_add_finalizer` edge cases, `napi_create_threadsafe_function`
+  with max queue size) may hit gaps. File an issue if you find one.
 - `Blob` contents are held in memory (same as Node).
 - Crypto: no encrypted (passphrase-protected) PEM import/export, RSA key
   generation only for 2048/3072/4096/8192 bits with exponent 65537, and
