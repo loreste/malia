@@ -1,6 +1,6 @@
 {
   "name": "@malia/win32-x64",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Windows x64 native binary for Malia runtime",
   "os": [
     "win32"

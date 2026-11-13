@@ -2,6 +2,11 @@
 
 All notable changes to Malia are documented here.
 
+## [0.2.1] - 2026-11-13
+
+### Fixed
+- **`res._implicitHeader()` hung the response** (since 0.1.7): it marked the response as started without sending the status and headers, so the next write was dropped and the request never completed. Next.js calls it before streaming every page, so Next.js apps timed out on every request. It now sends the status and headers, as in Node.
+
 ## [0.2.0] - 2026-11-13
 
 ### Added
