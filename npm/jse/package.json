@@ -1,6 +1,6 @@
 {
   "name": "jse",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Drop-in Node.js replacement built in Rust. 3x faster HTTP, built-in AI, hot reload, zero-config TypeScript.",
   "main": "./bin/jse.js",
   "bin": {

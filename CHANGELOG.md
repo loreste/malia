@@ -2,6 +2,11 @@
 
 All notable changes to Malia are documented here.
 
+## [0.2.2] - 2026-11-13
+
+### Fixed
+- **zlib streams crashed the process when destroyed during their final flush**: the flush closed the already-closed native stream and threw outside any handler. Next.js hit this when a browser navigated away while a compressed page was finishing. The stream is now closed exactly once.
+
 ## [0.2.1] - 2026-11-13
 
 ### Fixed
