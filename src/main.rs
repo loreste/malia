@@ -109,6 +109,15 @@ struct Cli {
   #[arg(long = "max-old-space-size", global = true)]
   max_old_space_size: Option<u64>,
 
+  /// Maximum CPU time per script execution in seconds. Terminates the isolate
+  /// when exceeded. Useful for running untrusted code.
+  #[arg(long = "max-cpu-time", global = true)]
+  max_cpu_time: Option<u64>,
+
+  /// Sandbox mode: deny-all permissions + heap limit (256 MB) + CPU limit (30s).
+  #[arg(long, global = true)]
+  sandbox: bool,
+
   #[command(subcommand)]
   command: Option<Command>,
 }
@@ -225,6 +234,9 @@ enum Command {
   Test {
     #[command(flatten)]
     permissions: PermissionArgs,
+    /// Re-run tests when files change.
+    #[arg(long)]
+    watch: bool,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
   },
@@ -1413,6 +1425,30 @@ pub fn run() -> anyhow::Result<()> {
     js_engine::ops::set_no_warnings(true);
   }
 
+  // --max-old-space-size, --max-cpu-time, --sandbox → V8 flags and resource limits
+  {
+    let heap_mb = if cli.sandbox && cli.max_old_space_size.is_none() {
+      Some(256)
+    } else {
+      cli.max_old_space_size
+    };
+    if let Some(mb) = heap_mb {
+      deno_core::v8::V8::set_flags_from_string(&format!("--max-old-space-size={mb}"));
+    }
+    let cpu_secs = if cli.sandbox && cli.max_cpu_time.is_none() {
+      Some(30)
+    } else {
+      cli.max_cpu_time
+    };
+    if let Some(secs) = cpu_secs {
+      js_engine::runtime::set_cpu_time_limit(secs);
+    }
+    if cli.sandbox {
+      // Sandbox = deny-all, overriding any other permission flags
+      js_engine::permissions::set_permissions(js_engine::permissions::Permissions::default());
+    }
+  }
+
   // --inspect / --inspect-brk
   if let Some(addr) = &cli.inspect_brk {
     let (host, port) = parse_inspect_addr(addr);
@@ -1682,7 +1718,11 @@ pub fn run() -> anyhow::Result<()> {
       run_with_watch(&tokio_rt, &entry_str, perms, &args)
     }
 
-    Some(Command::Test { permissions, args }) => {
+    Some(Command::Test {
+      permissions,
+      watch,
+      args,
+    }) => {
       if let Some((ref config_path, ref cfg)) = discovered_config {
         let base_dir = config_path.parent().unwrap_or(&current_dir);
         cfg.apply_env(base_dir);
@@ -1710,42 +1750,166 @@ pub fn run() -> anyhow::Result<()> {
         }
       }
 
-      // Check test file conventions
-      let test_candidates = [
-        "tests/index.ts",
-        "tests/index.js",
-        "test/index.ts",
-        "test/index.js",
-        "test.ts",
-        "test.js",
-      ];
-      for candidate in test_candidates {
-        let p = current_dir.join(candidate);
-        if p.is_file() {
-          let p_str = p.to_string_lossy().to_string();
-          let perms = if !permissions.is_empty() {
-            permissions.build()
-          } else if let Some((_, ref cfg)) = discovered_config {
-            cfg
-              .build_permissions()?
-              .unwrap_or_else(js_engine::permissions::Permissions::allow_all)
-          } else {
-            js_engine::permissions::Permissions::allow_all()
-          };
-          js_engine::permissions::set_permissions(perms);
-          js_engine::ops::set_argv(make_argv(&p_str, &args));
-          let result = tokio_rt.block_on(supervise(move || js_engine::runtime::run_file_blocking(&p_str)));
-          return match result {
-            Ok(()) => Ok(()),
-            Err(e) => {
-              eprintln!("error: {e:#}");
-              std::process::exit(1);
+      // Discover test files: glob patterns, then conventional locations.
+      let mut test_files: Vec<String> = Vec::new();
+
+      // If args contain explicit file paths or globs, use those
+      let explicit: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+      if !explicit.is_empty() {
+        for pattern in explicit {
+          if pattern.contains('*') || pattern.contains('?') {
+            // Glob pattern
+            let full = if std::path::Path::new(pattern).is_absolute() {
+              pattern.to_string()
+            } else {
+              format!("{}/{}", current_dir.display(), pattern)
+            };
+            if let Ok(entries) = glob::glob(&full) {
+              for entry in entries.flatten() {
+                test_files.push(entry.to_string_lossy().into_owned());
+              }
             }
-          };
+          } else {
+            let p = current_dir.join(pattern);
+            if p.is_file() {
+              test_files.push(p.to_string_lossy().into_owned());
+            }
+          }
         }
       }
-      eprintln!("error: No \"test\" script found in jse.json and no test file found.");
-      std::process::exit(1);
+
+      // Fall back to glob discovery of common test patterns
+      if test_files.is_empty() {
+        let patterns = [
+          "**/*.test.ts",
+          "**/*.test.js",
+          "**/*.test.mjs",
+          "**/*.spec.ts",
+          "**/*.spec.js",
+          "**/*.spec.mjs",
+          "tests/**/*.ts",
+          "tests/**/*.js",
+          "test/**/*.ts",
+          "test/**/*.js",
+        ];
+        for pattern in patterns {
+          let full = format!("{}/{}", current_dir.display(), pattern);
+          if let Ok(entries) = glob::glob(&full) {
+            for entry in entries.flatten() {
+              let s = entry.to_string_lossy().into_owned();
+              // Skip node_modules
+              if !s.contains("node_modules") && !test_files.contains(&s) {
+                test_files.push(s);
+              }
+            }
+          }
+        }
+      }
+
+      // Last resort: conventional single-file locations
+      if test_files.is_empty() {
+        let candidates = [
+          "tests/index.ts",
+          "tests/index.js",
+          "test/index.ts",
+          "test/index.js",
+          "test.ts",
+          "test.js",
+        ];
+        for c in candidates {
+          let p = current_dir.join(c);
+          if p.is_file() {
+            test_files.push(p.to_string_lossy().into_owned());
+            break;
+          }
+        }
+      }
+
+      if test_files.is_empty() {
+        eprintln!("error: No test files found. Place tests in **/*.test.ts, **/*.spec.ts, or tests/ directory.");
+        std::process::exit(1);
+      }
+
+      test_files.sort();
+
+      let perms = if !permissions.is_empty() {
+        permissions.build()
+      } else if let Some((_, ref cfg)) = discovered_config {
+        cfg
+          .build_permissions()?
+          .unwrap_or_else(js_engine::permissions::Permissions::allow_all)
+      } else {
+        js_engine::permissions::Permissions::allow_all()
+      };
+      js_engine::permissions::set_permissions(perms);
+
+      // Build a wrapper script that imports all test files
+      let imports: String = test_files
+        .iter()
+        .map(|f| format!("import {:?};", f))
+        .collect::<Vec<_>>()
+        .join("\n");
+      let wrapper = format!("// malia test runner\n{imports}\n");
+
+      if watch {
+        // Watch mode: re-run on file changes
+        let _dirs: Vec<String> = {
+          let mut set = std::collections::HashSet::new();
+          for f in &test_files {
+            if let Some(parent) = std::path::Path::new(f).parent() {
+              set.insert(parent.to_string_lossy().into_owned());
+            }
+          }
+          // Also watch src/ if it exists
+          let src = current_dir.join("src");
+          if src.is_dir() {
+            set.insert(src.to_string_lossy().into_owned());
+          }
+          set.into_iter().collect()
+        };
+        println!("Watching {} test files for changes...", test_files.len());
+        loop {
+          let wrapper_clone = wrapper.clone();
+          let result = tokio_rt.block_on(supervise(move || js_engine::runtime::run_code_blocking(&wrapper_clone)));
+          if let Err(e) = result {
+            eprintln!("error: {e:#}");
+          }
+          println!("\n--- Waiting for file changes (Ctrl+C to exit) ---\n");
+          // Simple poll-based watch: check mtimes every 500ms
+          let start_times: std::collections::HashMap<String, std::time::SystemTime> = test_files
+            .iter()
+            .filter_map(|f| {
+              std::fs::metadata(f)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| (f.clone(), t))
+            })
+            .collect();
+          loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let changed = test_files.iter().any(|f| {
+              std::fs::metadata(f)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .is_some_and(|t| start_times.get(f).is_none_or(|&prev| t != prev))
+            });
+            if changed {
+              println!("\n--- File changed, re-running tests ---\n");
+              break;
+            }
+          }
+        }
+      } else {
+        js_engine::ops::set_argv(make_argv("malia test", &args));
+        let result = tokio_rt.block_on(supervise(move || js_engine::runtime::run_code_blocking(&wrapper)));
+        match result {
+          Ok(()) => Ok(()),
+          Err(e) => {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+          }
+        }
+      }
     }
 
     Some(Command::Install {

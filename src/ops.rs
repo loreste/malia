@@ -2662,6 +2662,7 @@ deno_core::extension!(
     "28_pubsub.js",
     "29_cache.js",
     "30_formats.js",
+    "31_shell.js",
   ],
 
   options = {

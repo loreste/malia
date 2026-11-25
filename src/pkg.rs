@@ -358,6 +358,7 @@ impl Resolver {
 
 // ── .npmrc auth ─────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 struct NpmrcAuth {
   default_registry: String,
   /// scope -> registry URL
@@ -449,6 +450,51 @@ pub fn install_all(project_dir: &Path) -> Result<(), String> {
   let total = deps.len();
   let mut installed = 0usize;
   let mut failed = Vec::new();
+
+  // Parallel metadata prefetch: download all registry metadata concurrently
+  // before the sequential resolve loop. This eliminates the HTTP waterfall.
+  {
+    let prefetch_names: Vec<String> = deps.iter().map(|(n, _)| n.clone()).collect();
+    let registry = resolver.registry.clone();
+    let auth = resolver.auth.clone();
+    let handles: Vec<_> = prefetch_names
+      .into_iter()
+      .map(|name| {
+        let registry = registry.clone();
+        let auth = auth.clone();
+        std::thread::spawn(move || {
+          let reg = if let Some(scope) = name.strip_prefix('@').and_then(|s| s.split('/').next())
+            && let Some(r) = auth.scoped_registries.get(scope)
+          {
+            r.clone()
+          } else {
+            registry
+          };
+          let url = format!("{}/{}", reg.trim_end_matches('/'), name);
+          let token = auth
+            .tokens
+            .iter()
+            .find(|(h, _)| url.contains(h.as_str()))
+            .map(|(_, t)| t.clone());
+          match http_get(&url, token.as_deref()) {
+            Ok(body) => {
+              if let Ok(meta) = serde_json::from_str::<PackageMeta>(&body) {
+                Some((name, meta))
+              } else {
+                None
+              }
+            }
+            Err(_) => None,
+          }
+        })
+      })
+      .collect();
+    for handle in handles {
+      if let Ok(Some((name, meta))) = handle.join() {
+        resolver.meta_cache.insert(name, meta);
+      }
+    }
+  }
 
   for (name, version_spec) in &deps {
     match resolver.resolve(&nm, name, version_spec, false) {

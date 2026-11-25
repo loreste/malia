@@ -121,6 +121,7 @@ function scheduleDrain() {
         todo: (message = "") => {
           skipped = message;
         },
+        snapshot: (value, snapName) => snapshot(value, snapName || name),
       };
       try {
         if (typeof fn === "function") await fn(context);
@@ -211,6 +212,65 @@ function createAssert() {
   return assert;
 }
 
+// Snapshot testing: t.snapshot(value, name?) compares against stored snapshots.
+// Snapshots are stored in <testfile>.snapshot next to the test file.
+// Run with UPDATE_SNAPSHOTS=1 to update.
+const snapshotCache = new Map();
+
+function getSnapshotFile() {
+  const argv1 = globalThis.process?.argv?.[1];
+  if (!argv1) return null;
+  return argv1 + ".snapshot";
+}
+
+function loadSnapshots() {
+  const file = getSnapshotFile();
+  if (!file || snapshotCache.has(file)) return snapshotCache.get(file) || {};
+  try {
+    const data = JSON.parse(Deno.core.ops.op_read_text_file_sync(file));
+    snapshotCache.set(file, data);
+    return data;
+  } catch {
+    snapshotCache.set(file, {});
+    return {};
+  }
+}
+
+function saveSnapshots(data) {
+  const file = getSnapshotFile();
+  if (!file) return;
+  try {
+    Deno.core.ops.op_write_text_file_sync(file, JSON.stringify(data, null, 2));
+  } catch { /* ignore write errors */ }
+}
+
+function snapshot(value, name) {
+  const key = name || `snapshot_${count + 1}`;
+  const serialized = JSON.stringify(value, null, 2);
+  const snaps = loadSnapshots();
+
+  if (globalThis.process?.env?.UPDATE_SNAPSHOTS === "1") {
+    snaps[key] = serialized;
+    saveSnapshots(snaps);
+    return;
+  }
+
+  if (!(key in snaps)) {
+    // First run: store the snapshot
+    snaps[key] = serialized;
+    saveSnapshots(snaps);
+    return;
+  }
+
+  if (snaps[key] !== serialized) {
+    throw new Error(
+      `Snapshot "${key}" mismatch:\n` +
+      `Expected:\n${snaps[key]}\n` +
+      `Received:\n${serialized}`
+    );
+  }
+}
+
 test.test = test;
 test.it = it;
 test.describe = describe;
@@ -220,6 +280,7 @@ test.after = after;
 test.beforeEach = beforeEach;
 test.afterEach = afterEach;
 test.mock = mock;
+test.snapshot = snapshot;
 
-export { mock };
+export { mock, snapshot };
 export default test;
