@@ -1,3 +1,5 @@
+**English** | [中文](README.zh-CN.md)
+
 # Malia
 
 JavaScript and TypeScript runtime built in Rust. Same V8 engine as Node,

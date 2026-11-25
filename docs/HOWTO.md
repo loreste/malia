@@ -1,3 +1,5 @@
+**English** | [中文](HOWTO.zh-CN.md)
+
 # Malia How-To Guide
 
 Examples for common tasks. `malia` and `jse` are the same binary, and the
