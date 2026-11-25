@@ -32,6 +32,8 @@ pub struct Permissions {
   pub read: Allow<PathBuf>,
   pub write: Allow<PathBuf>,
   pub net: Allow<String>,
+  /// Deny list checked before allow — blocks specific hosts/ports even under --allow-all.
+  pub deny_net: Vec<String>,
   pub run: Allow<String>,
   pub env: bool,
 }
@@ -128,22 +130,38 @@ pub fn check_write(path: &str) -> Result<(), JsErrorBox> {
   check_path(&p.write, p.allow_all, path, "write", "--allow-write")
 }
 
-pub fn check_net(host: &str) -> Result<(), JsErrorBox> {
-  let p = permissions();
-  if p.allow_all {
-    return Ok(());
-  }
-  // Strip a trailing :port, leaving IPv6 literals ("[::1]") intact.
-  let bare = host
+/// Split a host string into (hostname_without_port, optional_port).
+/// IPv6 literals like "[::1]:8080" are handled correctly.
+fn split_host_port(host: &str) -> (&str, Option<&str>) {
+  host
     .rsplit_once(':')
     .filter(|(h, port)| {
       !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && (!h.contains(':') || h.ends_with(']'))
     })
-    .map_or(host, |(h, _)| h);
-  let matches = |entry: &str| host == entry || bare == entry;
+    .map_or((host, None), |(h, p)| (h, Some(p)))
+}
+
+/// Check whether `entry` from an allow/deny list matches `host`.
+/// Supports: exact match, host-only match (ignoring port), port-level match.
+fn net_entry_matches(entry: &str, host: &str, bare: &str) -> bool {
+  host == entry || bare == entry
+}
+
+pub fn check_net(host: &str) -> Result<(), JsErrorBox> {
+  let p = permissions();
+  let (bare, _port) = split_host_port(host);
+
+  // Deny list is checked first — even under --allow-all.
+  if !p.deny_net.is_empty() && p.deny_net.iter().any(|d| net_entry_matches(d, host, bare)) {
+    return Err(denied("net", &format!("\"{host}\""), "(blocked by --deny-net)"));
+  }
+
+  if p.allow_all {
+    return Ok(());
+  }
   match &p.net {
     Allow::All => Ok(()),
-    Allow::Only(hosts) if hosts.iter().any(|h| matches(h)) => Ok(()),
+    Allow::Only(hosts) if hosts.iter().any(|h| net_entry_matches(h, host, bare)) => Ok(()),
     _ => Err(denied("net", &format!("\"{host}\""), "--allow-net")),
   }
 }
@@ -226,6 +244,7 @@ pub enum PermFlag {
   Read(Allow<PathBuf>),
   Write(Allow<PathBuf>),
   Net(Allow<String>),
+  DenyNet(Vec<String>),
   Run(Allow<String>),
   Env,
   All,
@@ -250,6 +269,12 @@ pub fn parse_flag(flag: &str, value: Option<&str>) -> Option<PermFlag> {
     "allow-read" => Some(PermFlag::Read(allow_list::<String>(value).map_paths())),
     "allow-write" => Some(PermFlag::Write(allow_list::<String>(value).map_paths())),
     "allow-net" => Some(PermFlag::Net(allow_list(value))),
+    "deny-net" => {
+      let entries = value
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+      Some(PermFlag::DenyNet(entries))
+    }
     "allow-run" => Some(PermFlag::Run(allow_list(value))),
     "allow-env" => Some(PermFlag::Env),
     "allow-all" => Some(PermFlag::All),
@@ -275,6 +300,7 @@ pub fn from_flags(flags: Vec<PermFlag>) -> Permissions {
       PermFlag::Read(v) => p.read = v,
       PermFlag::Write(v) => p.write = v,
       PermFlag::Net(v) => p.net = v,
+      PermFlag::DenyNet(v) => p.deny_net = v,
       PermFlag::Run(v) => p.run = v,
       PermFlag::Env => p.env = true,
       PermFlag::All => p.allow_all = true,

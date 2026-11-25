@@ -204,7 +204,7 @@ function ServerResponse(reqOrListenerId, reqId) {
 }
 Object.setPrototypeOf(ServerResponse.prototype, EventEmitter.prototype);
 // Writable-stream state as Node's OutgoingMessage exposes it.
-const RESPONSE_HIGH_WATER_MARK = 16 * 1024;
+const RESPONSE_HIGH_WATER_MARK = 64 * 1024;
 Object.defineProperties(ServerResponse.prototype, {
   destroyed: { get() { return this._destroyed === true; }, configurable: true },
   writable: { get() { return !this._ended && this._destroyed !== true; }, configurable: true },

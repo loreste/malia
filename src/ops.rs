@@ -2472,6 +2472,12 @@ deno_core::extension!(
     op_child_spawn_sync,
     op_readdir_sync,
     op_readdir,
+    op_glob_sync,
+    op_glob,
+    op_yaml_parse,
+    op_yaml_stringify,
+    op_toml_parse,
+    op_toml_stringify,
     op_mkdir_sync,
     op_mkdir,
     op_remove_sync,
@@ -2655,6 +2661,7 @@ deno_core::extension!(
     "27_cron.js",
     "28_pubsub.js",
     "29_cache.js",
+    "30_formats.js",
   ],
 
   options = {

@@ -1,6 +1,6 @@
 // node:module — createRequire with support for builtins, JSON, Wasm, CJS, plus Module class.
 import { fileURLToPath } from "node:url";
-import { __extensions } from "jse:internal/cjs";
+import { __extensions, __esmToCjs } from "jse:internal/cjs";
 
 import * as assert from "node:assert";
 import * as assertStrict from "node:assert/strict";
@@ -248,14 +248,36 @@ export function createRequire(filename) {
       return inst.exports;
     }
 
-    // CommonJS / JavaScript execution
+    // CommonJS / JavaScript execution — with require(esm) fallback.
     const code = Deno.core.ops.op_read_text_file_sync(resolved);
     const module = { exports: {}, id: resolved, filename: resolved, loaded: false };
     cache[resolved] = module;
     const dirname = path.dirname(resolved);
     const childRequire = createRequire(resolved);
-    const fn = new Function("exports", "require", "module", "__filename", "__dirname", code);
-    fn(module.exports, childRequire, module, resolved, dirname);
+    try {
+      const fn = new Function("exports", "require", "module", "__filename", "__dirname", code);
+      fn(module.exports, childRequire, module, resolved, dirname);
+    } catch (e) {
+      // require(esm): ESM syntax in a require()'d file causes SyntaxError.
+      // Transform common ESM patterns to CJS and retry. Covers the vast
+      // majority of real-world require(esm) usage (Node v23 parity).
+      if (e instanceof SyntaxError && /\b(import|export)\b/.test(e.message)) {
+        delete cache[resolved];
+        const cjs = __esmToCjs(code);
+        try {
+          const fn2 = new Function("exports", "require", "module", "__filename", "__dirname", cjs);
+          const mod2 = { exports: {}, id: resolved, filename: resolved, loaded: false };
+          cache[resolved] = mod2;
+          fn2(mod2.exports, childRequire, mod2, resolved, dirname);
+          mod2.loaded = true;
+          return mod2.exports;
+        } catch {
+          delete cache[resolved];
+          throw e;
+        }
+      }
+      throw e;
+    }
     module.loaded = true;
     return module.exports;
   }

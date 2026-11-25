@@ -121,9 +121,12 @@ pub struct PermissionArgs {
   /// Allow filesystem writes [optionally restricted to =path1,path2].
   #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "*")]
   allow_write: Option<String>,
-  /// Allow network access (fetch/serve) [optionally restricted to =host1,host2].
+  /// Allow network access (fetch/serve) [optionally restricted to =host1,host2[:port]].
   #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "*")]
   allow_net: Option<String>,
+  /// Deny network access to specific hosts (e.g. =169.254.169.254). Checked before allow.
+  #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "*")]
+  deny_net: Option<String>,
   /// Allow spawning subprocesses [optionally restricted to =bin1,bin2].
   #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "*")]
   allow_run: Option<String>,
@@ -140,6 +143,7 @@ impl PermissionArgs {
     self.allow_read.is_none()
       && self.allow_write.is_none()
       && self.allow_net.is_none()
+      && self.deny_net.is_none()
       && self.allow_run.is_none()
       && !self.allow_env
       && !self.allow_all
@@ -159,6 +163,7 @@ impl PermissionArgs {
     push("allow-read", &self.allow_read);
     push("allow-write", &self.allow_write);
     push("allow-net", &self.allow_net);
+    push("deny-net", &self.deny_net);
     push("allow-run", &self.allow_run);
     if self.allow_env {
       flags.push(PermFlag::Env);
@@ -2167,6 +2172,7 @@ pub fn run() -> anyhow::Result<()> {
         read: js_engine::permissions::Allow::All,
         write: js_engine::permissions::Allow::Deny,
         net: js_engine::permissions::Allow::All,
+        deny_net: Vec::new(),
         run: js_engine::permissions::Allow::Deny,
         env: true,
         allow_all: false,
