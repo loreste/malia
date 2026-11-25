@@ -271,7 +271,12 @@ pub fn parse_flag(flag: &str, value: Option<&str>) -> Option<PermFlag> {
     "allow-net" => Some(PermFlag::Net(allow_list(value))),
     "deny-net" => {
       let entries = value
-        .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .map(|v| {
+          v.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+        })
         .unwrap_or_default();
       Some(PermFlag::DenyNet(entries))
     }
