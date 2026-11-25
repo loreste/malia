@@ -217,12 +217,10 @@ fn glob_at(pattern: &str, cwd: &str) -> Result<Vec<String>, JsErrorBox> {
   let mut results = Vec::new();
   let entries = glob::glob(&full_pattern)
     .map_err(|e| JsErrorBox::generic(format!("Invalid glob pattern: {e}")))?;
-  for entry in entries {
-    if let Ok(path) = entry {
-      let s = path.to_string_lossy().into_owned();
-      if crate::permissions::check_read(&s).is_ok() {
-        results.push(s);
-      }
+  for path in entries.flatten() {
+    let s = path.to_string_lossy().into_owned();
+    if crate::permissions::check_read(&s).is_ok() {
+      results.push(s);
     }
   }
   results.sort();
