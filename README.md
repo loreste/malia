@@ -54,6 +54,11 @@ edges -- file an issue if you find one.
 - CPU profiling (`malia profile`)
 - Database migrations (`malia migrate`)
 - Encrypted env files (`malia env-encrypt`)
+- Redis client (`malia.redis`) — no ioredis needed
+- S3 client (`malia.s3`) — no @aws-sdk needed
+- Shell scripting (`malia.$`) — tagged template, replaces zx/execa
+- YAML/TOML parsing (`malia.yaml`, `malia.toml`)
+- Bundler (`malia bundle`), formatter (`malia fmt`), linter (`malia lint`)
 - SQLite, KV store, task queue, router, tracing, structured logging
 - TypeScript (transpiled at load, cached on disk)
 
@@ -196,6 +201,10 @@ malia run app.wasm
 | `malia profile <file>` | CPU profiling with V8 inspector, top-functions report |
 | `malia migrate [create\|up\|down\|status]` | Database migration runner with SQLite-tracked state |
 | `malia env-encrypt [encrypt\|decrypt]` | AES-256-GCM encryption for `.env` files |
+| `malia fmt [files]` | Format source files with dprint (downloaded on first use). `--check` for CI |
+| `malia lint [files]` | Lint source files with oxlint (downloaded on first use). `--fix` for auto-fix |
+| `malia bundle <file>` | Bundle ES modules into a single file. Resolves relative imports |
+| `malia verify` | Verify the runtime binary integrity against published SHA-256 checksums |
 | `malia <script>` | Run a script defined in the config file or `package.json` |
 
 ### Package management
@@ -443,6 +452,11 @@ start = "jse start"
 | `jse.cors` | CORS middleware with preflight support, configurable origin/methods/credentials |
 | `malia.pubsub` | In-process pub/sub: `subscribe(pattern, fn)`, `publish(topic, msg)`, pattern matching (`events:*`), message history for late joiners, `once()` promises, async iterators |
 | `malia.cache` | LRU cache with TTL, size limits, `getOrSet(key, fn)` cache-aside with automatic dedup, `cache.memoize(fn)`, bulk ops, hit/miss stats, `onEvict` callbacks. Replaces `lru-cache` (100M/week) |
+| `malia.redis(url?)` | Built-in Redis client: GET, SET, DEL, MGET, MSET, INCR, EXPIRE, TTL, lists, hashes, sets, pub/sub, pipelines. Connection pooling. Replaces `ioredis` (13M/week) |
+| `malia.s3(options)` | Built-in S3 client: GET, PUT, DELETE, presigned URLs. SigV4 signing. Works with AWS S3, R2, MinIO. Replaces `@aws-sdk/client-s3` |
+| `malia.$\`cmd\`` | Shell scripting: tagged template literal with interpolation, escaping, piping. `$.nothrow` for non-throwing variant. Replaces `zx`, `execa`, `shelljs` |
+| `malia.yaml` | YAML parse/stringify. Replaces `js-yaml` (70M/week) |
+| `malia.toml` | TOML parse/stringify. Built-in, no packages needed |
 
 Web globals: `self`, `window`, `global`, `navigator`, `DOMException`,
 `btoa`, `atob`, `crypto.getRandomValues`, `crypto.randomUUID`,
@@ -802,6 +816,13 @@ common the need is.
 | `snyk` / `npm audit` | - | `malia scan` + `malia secrets` + `malia audit` |
 | `dotenv-vault` | 1M | `malia env-encrypt` |
 | `knex migrate` | 2M | `malia migrate` |
+| `ioredis` / `redis` | 13M | `malia.redis()` |
+| `@aws-sdk/client-s3` | 10M | `malia.s3({ bucket })` |
+| `zx` / `execa` / `shelljs` | 30M+ | ``malia.$`cmd` `` |
+| `js-yaml` | 70M | `malia.yaml.parse()` / `stringify()` |
+| `prettier` | 60M | `malia fmt` |
+| `eslint` | 50M | `malia lint` |
+| `esbuild` / `webpack` | 40M+ | `malia bundle` |
 
 ## Node builtins
 
@@ -819,7 +840,7 @@ common the need is.
 | `dns`, `dns/promises` | `lookup`, `lookupService`, `resolve4`, `resolve6`, `resolveTxt`, `resolveSrv`, `resolveMx`, `resolveNs`, `resolveCname`, `resolvePtr`, `reverse` |
 | `domain` | `create`, `Domain` |
 | `events` | `EventEmitter`, `once`, `on` (async iterator with `AbortSignal`), `getEventListeners`, `removeAllListeners` (emits `removeListener`), `prependListener`, `prependOnceListener`, `defaultMaxListeners`, `captureRejections`, `errorMonitor`, `setMaxListeners` (static), `addAbortListener` |
-| `fs`, `fs/promises` | Sync, callback, and promise APIs with Node's error shape (`code`, `errno`, `syscall`, `path`): read/write with `flag`, `mode`, and encodings, `stat` (`throwIfNoEntry`), `readdir` (`recursive`, `withFileTypes`), `mkdir`, `rm`, `cp`, `copyFile` (`COPYFILE_EXCL`), `rename`, `link`, `symlink`, `utimes`, `opendir`, file descriptors, `FileHandle`, streams, `watch` (native inotify/kqueue/FSEvents via notify, falls back to polling), `watchFile` |
+| `fs`, `fs/promises` | Sync, callback, and promise APIs with Node's error shape (`code`, `errno`, `syscall`, `path`): read/write with `flag`, `mode`, and encodings, `stat` (`throwIfNoEntry`), `readdir` (`recursive`, `withFileTypes`), `mkdir`, `rm`, `cp`, `copyFile` (`COPYFILE_EXCL`), `rename`, `link`, `symlink`, `utimes`, `opendir`, file descriptors, `FileHandle`, streams, `watch` (native inotify/kqueue/FSEvents via notify, falls back to polling), `watchFile`, `glob`/`globSync` (Node 22) |
 | `http`, `https` | `createServer` (with options), `request`, `get`, `IncomingMessage` (async iterable body, `close` event), `ServerResponse` (`_implicitHeader`, `headersSent`, CRLF-validated `setHeader`), `Agent` (`keepAlive` connection pooling, `maxFreeSockets`), `globalAgent`, `STATUS_CODES`, `METHODS`, `validateHeaderName`/`validateHeaderValue`. The server shares the hyper engine with `jse.serve`; client responses are `Readable` streams; request bodies > `maxBodyBytes` stream through a channel |
 | `http2` | Server and client; ALPN `h2` and cleartext `h2c` with prior knowledge |
 | `inspector` | `Session` (connects to the running V8 inspector over WebSocket), `open`, `close`, `url`. See [Debugging](#debugging) |

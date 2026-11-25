@@ -2,6 +2,43 @@
 
 All notable changes to Malia are documented here.
 
+## [0.3.0] - 2026-11-25
+
+### Added
+
+#### Speed
+- **Stream HWM bumped to 64KB** (from 16KB): matches Node v22, free throughput win for file I/O and HTTP streaming.
+- **Faster npm install**: parallel metadata prefetch downloads all registry metadata concurrently before resolving, eliminating the HTTP waterfall for large dependency trees.
+
+#### Security
+- **`--deny-net` flag**: block specific hosts even under `--allow-all`. Port-level granularity. Protects against IMDS attacks (`--deny-net=169.254.169.254`).
+- **`--sandbox` mode**: combines deny-all permissions + 256 MB heap limit + 30s CPU limit. For running untrusted code.
+- **`--max-cpu-time`**: watchdog thread terminates the isolate after the specified seconds. Prevents infinite loops in plugins/user scripts.
+- **`--max-old-space-size` wired to V8**: was parsed but never applied. Now correctly limits V8 heap.
+- **SHA-512 lockfile integrity**: lockfile always includes SHA-512 integrity hashes (computed if registry doesn't provide them). Upgraded from SHA-1 only.
+
+#### Built-in Clients
+- **`malia.redis(url?)`**: built-in Redis client with RESP2 protocol, connection pooling, pipelines, 30+ commands (GET, SET, DEL, MGET, MSET, INCR, EXPIRE, TTL, lists, hashes, sets, pub/sub). Eliminates `ioredis` (13M weekly).
+- **`malia.s3(options)`**: built-in S3 client with SigV4 signing. GET, PUT, DELETE, presigned URLs. Works with AWS S3, Cloudflare R2, MinIO, DigitalOcean Spaces. Eliminates `@aws-sdk/client-s3`.
+
+#### Developer Tools
+- **`malia.$\`cmd\``**: shell scripting via tagged template literals. Interpolation with automatic escaping, `$.nothrow` for non-throwing variant. Replaces `zx`, `execa`, `shelljs`.
+- **`malia.yaml` / `malia.toml`**: built-in YAML and TOML parse/stringify. Eliminates `js-yaml` (70M weekly).
+- **`fs.glob()` / `fs.globSync()`**: native glob matching via Rust `glob` crate (Node v22 parity). Eliminates `fast-glob` (100M+ weekly).
+- **`malia fmt`**: downloads and runs dprint on first use. `--check` for CI. Eliminates `prettier`.
+- **`malia lint`**: downloads and runs oxlint on first use. `--fix` for auto-fix. 50-100x faster than eslint.
+- **`malia bundle`**: basic ESM bundler. Resolves relative imports, strips import/export, concatenates into a single IIFE.
+- **`malia verify`**: checks SHA-256 of the running binary against published release checksums.
+- **`malia compile --target`**: cross-compilation by downloading the target platform's binary from GitHub releases. Supports linux-x64, linux-arm64, darwin-x64, darwin-arm64, win-x64.
+
+#### Node Compatibility
+- **`require(esm)` support**: CJS files can now `require()` ESM modules (Node v23 parity). Lightweight ESM-to-CJS transform on SyntaxError fallback.
+
+#### Test Runner
+- **Glob-based test discovery**: automatically finds `**/*.test.ts`, `**/*.spec.ts`, `tests/**/*.ts`.
+- **`--watch` flag**: re-runs tests when files change.
+- **`t.snapshot(value)`**: snapshot testing with auto-create on first run. `UPDATE_SNAPSHOTS=1` to update.
+
 ## [0.2.2] - 2026-11-13
 
 ### Fixed

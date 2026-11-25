@@ -46,6 +46,11 @@ Malia 不会让你的 JS 更快，它让周围的基础设施（启动、HTTP、
 - CPU 性能分析（`malia profile`）
 - 数据库迁移（`malia migrate`）
 - 加密环境变量文件（`malia env-encrypt`）
+- Redis 客户端（`malia.redis`）——无需 ioredis
+- S3 客户端（`malia.s3`）——无需 @aws-sdk
+- Shell 脚本（`malia.$`）——标记模板，替代 zx/execa
+- YAML/TOML 解析（`malia.yaml`、`malia.toml`）
+- 打包器（`malia bundle`）、格式化器（`malia fmt`）、代码检查（`malia lint`）
 - SQLite、KV 存储、任务队列、路由器、追踪、结构化日志
 - TypeScript（加载时转译，磁盘缓存）
 
@@ -185,6 +190,10 @@ malia run app.wasm
 | `malia profile <file>` | 使用 V8 inspector 进行 CPU 性能分析，生成热点函数报告 |
 | `malia migrate [create\|up\|down\|status]` | 数据库迁移运行器，使用 SQLite 追踪状态 |
 | `malia env-encrypt [encrypt\|decrypt]` | 使用 AES-256-GCM 加密 `.env` 文件 |
+| `malia fmt [files]` | 使用 dprint 格式化源代码文件（首次使用时自动下载）。`--check` 用于 CI |
+| `malia lint [files]` | 使用 oxlint 检查源代码文件（首次使用时自动下载）。`--fix` 自动修复 |
+| `malia bundle <file>` | 将 ES 模块打包为单个文件。解析相对导入 |
+| `malia verify` | 验证运行时二进制文件的完整性，对比已发布的 SHA-256 校验和 |
 | `malia <script>` | 运行配置文件或 `package.json` 中定义的脚本 |
 
 ### 包管理
@@ -419,6 +428,11 @@ start = "jse start"
 | `jse.cors` | CORS 中间件，支持预检请求、可配置来源/方法/凭据 |
 | `malia.pubsub` | 进程内发布/订阅：`subscribe(pattern, fn)`、`publish(topic, msg)`、模式匹配（`events:*`）、为后加入者提供消息历史、`once()` Promise、异步迭代器 |
 | `malia.cache` | 带 TTL 的 LRU 缓存、大小限制、`getOrSet(key, fn)` 缓存旁路模式（自动去重）、`cache.memoize(fn)`、批量操作、命中/未命中统计、`onEvict` 回调。替代 `lru-cache`（每周 1 亿下载） |
+| `malia.redis(url?)` | 内置 Redis 客户端：GET、SET、DEL、MGET、MSET、INCR、EXPIRE、TTL、列表、哈希、集合、发布/订阅、管道。连接池。替代 `ioredis`（每周 1300 万下载） |
+| `malia.s3(options)` | 内置 S3 客户端：GET、PUT、DELETE、预签名 URL。SigV4 签名。兼容 AWS S3、R2、MinIO。替代 `@aws-sdk/client-s3` |
+| `malia.$\`cmd\`` | Shell 脚本：标记模板字面量，支持插值、转义、管道。`$.nothrow` 为不抛出异常的变体。替代 `zx`、`execa`、`shelljs` |
+| `malia.yaml` | YAML 解析/序列化。替代 `js-yaml`（每周 7000 万下载） |
+| `malia.toml` | TOML 解析/序列化。内置，无需额外包 |
 
 Web 全局变量：`self`、`window`、`global`、`navigator`、`DOMException`、
 `btoa`、`atob`、`crypto.getRandomValues`、`crypto.randomUUID`、
@@ -767,6 +781,13 @@ const results = await Promise.all(
 | `snyk` / `npm audit` | - | `malia scan` + `malia secrets` + `malia audit` |
 | `dotenv-vault` | 100 万 | `malia env-encrypt` |
 | `knex migrate` | 200 万 | `malia migrate` |
+| `ioredis` / `redis` | 1300 万 | `malia.redis()` |
+| `@aws-sdk/client-s3` | 1000 万 | `malia.s3({ bucket })` |
+| `zx` / `execa` / `shelljs` | 3000 万+ | ``malia.$`cmd` `` |
+| `js-yaml` | 7000 万 | `malia.yaml.parse()` / `stringify()` |
+| `prettier` | 6000 万 | `malia fmt` |
+| `eslint` | 5000 万 | `malia lint` |
+| `esbuild` / `webpack` | 4000 万+ | `malia bundle` |
 
 ## Node 内置模块
 
@@ -784,7 +805,7 @@ const results = await Promise.all(
 | `dns`、`dns/promises` | `lookup`、`lookupService`、`resolve4`、`resolve6`、`resolveTxt`、`resolveSrv`、`resolveMx`、`resolveNs`、`resolveCname`、`resolvePtr`、`reverse` |
 | `domain` | `create`、`Domain` |
 | `events` | `EventEmitter`、`once`、`on`（带 `AbortSignal` 的异步迭代器）、`getEventListeners`、`removeAllListeners`（触发 `removeListener`）、`prependListener`、`prependOnceListener`、`defaultMaxListeners`、`captureRejections`、`errorMonitor`、`setMaxListeners`（静态）、`addAbortListener` |
-| `fs`、`fs/promises` | 同步、回调和 Promise API，具有 Node 的错误格式（`code`、`errno`、`syscall`、`path`）：带 `flag`、`mode` 和编码的读写、`stat`（`throwIfNoEntry`）、`readdir`（`recursive`、`withFileTypes`）、`mkdir`、`rm`、`cp`、`copyFile`（`COPYFILE_EXCL`）、`rename`、`link`、`symlink`、`utimes`、`opendir`、文件描述符、`FileHandle`、流、`watch`（通过 notify 使用原生 inotify/kqueue/FSEvents，回退到轮询）、`watchFile` |
+| `fs`、`fs/promises` | 同步、回调和 Promise API，具有 Node 的错误格式（`code`、`errno`、`syscall`、`path`）：带 `flag`、`mode` 和编码的读写、`stat`（`throwIfNoEntry`）、`readdir`（`recursive`、`withFileTypes`）、`mkdir`、`rm`、`cp`、`copyFile`（`COPYFILE_EXCL`）、`rename`、`link`、`symlink`、`utimes`、`opendir`、文件描述符、`FileHandle`、流、`watch`（通过 notify 使用原生 inotify/kqueue/FSEvents，回退到轮询）、`watchFile`、`glob`/`globSync`（Node 22） |
 | `http`、`https` | `createServer`（带选项）、`request`、`get`、`IncomingMessage`（异步可迭代体、`close` 事件）、`ServerResponse`（`_implicitHeader`、`headersSent`、CRLF 验证的 `setHeader`）、`Agent`（`keepAlive` 连接池、`maxFreeSockets`）、`globalAgent`、`STATUS_CODES`、`METHODS`、`validateHeaderName`/`validateHeaderValue`。服务器与 `jse.serve` 共享 hyper 引擎；客户端响应为 `Readable` 流；大于 `maxBodyBytes` 的请求体通过通道流式传输 |
 | `http2` | 服务端和客户端；ALPN `h2` 和明文 `h2c`（先验知识） |
 | `inspector` | `Session`（通过 WebSocket 连接到运行中的 V8 inspector）、`open`、`close`、`url`。参见[调试](#调试) |
