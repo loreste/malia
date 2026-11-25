@@ -811,6 +811,16 @@ export function unwatchFile(filename, listener) {
   }
 }
 
+export function globSync(pattern, options) {
+  const cwd = (options && options.cwd) || process.cwd();
+  return ops.op_glob_sync(String(pattern), String(cwd));
+}
+
+export async function glob(pattern, options) {
+  const cwd = (options && options.cwd) || process.cwd();
+  return ops.op_glob(String(pattern), String(cwd));
+}
+
 export const promises = {
   open: async (filePath, flags, mode) => {
     const fd = openSync(filePath, flags, mode);
@@ -840,6 +850,7 @@ export const promises = {
   link,
   cp,
   opendir,
+  glob,
   constants,
 };
 
@@ -920,6 +931,8 @@ export default {
   createWriteStream,
   ReadStream,
   WriteStream,
+  globSync,
+  glob,
   constants,
   promises,
 };

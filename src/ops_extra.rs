@@ -202,6 +202,79 @@ pub fn op_readdir_sync(#[string] path: String) -> Result<Vec<DirEntryInfo>, JsEr
   readdir_at(&path)
 }
 
+// ---------------------------------------------------------------------------
+// fs.glob / fs.globSync
+// ---------------------------------------------------------------------------
+
+fn glob_at(pattern: &str, cwd: &str) -> Result<Vec<String>, JsErrorBox> {
+  use std::path::Path;
+  let full_pattern = if Path::new(pattern).is_absolute() {
+    pattern.to_string()
+  } else {
+    format!("{}/{}", cwd.trim_end_matches('/'), pattern)
+  };
+  crate::permissions::check_read(cwd)?;
+  let mut results = Vec::new();
+  let entries = glob::glob(&full_pattern)
+    .map_err(|e| JsErrorBox::generic(format!("Invalid glob pattern: {e}")))?;
+  for path in entries.flatten() {
+    let s = path.to_string_lossy().into_owned();
+    if crate::permissions::check_read(&s).is_ok() {
+      results.push(s);
+    }
+  }
+  results.sort();
+  Ok(results)
+}
+
+#[op2]
+#[serde]
+pub fn op_glob_sync(#[string] pattern: String, #[string] cwd: String) -> Result<Vec<String>, JsErrorBox> {
+  glob_at(&pattern, &cwd)
+}
+
+#[op2]
+#[serde]
+pub async fn op_glob(#[string] pattern: String, #[string] cwd: String) -> Result<Vec<String>, JsErrorBox> {
+  off_thread(move || glob_at(&pattern, &cwd)).await
+}
+
+// ---------------------------------------------------------------------------
+// YAML parse/stringify
+// ---------------------------------------------------------------------------
+
+#[op2]
+#[serde]
+pub fn op_yaml_parse(#[string] input: String) -> Result<serde_json::Value, JsErrorBox> {
+  serde_yaml::from_str::<serde_json::Value>(&input)
+    .map_err(|e| JsErrorBox::generic(format!("YAML parse error: {e}")))
+}
+
+#[op2]
+#[string]
+pub fn op_yaml_stringify(#[serde] value: serde_json::Value) -> Result<String, JsErrorBox> {
+  serde_yaml::to_string(&value)
+    .map_err(|e| JsErrorBox::generic(format!("YAML stringify error: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// TOML parse/stringify
+// ---------------------------------------------------------------------------
+
+#[op2]
+#[serde]
+pub fn op_toml_parse(#[string] input: String) -> Result<serde_json::Value, JsErrorBox> {
+  toml::from_str::<serde_json::Value>(&input)
+    .map_err(|e| JsErrorBox::generic(format!("TOML parse error: {e}")))
+}
+
+#[op2]
+#[string]
+pub fn op_toml_stringify(#[serde] value: serde_json::Value) -> Result<String, JsErrorBox> {
+  toml::to_string_pretty(&value)
+    .map_err(|e| JsErrorBox::generic(format!("TOML stringify error: {e}")))
+}
+
 fn mkdir_at(path: &str, recursive: bool) -> Result<(), JsErrorBox> {
   crate::permissions::check_write(path)?;
   let result = if recursive {

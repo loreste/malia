@@ -36,6 +36,18 @@ pub fn set_inspect_mode(mode: InspectMode) {
   let _ = INSPECT_MODE.set(mode);
 }
 
+/// CPU time limit in seconds. When set, a watchdog thread terminates the
+/// isolate after this many seconds of wall-clock time.
+static CPU_TIME_LIMIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_cpu_time_limit(secs: u64) {
+  CPU_TIME_LIMIT.store(secs, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn cpu_time_limit() -> u64 {
+  CPU_TIME_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn create_runtime(worker_host: Option<WorkerHost>) -> JsRuntime {
   let inspect = INSPECT_MODE.get().cloned().unwrap_or_default();
   let enable_inspector = !matches!(inspect, InspectMode::Off);
@@ -65,6 +77,17 @@ pub fn create_runtime(worker_host: Option<WorkerHost>) -> JsRuntime {
       }
     }
   }
+  // CPU time watchdog: terminate the isolate after the configured limit.
+  let limit_secs = cpu_time_limit();
+  if limit_secs > 0 {
+    let handle = rt.v8_isolate().thread_safe_handle();
+    std::thread::spawn(move || {
+      std::thread::sleep(std::time::Duration::from_secs(limit_secs));
+      handle.terminate_execution();
+      eprintln!("error: Script exceeded CPU time limit of {limit_secs}s — isolate terminated.");
+    });
+  }
+
   rt.lazy_init_extensions(vec![crate::ops::jse::args(worker_host)])
     .expect("jse extension lazy init");
   let _ = rt.execute_script(

@@ -1,4 +1,37 @@
 // Helpers injected into every wrapped CommonJS module.
+
+// Lightweight ESM-to-CJS transform for require(esm) support.
+// Handles: import x from, import { a } from, import "side-effect",
+//          export default, export const/let/var/function/class, export { }.
+export function __esmToCjs(code) {
+  const namedExports = [];
+  const transformed = code
+    .replace(/^\s*import\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/gm,
+      (_, name, spec) => `const ${name} = require("${spec}");`)
+    .replace(/^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/gm,
+      (_, names, spec) => {
+        const alias = "__req_" + spec.replace(/[^a-zA-Z0-9]/g, "_");
+        const bindings = names.split(",").map(n => {
+          const parts = n.trim().split(/\s+as\s+/);
+          return `const ${(parts[1] || parts[0]).trim()} = ${alias}["${parts[0].trim()}"];`;
+        });
+        return `const ${alias} = require("${spec}"); ${bindings.join(" ")}`;
+      })
+    .replace(/^\s*import\s+['"]([^'"]+)['"]\s*;?\s*$/gm, (_, spec) => `require("${spec}");`)
+    .replace(/^\s*export\s+default\s+/gm, "module.exports = ")
+    .replace(/^\s*export\s+(const|let|var|function|class)\s+(\w+)/gm, (_, kw, name) => {
+      namedExports.push(name);
+      return `${kw} ${name}`;
+    })
+    .replace(/^\s*export\s+\{([^}]+)\}\s*;?\s*$/gm, (_, names) =>
+      names.split(",").map(n => {
+        const parts = n.trim().split(/\s+as\s+/);
+        return `exports["${(parts[1] || parts[0]).trim()}"] = ${parts[0].trim()};`;
+      }).join(" "));
+  const tail = namedExports.map(n => `exports["${n}"] = ${n};`).join(" ");
+  return tail ? transformed + "\n" + tail : transformed;
+}
+
 const cjsCache = new Map();
 // Node-compatible cache keyed by absolute filename. Deletions propagate
 // to cjsCache so require() reloads the module (hot-reload, test runners).
@@ -63,7 +96,16 @@ export function __extensions() {
       const code = Deno.core.ops.op_read_text_file_sync(filename);
       const dirname = filename.replace(/[/\\][^/\\]*$/, "");
       const req = __makeRequire("file://" + filename, {}, {});
-      new Function("exports", "require", "module", "__filename", "__dirname", code)(module.exports, req, module, filename, dirname);
+      try {
+        new Function("exports", "require", "module", "__filename", "__dirname", code)(module.exports, req, module, filename, dirname);
+      } catch (e) {
+        if (e instanceof SyntaxError && /\b(import|export)\b/.test(e.message)) {
+          const cjs = __esmToCjs(code);
+          new Function("exports", "require", "module", "__filename", "__dirname", cjs)(module.exports, req, module, filename, dirname);
+        } else {
+          throw e;
+        }
+      }
     };
     Object.defineProperty(globalThis, key, {
       value: {

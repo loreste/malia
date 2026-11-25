@@ -1982,7 +1982,7 @@ var __readableStream = (() => {
       var { MathFloor, NumberIsInteger } = require_primordials();
       var { validateInteger } = require_validators();
       var { ERR_INVALID_ARG_VALUE } = require_errors().codes;
-      var defaultHighWaterMarkBytes = 16 * 1024;
+      var defaultHighWaterMarkBytes = 64 * 1024;
       var defaultHighWaterMarkObjectMode = 16;
       function highWaterMarkFrom(options, isDuplex, duplexKey) {
         return options.highWaterMark != null ? options.highWaterMark : isDuplex ? options[duplexKey] : null;

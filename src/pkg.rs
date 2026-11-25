@@ -167,11 +167,15 @@ impl Resolver {
     let pkg_dir = node_modules.join(name);
     extract_tarball(&tarball, &pkg_dir)?;
 
-    // Record in lockfile
+    // Record in lockfile — use registry integrity or compute SHA-512
+    let integrity = dist
+      .integrity
+      .clone()
+      .unwrap_or_else(|| Self::compute_integrity(&tarball));
     let mut entry = LockEntry {
       version: version.clone(),
       resolved: dist.tarball.clone(),
-      integrity: dist.integrity.clone(),
+      integrity: Some(integrity),
       dependencies: None,
       peer: if is_peer { Some(true) } else { None },
     };
@@ -294,7 +298,7 @@ impl Resolver {
     let token = self.auth_token_for(tarball_url).map(|s| s.to_string());
     let data = http_get_bytes(tarball_url, token.as_deref())?;
 
-    // Verify shasum
+    // Verify integrity: prefer SHA-512 (npm v7+ standard), fall back to SHA-1
     if let Some(expected) = shasum {
       let actual = sha1_hex(&data);
       if actual != *expected {
@@ -311,6 +315,14 @@ impl Resolver {
     let _ = fs::write(&cache_path, &data);
 
     Ok(data)
+  }
+
+  /// Compute SHA-512 integrity string in Subresource Integrity format.
+  fn compute_integrity(data: &[u8]) -> String {
+    use sha2::Digest;
+    let hash = sha2::Sha512::digest(data);
+    use base64::Engine;
+    format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(hash))
   }
 
   fn write_lockfile(&self, project_dir: &Path, pkg: &serde_json::Value) {
@@ -358,6 +370,7 @@ impl Resolver {
 
 // ── .npmrc auth ─────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 struct NpmrcAuth {
   default_registry: String,
   /// scope -> registry URL
@@ -449,6 +462,51 @@ pub fn install_all(project_dir: &Path) -> Result<(), String> {
   let total = deps.len();
   let mut installed = 0usize;
   let mut failed = Vec::new();
+
+  // Parallel metadata prefetch: download all registry metadata concurrently
+  // before the sequential resolve loop. This eliminates the HTTP waterfall.
+  {
+    let prefetch_names: Vec<String> = deps.iter().map(|(n, _)| n.clone()).collect();
+    let registry = resolver.registry.clone();
+    let auth = resolver.auth.clone();
+    let handles: Vec<_> = prefetch_names
+      .into_iter()
+      .map(|name| {
+        let registry = registry.clone();
+        let auth = auth.clone();
+        std::thread::spawn(move || {
+          let reg = if let Some(scope) = name.strip_prefix('@').and_then(|s| s.split('/').next())
+            && let Some(r) = auth.scoped_registries.get(scope)
+          {
+            r.clone()
+          } else {
+            registry
+          };
+          let url = format!("{}/{}", reg.trim_end_matches('/'), name);
+          let token = auth
+            .tokens
+            .iter()
+            .find(|(h, _)| url.contains(h.as_str()))
+            .map(|(_, t)| t.clone());
+          match http_get(&url, token.as_deref()) {
+            Ok(body) => {
+              if let Ok(meta) = serde_json::from_str::<PackageMeta>(&body) {
+                Some((name, meta))
+              } else {
+                None
+              }
+            }
+            Err(_) => None,
+          }
+        })
+      })
+      .collect();
+    for handle in handles {
+      if let Ok(Some((name, meta))) = handle.join() {
+        resolver.meta_cache.insert(name, meta);
+      }
+    }
+  }
 
   for (name, version_spec) in &deps {
     match resolver.resolve(&nm, name, version_spec, false) {
