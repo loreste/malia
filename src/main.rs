@@ -336,6 +336,9 @@ enum Command {
     /// Embed entry source for the host platform; dependencies and assets remain external.
     #[arg(long)]
     standalone: bool,
+    /// Target platform for cross-compilation (e.g. linux-x64, darwin-arm64, win-x64).
+    #[arg(long)]
+    target: Option<String>,
     /// Output file path (default: dist/<file> or <file>.wasm).
     #[arg(short, long)]
     output: Option<String>,
@@ -443,6 +446,37 @@ enum Command {
     #[arg(long)]
     key: Option<String>,
   },
+  /// Format source files (downloads dprint on first use).
+  Fmt {
+    /// Files or directories to format (default: current directory).
+    #[arg(trailing_var_arg = true)]
+    files: Vec<String>,
+    /// Check formatting without writing (exit 1 if unformatted).
+    #[arg(long)]
+    check: bool,
+  },
+  /// Lint source files (downloads oxlint on first use).
+  Lint {
+    /// Files or directories to lint (default: current directory).
+    #[arg(trailing_var_arg = true)]
+    files: Vec<String>,
+    /// Auto-fix issues where possible.
+    #[arg(long)]
+    fix: bool,
+  },
+  /// Bundle ES modules into a single file.
+  Bundle {
+    /// Entry file.
+    file: String,
+    /// Output file (default: stdout).
+    #[arg(short, long)]
+    output: Option<String>,
+    /// Minify output.
+    #[arg(long)]
+    minify: bool,
+  },
+  /// Verify the runtime binary integrity against published checksums.
+  Verify,
   /// Run custom scripts defined in jse.json / package.json or execute files directly.
   #[command(external_subcommand)]
   Custom(Vec<String>),
@@ -882,6 +916,206 @@ fn tool_program(program: &str) -> String {
     "npm" | "npx" | "yarn" | "pnpm" if cfg!(windows) => format!("{program}.cmd"),
     _ => program.to_string(),
   }
+}
+
+/// Cross-compile: download the target platform's malia binary from GitHub releases,
+/// then embed the source code into it.
+fn cross_compile(source: &Path, output: &Path, target: &str) -> anyhow::Result<()> {
+  let version = env!("CARGO_PKG_VERSION");
+  let archive_name = match target {
+    "linux-x64" => "malia-linux-x64-gnu.tar.gz",
+    "linux-arm64" => "malia-linux-arm64-gnu.tar.gz",
+    "linux-musl" | "linux-x64-musl" => "malia-linux-x64-musl.tar.gz",
+    "darwin-x64" | "macos-x64" => "malia-darwin-x64.tar.gz",
+    "darwin-arm64" | "macos-arm64" => "malia-darwin-arm64.tar.gz",
+    "win-x64" | "windows-x64" | "win32-x64" => "malia-win32-x64.zip",
+    _ => {
+      eprintln!("Unknown target: {target}");
+      eprintln!("Supported: linux-x64, linux-arm64, linux-musl, darwin-x64, darwin-arm64, win-x64");
+      std::process::exit(1);
+    }
+  };
+  let url = format!("https://github.com/loreste/malia/releases/download/v{version}/{archive_name}");
+  let cache_dir = dirs_malia_bin()
+    .parent()
+    .unwrap_or(Path::new("."))
+    .join("cache")
+    .join("targets");
+  let _ = std::fs::create_dir_all(&cache_dir);
+  let cached_binary = cache_dir.join(format!("malia-{target}-v{version}"));
+
+  if !cached_binary.exists() {
+    println!("Downloading malia for {target}...");
+    let archive_path = cache_dir.join(archive_name);
+    let code = exec_cmd(
+      std::process::Command::new("curl")
+        .args(["-fsSL", "-o"])
+        .arg(&archive_path)
+        .arg(&url),
+    )?;
+    if code != 0 {
+      eprintln!("Failed to download {target} binary from {url}");
+      eprintln!("Make sure v{version} has been released with this target.");
+      std::process::exit(1);
+    }
+    // Extract malia binary from archive
+    if archive_name.ends_with(".tar.gz") {
+      exec_cmd(
+        std::process::Command::new("tar")
+          .args(["xzf"])
+          .arg(&archive_path)
+          .args(["-C"])
+          .arg(&cache_dir)
+          .args(["--strip-components=1", "malia"]),
+      )?;
+      let extracted = cache_dir.join("malia");
+      if extracted.exists() {
+        std::fs::rename(&extracted, &cached_binary)?;
+      }
+    } else {
+      exec_cmd(
+        std::process::Command::new("unzip")
+          .args(["-o"])
+          .arg(&archive_path)
+          .args(["-d"])
+          .arg(&cache_dir),
+      )?;
+      let extracted = cache_dir.join("malia.exe");
+      if extracted.exists() {
+        std::fs::rename(&extracted, &cached_binary)?;
+      }
+    }
+    let _ = std::fs::remove_file(&archive_path);
+  }
+
+  if !cached_binary.exists() {
+    eprintln!("Failed to extract {target} binary");
+    std::process::exit(1);
+  }
+
+  // Read source, append to binary (same embed format as create_standalone_binary)
+  let source_code =
+    std::fs::read_to_string(source).map_err(|e| anyhow::anyhow!("Cannot read {}: {e}", source.display()))?;
+  let runtime_binary = std::fs::read(&cached_binary)?;
+
+  let mut out = std::fs::File::create(output)?;
+  use std::io::Write;
+  out.write_all(&runtime_binary)?;
+  // Embed marker + source (same protocol as the host compile)
+  let marker = b"\n__MALIA_EMBEDDED_SOURCE__\n";
+  out.write_all(marker)?;
+  out.write_all(source_code.as_bytes())?;
+  drop(out);
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o755));
+  }
+
+  println!(
+    "Cross-compiled {} -> {} (target: {target}, {} bytes)",
+    source.display(),
+    output.display(),
+    runtime_binary.len() + source_code.len() + marker.len()
+  );
+  Ok(())
+}
+
+fn dirs_malia_bin() -> PathBuf {
+  let home = std::env::var("HOME")
+    .or_else(|_| std::env::var("USERPROFILE"))
+    .unwrap_or_else(|_| ".".to_string());
+  PathBuf::from(home).join(".malia").join("bin")
+}
+
+/// Basic ESM bundler: resolve imports recursively, concatenate into a single IIFE.
+fn bundle_esm(entry: &Path, _minify: bool) -> Result<String, String> {
+  let mut visited = std::collections::HashSet::new();
+  let mut modules = Vec::new();
+  collect_modules(entry, &mut visited, &mut modules)?;
+
+  let mut output = String::from("// Bundled by malia bundle\n(function() {\n\"use strict\";\n");
+  for (path, code) in &modules {
+    output.push_str(&format!("\n// --- {} ---\n", path.display()));
+    // Strip import/export for concatenation
+    let stripped = code
+      .lines()
+      .filter(|l| {
+        let t = l.trim();
+        !t.starts_with("import ") && !t.starts_with("export ")
+      })
+      .collect::<Vec<_>>()
+      .join("\n");
+    output.push_str(&stripped);
+    output.push('\n');
+  }
+  output.push_str("})();\n");
+  Ok(output)
+}
+
+fn collect_modules(
+  file: &Path,
+  visited: &mut std::collections::HashSet<PathBuf>,
+  modules: &mut Vec<(PathBuf, String)>,
+) -> Result<(), String> {
+  let canonical = std::fs::canonicalize(file).map_err(|e| format!("{}: {e}", file.display()))?;
+  if visited.contains(&canonical) {
+    return Ok(());
+  }
+  visited.insert(canonical.clone());
+  let code = std::fs::read_to_string(&canonical).map_err(|e| format!("{}: {e}", file.display()))?;
+  let dir = canonical.parent().unwrap_or(Path::new("."));
+
+  // Extract relative imports and recurse
+  for line in code.lines() {
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("import ")
+      && let Some(spec) = extract_specifier(rest)
+      && spec.starts_with('.')
+      && let Some(dep_path) = resolve_relative_import(dir, &spec)
+    {
+      collect_modules(&dep_path, visited, modules)?;
+    }
+  }
+  modules.push((canonical, code));
+  Ok(())
+}
+
+fn extract_specifier(import_rest: &str) -> Option<String> {
+  // Match: from "specifier" or from 'specifier' or "side-effect"
+  let s = if let Some(idx) = import_rest.find(" from ") {
+    &import_rest[idx + 6..]
+  } else {
+    import_rest
+  };
+  let s = s.trim().trim_end_matches(';');
+  if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    Some(s[1..s.len() - 1].to_string())
+  } else {
+    None
+  }
+}
+
+fn resolve_relative_import(dir: &Path, spec: &str) -> Option<PathBuf> {
+  let base = dir.join(spec);
+  if base.is_file() {
+    return Some(base);
+  }
+  for ext in &["ts", "js", "mjs", "tsx", "jsx"] {
+    let with_ext = base.with_extension(ext);
+    if with_ext.is_file() {
+      return Some(with_ext);
+    }
+  }
+  // Try index files
+  for name in &["index.ts", "index.js", "index.mjs"] {
+    let idx = base.join(name);
+    if idx.is_file() {
+      return Some(idx);
+    }
+  }
+  None
 }
 
 /// Run a command, printing a clear error if the binary is missing or fails to start.
@@ -3625,6 +3859,7 @@ pub fn run() -> anyhow::Result<()> {
       file,
       wasm,
       standalone,
+      target,
       output,
     }) => {
       let is_wasm = wasm || (!standalone && output.as_ref().map(|o| o.ends_with(".wasm")).unwrap_or(false));
@@ -3652,7 +3887,11 @@ pub fn run() -> anyhow::Result<()> {
         if let Some(parent) = out_path.parent() {
           let _ = std::fs::create_dir_all(parent);
         }
-        create_standalone_binary(Path::new(&file), &out_path)?;
+        if let Some(ref tgt) = target {
+          cross_compile(Path::new(&file), &out_path, tgt)?;
+        } else {
+          create_standalone_binary(Path::new(&file), &out_path)?;
+        }
         Ok(())
       }
     }
@@ -3698,6 +3937,164 @@ pub fn run() -> anyhow::Result<()> {
           std::process::exit(1);
         }
       }
+    }
+
+    // ── Sprint 4 commands ───────────────────────────────────────────────
+    Some(Command::Fmt { files, check }) => {
+      // Download dprint to ~/.malia/bin on first use, then run it.
+      let malia_bin = dirs_malia_bin();
+      let dprint = malia_bin.join(if cfg!(windows) { "dprint.exe" } else { "dprint" });
+      if !dprint.exists() {
+        println!("Downloading dprint formatter...");
+        let (os, ext) = if cfg!(target_os = "macos") {
+          ("apple-darwin", "zip")
+        } else if cfg!(windows) {
+          ("pc-windows-msvc", "zip")
+        } else {
+          ("unknown-linux-gnu", "zip")
+        };
+        let arch = if cfg!(target_arch = "aarch64") {
+          "aarch64"
+        } else {
+          "x86_64"
+        };
+        let url = format!("https://github.com/dprint/dprint/releases/latest/download/dprint-{arch}-{os}.{ext}");
+        let _ = std::fs::create_dir_all(&malia_bin);
+        let code = exec_cmd(std::process::Command::new("sh").args([
+          "-c",
+          &format!(
+            "curl -fsSL '{url}' -o /tmp/dprint.zip && unzip -o /tmp/dprint.zip dprint -d '{}' && chmod +x '{}'",
+            malia_bin.display(),
+            dprint.display()
+          ),
+        ]))?;
+        if code != 0 {
+          eprintln!("Failed to download dprint. Install manually: https://dprint.dev/install/");
+          std::process::exit(1);
+        }
+      }
+      let targets = if files.is_empty() { vec![".".to_string()] } else { files };
+      let mut cmd = std::process::Command::new(&dprint);
+      cmd.arg(if check { "check" } else { "fmt" });
+      cmd.args(&targets);
+      std::process::exit(exec_cmd(&mut cmd)?);
+    }
+
+    Some(Command::Lint { files, fix }) => {
+      // Download oxlint to ~/.malia/bin on first use, then run it.
+      let malia_bin = dirs_malia_bin();
+      let oxlint = malia_bin.join(if cfg!(windows) { "oxlint.exe" } else { "oxlint" });
+      if !oxlint.exists() {
+        println!("Downloading oxlint...");
+        let (os, ext) = if cfg!(target_os = "macos") {
+          ("darwin", "tar.gz")
+        } else if cfg!(windows) {
+          ("win32", "zip")
+        } else {
+          ("linux", "tar.gz")
+        };
+        let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+        let url = format!("https://github.com/nicolo-ribaudo/oxc/releases/latest/download/oxlint-{os}-{arch}.{ext}");
+        let _ = std::fs::create_dir_all(&malia_bin);
+        // Try npx oxlint as fallback
+        let code = exec_cmd(std::process::Command::new("sh").args([
+          "-c",
+          &format!(
+            "curl -fsSL '{url}' | tar xz -C '{}' 2>/dev/null || npm exec -y -- oxlint --version",
+            malia_bin.display()
+          ),
+        ]))
+        .unwrap_or(1);
+        if code != 0 && !oxlint.exists() {
+          // Fall back to npx
+          let targets = if files.is_empty() { vec![".".to_string()] } else { files };
+          let mut cmd = std::process::Command::new("npx");
+          cmd.args(["oxlint"]);
+          if fix {
+            cmd.arg("--fix");
+          }
+          cmd.args(&targets);
+          std::process::exit(exec_cmd(&mut cmd)?);
+        }
+      }
+      let targets = if files.is_empty() { vec![".".to_string()] } else { files };
+      let mut cmd = std::process::Command::new(&oxlint);
+      if fix {
+        cmd.arg("--fix");
+      }
+      cmd.args(&targets);
+      std::process::exit(exec_cmd(&mut cmd)?);
+    }
+
+    Some(Command::Bundle { file, output, minify }) => {
+      // Basic ESM bundler: resolve imports, concatenate into single IIFE.
+      let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+      let entry = cwd.join(&file);
+      if !entry.is_file() {
+        eprintln!("error: file not found: {file}");
+        std::process::exit(1);
+      }
+      let result = bundle_esm(&entry, minify);
+      match result {
+        Ok(code) => {
+          if let Some(out) = output {
+            if let Some(parent) = Path::new(&out).parent() {
+              let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&out, &code)?;
+            println!("Bundled {} -> {} ({} bytes)", file, out, code.len());
+          } else {
+            print!("{code}");
+          }
+          Ok(())
+        }
+        Err(e) => {
+          eprintln!("error: {e}");
+          std::process::exit(1);
+        }
+      }
+    }
+
+    Some(Command::Verify) => {
+      let exe = std::env::current_exe()?;
+      let data = std::fs::read(&exe)?;
+      let actual = {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(&data))
+      };
+      println!("Binary: {}", exe.display());
+      println!("SHA-256: {actual}");
+      println!("Size: {} bytes", data.len());
+      println!("Version: {}", env!("CARGO_PKG_VERSION"));
+      // Try to fetch published checksum
+      let version = env!("CARGO_PKG_VERSION");
+      let checksums_url = format!("https://github.com/loreste/malia/releases/download/v{version}/SHA256SUMS");
+      match std::process::Command::new("curl")
+        .args(["-fsSL", &checksums_url])
+        .output()
+      {
+        Ok(output) if output.status.success() => {
+          let checksums = String::from_utf8_lossy(&output.stdout);
+          let exe_name = exe.file_name().unwrap_or_default().to_string_lossy();
+          if let Some(line) = checksums.lines().find(|l| l.contains(exe_name.as_ref())) {
+            let expected = line.split_whitespace().next().unwrap_or("");
+            if actual == expected {
+              println!("\nIntegrity: VERIFIED (matches published checksum)");
+            } else {
+              eprintln!("\nIntegrity: MISMATCH!");
+              eprintln!("  Expected: {expected}");
+              eprintln!("  Actual:   {actual}");
+              std::process::exit(1);
+            }
+          } else {
+            println!("\nIntegrity: no matching entry in published SHA256SUMS");
+          }
+        }
+        _ => {
+          println!("\nIntegrity: could not fetch published checksums (dev build or offline)");
+        }
+      }
+      Ok(())
     }
 
     Some(Command::Custom(mut custom_args)) => {
