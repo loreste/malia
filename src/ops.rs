@@ -2628,6 +2628,14 @@ deno_core::extension!(
     crate::sql::op_sql_last_insert_rowid,
     crate::sql::op_sql_query,
     crate::production::op_production_metrics,
+    crate::redis::op_redis_connect,
+    crate::redis::op_redis_command,
+    crate::redis::op_redis_pipeline,
+    crate::s3::op_s3_connect,
+    crate::s3::op_s3_get,
+    crate::s3::op_s3_put,
+    crate::s3::op_s3_delete,
+    crate::s3::op_s3_presign,
   ],
   js = [
     dir "src/js",
@@ -2663,6 +2671,8 @@ deno_core::extension!(
     "29_cache.js",
     "30_formats.js",
     "31_shell.js",
+    "32_redis.js",
+    "33_s3.js",
   ],
 
   options = {

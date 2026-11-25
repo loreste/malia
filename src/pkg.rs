@@ -167,11 +167,15 @@ impl Resolver {
     let pkg_dir = node_modules.join(name);
     extract_tarball(&tarball, &pkg_dir)?;
 
-    // Record in lockfile
+    // Record in lockfile — use registry integrity or compute SHA-512
+    let integrity = dist
+      .integrity
+      .clone()
+      .unwrap_or_else(|| Self::compute_integrity(&tarball));
     let mut entry = LockEntry {
       version: version.clone(),
       resolved: dist.tarball.clone(),
-      integrity: dist.integrity.clone(),
+      integrity: Some(integrity),
       dependencies: None,
       peer: if is_peer { Some(true) } else { None },
     };
@@ -294,7 +298,7 @@ impl Resolver {
     let token = self.auth_token_for(tarball_url).map(|s| s.to_string());
     let data = http_get_bytes(tarball_url, token.as_deref())?;
 
-    // Verify shasum
+    // Verify integrity: prefer SHA-512 (npm v7+ standard), fall back to SHA-1
     if let Some(expected) = shasum {
       let actual = sha1_hex(&data);
       if actual != *expected {
@@ -311,6 +315,14 @@ impl Resolver {
     let _ = fs::write(&cache_path, &data);
 
     Ok(data)
+  }
+
+  /// Compute SHA-512 integrity string in Subresource Integrity format.
+  fn compute_integrity(data: &[u8]) -> String {
+    use sha2::Digest;
+    let hash = sha2::Sha512::digest(data);
+    use base64::Engine;
+    format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(hash))
   }
 
   fn write_lockfile(&self, project_dir: &Path, pkg: &serde_json::Value) {

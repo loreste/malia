@@ -187,6 +187,91 @@ mod config {
 }
 
 #[allow(dead_code)]
+mod redis {
+  use deno_core::OpState;
+  use deno_core::op2;
+  use deno_error::JsErrorBox;
+
+  #[op2(fast)]
+  pub fn op_redis_connect(_state: &mut OpState, #[string] _url: String) -> Result<u32, JsErrorBox> {
+    Ok(0)
+  }
+
+  #[op2]
+  #[serde]
+  pub fn op_redis_command(
+    _state: &mut OpState,
+    _id: u32,
+    #[serde] _args: Vec<String>,
+  ) -> Result<serde_json::Value, JsErrorBox> {
+    Ok(serde_json::Value::Null)
+  }
+
+  #[op2]
+  #[serde]
+  pub fn op_redis_pipeline(
+    _state: &mut OpState,
+    _id: u32,
+    #[serde] _commands: Vec<Vec<String>>,
+  ) -> Result<Vec<serde_json::Value>, JsErrorBox> {
+    Ok(Vec::new())
+  }
+}
+
+#[allow(dead_code)]
+mod s3 {
+  use deno_core::OpState;
+  use deno_core::op2;
+  use deno_error::JsErrorBox;
+
+  #[op2(fast)]
+  pub fn op_s3_connect(
+    _state: &mut OpState,
+    #[string] _endpoint: String,
+    #[string] _bucket: String,
+    #[string] _region: String,
+    #[string] _access_key: String,
+    #[string] _secret_key: String,
+  ) -> Result<u32, JsErrorBox> {
+    Ok(0)
+  }
+
+  #[op2]
+  #[serde]
+  pub fn op_s3_get(_state: &mut OpState, _id: u32, #[string] _key: String) -> Result<serde_json::Value, JsErrorBox> {
+    Ok(serde_json::Value::Null)
+  }
+
+  #[op2]
+  #[serde]
+  pub fn op_s3_put(
+    _state: &mut OpState,
+    _id: u32,
+    #[string] _key: String,
+    #[buffer] _data: &[u8],
+  ) -> Result<serde_json::Value, JsErrorBox> {
+    Ok(serde_json::Value::Null)
+  }
+
+  #[op2]
+  #[serde]
+  pub fn op_s3_delete(_state: &mut OpState, _id: u32, #[string] _key: String) -> Result<serde_json::Value, JsErrorBox> {
+    Ok(serde_json::Value::Null)
+  }
+
+  #[op2]
+  #[string]
+  pub fn op_s3_presign(
+    _state: &mut OpState,
+    _id: u32,
+    #[string] _key: String,
+    _expires_secs: u32,
+  ) -> Result<String, JsErrorBox> {
+    Ok(String::new())
+  }
+}
+
+#[allow(dead_code)]
 mod ops {
   include!("src/ops.rs");
 }
