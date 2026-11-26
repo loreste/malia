@@ -281,6 +281,10 @@ fn main() {
     println!("cargo::rustc-link-arg=-Wl,-export_dynamic");
   } else if cfg!(target_os = "linux") {
     println!("cargo::rustc-link-arg=-Wl,--export-dynamic");
+  } else if cfg!(target_os = "windows") {
+    // V8 + deno_core need a larger stack than the Windows default (1 MB).
+    // Set 16 MB at link time so debug builds and tests don't overflow.
+    println!("cargo::rustc-link-arg=/STACK:16777216");
   }
   println!("cargo::rerun-if-changed=src/js");
   println!("cargo::rerun-if-changed=src/ops.rs");
