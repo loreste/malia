@@ -59,12 +59,15 @@ Malia 不会让你的 JS 更快，它让周围的基础设施（启动、HTTP、
 - HTTP 服务器运行在 hyper（Rust）的独立线程池上，不在 JS 事件循环上
 - Worker 拥有真正的操作系统线程和独立的 V8 隔离区
 - 权限默认拒绝（类似 Deno，不同于 Node）
+- `--deny-net` 即使在 `--allow-all` 下也能阻止特定主机（IMDS 防护）
+- `--sandbox` 模式：拒绝所有权限 + 256 MB 堆限制 + 30 秒 CPU 限制，用于运行不受信任的代码
+- `require(esm)` 开箱即用（Node v23 兼容）
 - 有界通道（`chan()`）支持背压（Backpressure），用于异步协调
 - 热重载（Hot Reload）在运行中的服务器上替换处理器，无需重启
 
 `jse.*` 全局变量是 `malia.*` 的别名，用于向后兼容。新代码应使用 `malia.*`。
 
-常见任务指南请参阅 [docs/HOWTO.md](docs/HOWTO.md)。
+常见任务指南请参阅 [docs/HOWTO.zh-CN.md](docs/HOWTO.zh-CN.md)。
 
 ## 安装
 
@@ -162,7 +165,7 @@ malia run app.wasm
 | `malia init [--toml]` | 创建项目配置文件 |
 | `malia dev` | 运行入口点并在文件变更时重启 |
 | `malia start` | 运行入口点；配置了 `cluster` 时 fork 集群 Worker |
-| `malia test` | 运行测试（`node:test`，TAP 输出） |
+| `malia test` | 运行测试（`node:test`，TAP 输出）。Glob 模式自动发现（`**/*.test.ts`、`**/*.spec.ts`）。`--watch` 文件变更时重新运行。`t.snapshot()` 快照测试 |
 | `malia install` / `add` / `i` | 从 npm 注册表安装包（内置或委托给 npm/yarn/pnpm） |
 | `malia install -g <pkg>` | 全局安装包到 `~/.malia/bin` |
 | `malia uninstall` / `rm` | 从 `node_modules` 和 `package.json` 中移除包 |
@@ -173,7 +176,7 @@ malia run app.wasm
 | `malia x <bin>` | 运行 `node_modules/.bin` 中的二进制文件，回退到 npx |
 | `malia npm <args>` | 将参数透传给 npm |
 | `malia config [show\|get <key>]` | 打印解析后的配置 |
-| `malia compile <file>` | 将源码嵌入运行时二进制文件。`--wasm` 将源码包装在 Wasm 容器中（仍需 malia 运行——这是打包，不是 JS 到 Wasm 的编译） |
+| `malia compile <file>` | 将源码嵌入运行时二进制文件。`--target=linux-x64` 交叉编译。`--wasm` 将源码包装在 Wasm 容器中 |
 | `malia build` | 将配置的入口源码嵌入宿主运行时 |
 | `malia bench <file>` | 运行文件并打印墙钟时间 |
 | `malia serve [dir]` | 即时静态文件服务器，支持目录列表、ETag、MIME 类型 |
@@ -266,10 +269,13 @@ malia run --allow-read script.js                  # 所有文件系统读取
 malia run --allow-read=/tmp,/data script.js       # 仅限这些路径下的读取
 malia run --allow-write=/tmp script.js            # 文件系统写入
 malia run --allow-net script.js                   # fetch、jse.serve、node:http
-malia run --allow-net=api.example.com script.js   # 仅限这些主机
+malia run --allow-net=api.example.com:443 script.js  # 主机:端口粒度
+malia run --deny-net=169.254.169.254 script.js    # 阻止特定主机（即使使用 --allow-all）
 malia run --allow-run=node,git script.js          # 仅限这些可执行文件
 malia run --allow-env script.js                   # 环境变量
 malia run --allow-all script.js                   # 所有权限
+malia run --sandbox script.js                     # 拒绝所有 + 256MB 堆 + 30 秒 CPU
+malia run --max-cpu-time=10 script.js             # 10 秒后终止
 ```
 
 被拒绝的调用会抛出 `PermissionDenied: <kind> access to <what>, run again

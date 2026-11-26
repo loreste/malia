@@ -67,6 +67,9 @@ edges -- file an issue if you find one.
 - HTTP server runs on hyper (Rust) on its own thread pool, not on the JS event loop
 - Workers get real OS threads with their own V8 isolates
 - Permissions are deny-by-default (like Deno, unlike Node)
+- `--deny-net` blocks specific hosts even under `--allow-all` (IMDS protection)
+- `--sandbox` mode: deny-all + 256 MB heap + 30s CPU limit for untrusted code
+- `require(esm)` works out of the box (Node v23 parity)
 - Bounded channels (`chan()`) with backpressure for async coordination
 - Hot reload swaps handlers on a live server without restarting
 
@@ -173,7 +176,7 @@ malia run app.wasm
 | `malia init [--toml]` | Create a project config file |
 | `malia dev` | Run the entry point and restart on file changes |
 | `malia start` | Run the entry point; forks cluster workers when `cluster` is configured |
-| `malia test` | Run tests (`node:test`, TAP output) |
+| `malia test` | Run tests (`node:test`, TAP output). Glob-based discovery (`**/*.test.ts`, `**/*.spec.ts`). `--watch` re-runs on changes. Snapshot testing via `t.snapshot()` |
 | `malia install` / `add` / `i` | Install packages from the npm registry (built-in or delegates to npm/yarn/pnpm) |
 | `malia install -g <pkg>` | Install a package globally to `~/.malia/bin` |
 | `malia uninstall` / `rm` | Remove packages from `node_modules` and `package.json` |
@@ -184,7 +187,7 @@ malia run app.wasm
 | `malia x <bin>` | Run a binary from `node_modules/.bin`, falling back to npx |
 | `malia npm <args>` | Pass arguments through to npm |
 | `malia config [show\|get <key>]` | Print the resolved configuration |
-| `malia compile <file>` | Embed source in the runtime binary. `--wasm` wraps source in a Wasm container (still needs malia to run — this is packaging, not JS-to-Wasm compilation) |
+| `malia compile <file>` | Embed source in the runtime binary. `--target=linux-x64` for cross-compilation. `--wasm` wraps source in a Wasm container |
 | `malia build` | Embed the configured entry source in the host runtime |
 | `malia bench <file>` | Run a file and print its wall-clock time |
 | `malia serve [dir]` | Instant static file server with directory listing, ETags, MIME types |
@@ -283,10 +286,13 @@ malia run --allow-read script.js                  # all filesystem reads
 malia run --allow-read=/tmp,/data script.js       # reads under these paths only
 malia run --allow-write=/tmp script.js            # filesystem writes
 malia run --allow-net script.js                   # fetch, jse.serve, node:http
-malia run --allow-net=api.example.com script.js   # these hosts only
+malia run --allow-net=api.example.com:443 script.js  # host:port granularity
+malia run --deny-net=169.254.169.254 script.js    # block specific hosts (even with --allow-all)
 malia run --allow-run=node,git script.js          # these executables only
 malia run --allow-env script.js                   # environment variables
 malia run --allow-all script.js                   # everything
+malia run --sandbox script.js                     # deny-all + 256MB heap + 30s CPU
+malia run --max-cpu-time=10 script.js             # kill after 10 seconds
 ```
 
 A denied call throws `PermissionDenied: <kind> access to <what>, run again
