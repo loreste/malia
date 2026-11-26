@@ -916,11 +916,17 @@ pub fn op_worker_spawn(state: &mut OpState, #[string] specifier: String) -> Resu
 }
 
 #[op2(fast)]
-pub fn op_worker_send(id: u32, #[buffer] msg: &[u8]) -> bool {
+pub fn op_worker_send(id: u32, #[buffer] msg: &[u8]) -> Result<bool, JsErrorBox> {
+  if msg.len() > WORKER_MESSAGE_LIMIT {
+    return Err(JsErrorBox::range_error(format!(
+      "Worker message exceeds 1 MiB limit ({} bytes)",
+      msg.len()
+    )));
+  }
   let registry = workers().lock().unwrap();
   match registry.get(&id) {
-    Some(entry) => msg.len() <= WORKER_MESSAGE_LIMIT && entry.to_child.try_send(msg.to_vec()).is_ok(),
-    None => false,
+    Some(entry) => Ok(entry.to_child.try_send(msg.to_vec()).is_ok()),
+    None => Ok(false),
   }
 }
 
@@ -957,10 +963,16 @@ pub fn op_in_worker(state: &mut OpState) -> bool {
 }
 
 #[op2(fast)]
-pub fn op_host_send(state: &mut OpState, #[buffer] msg: &[u8]) -> bool {
+pub fn op_host_send(state: &mut OpState, #[buffer] msg: &[u8]) -> Result<bool, JsErrorBox> {
+  if msg.len() > WORKER_MESSAGE_LIMIT {
+    return Err(JsErrorBox::range_error(format!(
+      "Worker message exceeds 1 MiB limit ({} bytes)",
+      msg.len()
+    )));
+  }
   match state.try_borrow::<WorkerHost>() {
-    Some(host) => msg.len() <= WORKER_MESSAGE_LIMIT && host.to_parent.try_send(msg.to_vec()).is_ok(),
-    None => false,
+    Some(host) => Ok(host.to_parent.try_send(msg.to_vec()).is_ok()),
+    None => Ok(false),
   }
 }
 
