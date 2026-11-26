@@ -404,6 +404,12 @@ pub struct FdTable {
   pub files: HashMap<u32, Arc<StdMutex<std::fs::File>>>,
 }
 
+/// Lock a file mutex, recovering from poisoning (another thread panicked
+/// while holding the lock). The file is still usable after a panic.
+fn lock_file(file: &StdMutex<std::fs::File>) -> std::sync::MutexGuard<'_, std::fs::File> {
+  file.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn fd_table(state: &mut OpState) -> &mut FdTable {
   if !state.has::<FdTable>() {
     state.put(FdTable {
@@ -485,8 +491,22 @@ pub fn op_fs_open(
   }
   let file = opts.open(&path).map_err(|e| io_box("open", &path, e))?;
   let table = fd_table(state);
-  let fd = table.next_fd;
-  table.next_fd = table.next_fd.wrapping_add(1);
+  // Skip fds that are already open to avoid collision on wraparound.
+  let mut fd = table.next_fd;
+  let start = fd;
+  loop {
+    if !table.files.contains_key(&fd) {
+      break;
+    }
+    fd = fd.wrapping_add(1);
+    if fd < 100 {
+      fd = 100;
+    }
+    if fd == start {
+      return Err(JsErrorBox::generic("EMFILE: too many open files"));
+    }
+  }
+  table.next_fd = fd.wrapping_add(1);
   if table.next_fd < 100 {
     table.next_fd = 100;
   }
@@ -513,7 +533,7 @@ pub fn op_fs_fstat(state: &mut OpState, fd: u32) -> Result<StatInfo, JsErrorBox>
     .get(&fd)
     .cloned()
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
-  let guard = file.lock().unwrap();
+  let guard = lock_file(&file);
   let meta = guard.metadata().map_err(|e| io_box_fd("fstat", e))?;
   Ok(fstat_info(&meta))
 }
@@ -527,7 +547,7 @@ pub fn op_fs_read(state: &mut OpState, fd: u32, len: u32, position: f64) -> Resu
     .get(&fd)
     .cloned()
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
-  let mut guard = file.lock().unwrap();
+  let mut guard = lock_file(&file);
   let mut buf = vec![0u8; len as usize];
   let n = if position >= 0.0 {
     crate::platform::read_at(&guard, &mut buf, position as u64).map_err(|e| io_box_fd("read", e))?
@@ -547,7 +567,7 @@ pub fn op_fs_write(state: &mut OpState, fd: u32, #[buffer] data: &[u8], position
     .get(&fd)
     .cloned()
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
-  let mut guard = file.lock().unwrap();
+  let mut guard = lock_file(&file);
   let n = if position >= 0.0 {
     crate::platform::write_at(&guard, data, position as u64).map_err(|e| io_box_fd("write", e))?
   } else {
@@ -565,7 +585,7 @@ pub fn op_fs_ftruncate(state: &mut OpState, fd: u32, len: f64) -> Result<(), JsE
     .get(&fd)
     .cloned()
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
-  let guard = file.lock().unwrap();
+  let guard = lock_file(&file);
   guard.set_len(len as u64).map_err(|e| io_box_fd("ftruncate", e))
 }
 
@@ -577,7 +597,7 @@ pub fn op_fs_fsync(state: &mut OpState, fd: u32) -> Result<(), JsErrorBox> {
     .get(&fd)
     .cloned()
     .ok_or_else(|| JsErrorBox::generic(format!("EBADF: bad file descriptor {fd}")))?;
-  let guard = file.lock().unwrap();
+  let guard = lock_file(&file);
   guard.sync_all().map_err(|e| io_box_fd("fsync", e))
 }
 

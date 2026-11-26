@@ -56,4 +56,5 @@
   globalThis.jse = globalThis.jse || {};
   globalThis.jse.s3 = connect;
   globalThis.malia = globalThis.malia || globalThis.jse;
+  if (globalThis.malia !== globalThis.jse) globalThis.malia.s3 = connect;
 })(globalThis);

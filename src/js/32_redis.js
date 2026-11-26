@@ -64,4 +64,5 @@
   globalThis.jse = globalThis.jse || {};
   globalThis.jse.redis = connect;
   globalThis.malia = globalThis.malia || globalThis.jse;
+  if (globalThis.malia !== globalThis.jse) globalThis.malia.redis = connect;
 })(globalThis);

@@ -22,4 +22,8 @@
   globalThis.jse.yaml = yaml;
   globalThis.jse.toml = toml;
   globalThis.malia = globalThis.malia || globalThis.jse;
+  if (globalThis.malia !== globalThis.jse) {
+    globalThis.malia.yaml = yaml;
+    globalThis.malia.toml = toml;
+  }
 })(globalThis);

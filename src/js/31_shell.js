@@ -4,9 +4,17 @@
 (function (globalThis) {
   const ops = Deno.core.ops;
 
+  const isWin = globalThis.process?.platform === "win32";
+
   function escapeShellArg(arg) {
     if (typeof arg !== "string") arg = String(arg);
-    if (arg.length === 0) return "''";
+    if (arg.length === 0) return isWin ? '""' : "''";
+    if (isWin) {
+      // cmd.exe: double-quote the argument; escape internal quotes and
+      // metacharacters (^, &, |, <, >, %, !) with caret.
+      const escaped = arg.replace(/(["\^&|<>%!])/g, "^$1");
+      return '"' + escaped + '"';
+    }
     if (/^[a-zA-Z0-9._\-/:=@]+$/.test(arg)) return arg;
     return "'" + arg.replace(/'/g, "'\\''") + "'";
   }
@@ -95,4 +103,5 @@
   globalThis.jse = globalThis.jse || {};
   globalThis.jse.$ = $;
   globalThis.malia = globalThis.malia || globalThis.jse;
+  if (globalThis.malia !== globalThis.jse) globalThis.malia.$ = $;
 })(globalThis);

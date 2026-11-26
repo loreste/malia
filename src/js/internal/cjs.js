@@ -6,6 +6,10 @@
 export function __esmToCjs(code) {
   const namedExports = [];
   const transformed = code
+    // import * as ns from "specifier"
+    .replace(/^\s*import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/gm,
+      (_, name, spec) => `const ${name} = require("${spec}");`)
+    // import defaultName from "specifier"
     .replace(/^\s*import\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/gm,
       (_, name, spec) => `const ${name} = require("${spec}");`)
     .replace(/^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/gm,
