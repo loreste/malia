@@ -64,6 +64,12 @@ impl Conn {
         if len < 0 {
           return Ok(RedisValue::Null);
         }
+        // Cap at 256 MB to prevent OOM from a malicious server.
+        if len > 256 * 1024 * 1024 {
+          return Err(JsErrorBox::generic(format!(
+            "Redis: bulk string too large ({len} bytes)"
+          )));
+        }
         let mut buf = vec![0u8; len as usize + 2]; // +2 for \r\n
         self
           .stream

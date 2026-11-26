@@ -141,10 +141,22 @@ fn split_host_port(host: &str) -> (&str, Option<&str>) {
     .map_or((host, None), |(h, p)| (h, Some(p)))
 }
 
+/// Normalize IPv6 brackets: `[::1]` -> `::1`, leaves non-IPv6 unchanged.
+fn strip_brackets(s: &str) -> &str {
+  s.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(s)
+}
+
 /// Check whether `entry` from an allow/deny list matches `host`.
-/// Supports: exact match, host-only match (ignoring port), port-level match.
+/// Supports: exact match, host-only match (ignoring port), IPv6 bracket normalization.
 fn net_entry_matches(entry: &str, host: &str, bare: &str) -> bool {
-  host == entry || bare == entry
+  if host == entry || bare == entry {
+    return true;
+  }
+  // Normalize IPv6 brackets for comparison: [::1] matches ::1 and vice versa.
+  let entry_norm = strip_brackets(entry);
+  let bare_norm = strip_brackets(bare);
+  let host_norm = strip_brackets(host);
+  entry_norm == bare_norm || entry_norm == host_norm
 }
 
 pub fn check_net(host: &str) -> Result<(), JsErrorBox> {
