@@ -34,6 +34,14 @@ Examples for common tasks. `malia` and `jse` are the same binary, and the
 25. [Env encryption](#25-env-encryption)
 26. [Pub/Sub](#26-pubsub)
 27. [Caching](#27-caching)
+28. [Redis](#28-redis)
+29. [S3](#29-s3)
+30. [Shell scripting](#30-shell-scripting)
+31. [YAML and TOML](#31-yaml-and-toml)
+32. [Sandbox mode](#32-sandbox-mode)
+33. [Bundler, formatter, linter](#33-bundler-formatter-linter)
+34. [Cross-compilation](#34-cross-compilation)
+35. [Binary verification](#35-binary-verification)
 
 ---
 
@@ -1733,4 +1741,211 @@ malia.cron.every("5m", () => {
   const purged = cache.purge();
   if (purged > 0) console.log(`Purged ${purged} expired entries`);
 });
+```
+
+---
+
+## 28. Redis
+
+Built-in Redis client. No `ioredis` or `redis` package needed.
+
+```javascript
+const redis = malia.redis();  // defaults to REDIS_URL or localhost:6379
+
+// Basic operations
+redis.set("user:1", JSON.stringify({ name: "Alice" }));
+const user = JSON.parse(redis.get("user:1"));
+
+// Expiry
+redis.set("session:abc", "data", "EX", 3600);
+redis.ttl("session:abc");  // seconds remaining
+
+// Lists
+redis.lpush("queue", "job1", "job2");
+const job = redis.rpop("queue");
+
+// Hashes
+redis.hset("config", "theme", "dark");
+redis.hget("config", "theme");
+
+// Pipelines (batch commands)
+const results = redis.pipeline([
+  ["SET", "a", "1"],
+  ["SET", "b", "2"],
+  ["MGET", "a", "b"],
+]);
+```
+
+---
+
+## 29. S3
+
+Built-in S3 client. Works with AWS S3, Cloudflare R2, MinIO.
+
+```javascript
+const s3 = malia.s3({
+  bucket: "my-bucket",
+  region: "us-east-1",
+  // Uses AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from env by default
+});
+
+// Upload
+s3.put("data/report.json", JSON.stringify({ revenue: 42000 }));
+
+// Download
+const data = s3.get("data/report.json");
+const report = s3.getJSON("data/report.json");
+
+// Delete
+s3.delete("data/old-report.json");
+
+// Presigned URL (1 hour)
+const url = s3.presign("data/report.json", 3600);
+
+// Cloudflare R2
+const r2 = malia.s3({
+  endpoint: "https://<account-id>.r2.cloudflarestorage.com",
+  bucket: "my-bucket",
+  region: "auto",
+});
+```
+
+---
+
+## 30. Shell scripting
+
+Tagged template literal for running shell commands. Replaces `zx`, `execa`,
+`shelljs`.
+
+```javascript
+// Basic command
+const result = malia.$`echo hello world`;
+console.log(result.text);  // "hello world"
+
+// Interpolation with automatic escaping
+const dir = "/path/with spaces";
+const files = malia.$`ls -la ${dir}`;
+
+// Access output
+result.stdout;    // raw string
+result.text;      // trimmed
+result.lines;     // array of lines
+result.exitCode;  // 0
+
+// Non-throwing variant (doesn't throw on non-zero exit)
+const r = malia.$.nothrow`grep -r "TODO" src/`;
+if (r.exitCode === 0) {
+  console.log("Found TODOs:", r.lines.length);
+}
+
+// Throws on failure by default
+try {
+  malia.$`false`;
+} catch (e) {
+  console.log(e.exitCode);  // 1
+  console.log(e.stderr);
+}
+```
+
+---
+
+## 31. YAML and TOML
+
+Built-in parsing for config file formats.
+
+```javascript
+// YAML
+const config = malia.yaml.parse(`
+name: my-app
+port: 3000
+features:
+  - auth
+  - logging
+`);
+console.log(config.name);     // "my-app"
+console.log(config.features); // ["auth", "logging"]
+
+const yamlStr = malia.yaml.stringify({ host: "0.0.0.0", port: 8080 });
+
+// TOML
+const cargo = malia.toml.parse(`
+[package]
+name = "my-crate"
+version = "1.0.0"
+
+[dependencies]
+serde = "1.0"
+`);
+console.log(cargo.package.name);  // "my-crate"
+
+const tomlStr = malia.toml.stringify({ server: { host: "localhost", port: 3000 } });
+```
+
+---
+
+## 32. Sandbox mode
+
+Run untrusted code with strict resource limits.
+
+```sh
+# Deny-all permissions + 256 MB heap + 30s CPU limit
+malia run --sandbox untrusted-plugin.js
+
+# Custom limits
+malia run --allow-read=./data --deny-net=169.254.169.254 --max-cpu-time=10 plugin.js
+
+# Block specific hosts (even with --allow-net)
+malia run --allow-net --deny-net=169.254.169.254,metadata.google.internal app.js
+```
+
+---
+
+## 33. Bundler, formatter, linter
+
+```sh
+# Bundle ES modules into a single file
+malia bundle src/index.ts -o dist/bundle.js
+
+# Format code (downloads dprint on first use)
+malia fmt                    # format current directory
+malia fmt src/               # format specific directory
+malia fmt --check            # check only (CI mode, exit 1 if unformatted)
+
+# Lint code (downloads oxlint on first use)
+malia lint                   # lint current directory
+malia lint --fix             # auto-fix issues
+malia lint src/              # lint specific directory
+```
+
+---
+
+## 34. Cross-compilation
+
+```sh
+# Compile for the current platform
+malia compile src/server.ts -o dist/server
+
+# Cross-compile for other platforms
+malia compile src/server.ts --target linux-x64 -o dist/server-linux
+malia compile src/server.ts --target darwin-arm64 -o dist/server-mac
+malia compile src/server.ts --target win-x64 -o dist/server.exe
+
+# Supported targets: linux-x64, linux-arm64, linux-musl,
+# darwin-x64, darwin-arm64, win-x64
+```
+
+---
+
+## 35. Binary verification
+
+```sh
+# Verify the malia binary hasn't been tampered with
+malia verify
+
+# Output:
+# Binary: /usr/local/bin/malia
+# SHA-256: abc123...
+# Size: 83487680 bytes
+# Version: 0.3.0
+# Integrity: VERIFIED (matches published checksum)
 ```

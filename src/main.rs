@@ -1516,7 +1516,11 @@ fn run_package_bin(current_dir: &Path, command: &str, args: &[String]) -> anyhow
 
 #[allow(dead_code)]
 fn main() -> anyhow::Result<()> {
-  run()
+  // V8 + deno_core + clap use deep stacks; Windows debug builds overflow
+  // the default 1 MB main-thread stack. Run on a thread with 8 MB.
+  let builder = std::thread::Builder::new().stack_size(8 * 1024 * 1024);
+  let handler = builder.spawn(run).expect("failed to spawn main thread");
+  handler.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
 }
 
 pub fn run() -> anyhow::Result<()> {

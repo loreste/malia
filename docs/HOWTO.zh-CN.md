@@ -33,6 +33,14 @@
 25. [环境变量加密](#25-环境变量加密)
 26. [发布/订阅](#26-发布订阅)
 27. [缓存](#27-缓存)
+28. [Redis](#28-redis)
+29. [S3](#29-s3)
+30. [Shell 脚本](#30-shell-脚本)
+31. [YAML 和 TOML](#31-yaml-和-toml)
+32. [沙箱模式](#32-沙箱模式)
+33. [打包器、格式化、代码检查](#33-打包器格式化代码检查)
+34. [交叉编译](#34-交叉编译)
+35. [二进制完整性验证](#35-二进制完整性验证)
 
 ---
 
@@ -1644,4 +1652,210 @@ malia.cron.every("5m", () => {
   const purged = cache.purge();
   if (purged > 0) console.log(`Purged ${purged} expired entries`);
 });
+```
+
+---
+
+## 28. Redis
+
+内置 Redis 客户端。无需 `ioredis` 或 `redis` 包。
+
+```javascript
+const redis = malia.redis();  // 默认使用 REDIS_URL 或 localhost:6379
+
+// 基本操作
+redis.set("user:1", JSON.stringify({ name: "Alice" }));
+const user = JSON.parse(redis.get("user:1"));
+
+// 过期时间
+redis.set("session:abc", "data", "EX", 3600);
+redis.ttl("session:abc");  // 剩余秒数
+
+// 列表
+redis.lpush("queue", "job1", "job2");
+const job = redis.rpop("queue");
+
+// 哈希
+redis.hset("config", "theme", "dark");
+redis.hget("config", "theme");
+
+// 管道（批量命令）
+const results = redis.pipeline([
+  ["SET", "a", "1"],
+  ["SET", "b", "2"],
+  ["MGET", "a", "b"],
+]);
+```
+
+---
+
+## 29. S3
+
+内置 S3 客户端。兼容 AWS S3、Cloudflare R2、MinIO。
+
+```javascript
+const s3 = malia.s3({
+  bucket: "my-bucket",
+  region: "us-east-1",
+  // 默认从环境变量读取 AWS_ACCESS_KEY_ID 和 AWS_SECRET_ACCESS_KEY
+});
+
+// 上传
+s3.put("data/report.json", JSON.stringify({ revenue: 42000 }));
+
+// 下载
+const data = s3.get("data/report.json");
+const report = s3.getJSON("data/report.json");
+
+// 删除
+s3.delete("data/old-report.json");
+
+// 预签名 URL（1 小时）
+const url = s3.presign("data/report.json", 3600);
+
+// Cloudflare R2
+const r2 = malia.s3({
+  endpoint: "https://<account-id>.r2.cloudflarestorage.com",
+  bucket: "my-bucket",
+  region: "auto",
+});
+```
+
+---
+
+## 30. Shell 脚本
+
+标签模板字面量，用于运行 shell 命令。替代 `zx`、`execa`、`shelljs`。
+
+```javascript
+// 基本命令
+const result = malia.$`echo hello world`;
+console.log(result.text);  // "hello world"
+
+// 插值自动转义
+const dir = "/path/with spaces";
+const files = malia.$`ls -la ${dir}`;
+
+// 访问输出
+result.stdout;    // 原始字符串
+result.text;      // 去除首尾空白
+result.lines;     // 按行分割的数组
+result.exitCode;  // 0
+
+// 不抛出异常的变体（非零退出码不报错）
+const r = malia.$.nothrow`grep -r "TODO" src/`;
+if (r.exitCode === 0) {
+  console.log("Found TODOs:", r.lines.length);
+}
+
+// 默认失败时抛出异常
+try {
+  malia.$`false`;
+} catch (e) {
+  console.log(e.exitCode);  // 1
+  console.log(e.stderr);
+}
+```
+
+---
+
+## 31. YAML 和 TOML
+
+内置配置文件格式解析。
+
+```javascript
+// YAML
+const config = malia.yaml.parse(`
+name: my-app
+port: 3000
+features:
+  - auth
+  - logging
+`);
+console.log(config.name);     // "my-app"
+console.log(config.features); // ["auth", "logging"]
+
+const yamlStr = malia.yaml.stringify({ host: "0.0.0.0", port: 8080 });
+
+// TOML
+const cargo = malia.toml.parse(`
+[package]
+name = "my-crate"
+version = "1.0.0"
+
+[dependencies]
+serde = "1.0"
+`);
+console.log(cargo.package.name);  // "my-crate"
+
+const tomlStr = malia.toml.stringify({ server: { host: "localhost", port: 3000 } });
+```
+
+---
+
+## 32. 沙箱模式
+
+使用严格的资源限制运行不受信任的代码。
+
+```sh
+# 拒绝所有权限 + 256 MB 堆限制 + 30 秒 CPU 限制
+malia run --sandbox untrusted-plugin.js
+
+# 自定义限制
+malia run --allow-read=./data --deny-net=169.254.169.254 --max-cpu-time=10 plugin.js
+
+# 阻止特定主机（即使使用 --allow-net）
+malia run --allow-net --deny-net=169.254.169.254,metadata.google.internal app.js
+```
+
+---
+
+## 33. 打包器、格式化、代码检查
+
+```sh
+# 将 ES 模块打包为单个文件
+malia bundle src/index.ts -o dist/bundle.js
+
+# 格式化代码（首次使用时下载 dprint）
+malia fmt                    # 格式化当前目录
+malia fmt src/               # 格式化指定目录
+malia fmt --check            # 仅检查（CI 模式，未格式化时退出码为 1）
+
+# 代码检查（首次使用时下载 oxlint）
+malia lint                   # 检查当前目录
+malia lint --fix             # 自动修复问题
+malia lint src/              # 检查指定目录
+```
+
+---
+
+## 34. 交叉编译
+
+```sh
+# 为当前平台编译
+malia compile src/server.ts -o dist/server
+
+# 为其他平台交叉编译
+malia compile src/server.ts --target linux-x64 -o dist/server-linux
+malia compile src/server.ts --target darwin-arm64 -o dist/server-mac
+malia compile src/server.ts --target win-x64 -o dist/server.exe
+
+# 支持的目标：linux-x64、linux-arm64、linux-musl、
+# darwin-x64、darwin-arm64、win-x64
+```
+
+---
+
+## 35. 二进制完整性验证
+
+```sh
+# 验证 malia 二进制文件是否被篡改
+malia verify
+
+# 输出：
+# Binary: /usr/local/bin/malia
+# SHA-256: abc123...
+# Size: 83487680 bytes
+# Version: 0.3.0
+# Integrity: VERIFIED (matches published checksum)
 ```
